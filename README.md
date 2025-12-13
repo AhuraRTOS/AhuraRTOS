@@ -22,7 +22,7 @@ We begin with support for **STM32 microcontrollers**, providing:
 ## 🗺️ Roadmap
 
 ### Phase 1 — STM32 First
-- Support for Cortex-M0/M3/M4  
+- Support for Cortex-M
 - Core kernel implementation  
 - Clear examples and documentation  
 - Minimal portable HAL  
