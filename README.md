@@ -1,5 +1,7 @@
 # AhuraRTOS
 
+Not ready to use 
+
 **A new RTOS is born — simple, versatile, and developer-friendly.**
 
 AhuraRTOS is a lightweight real-time operating system designed to make embedded development easier without sacrificing reliability or performance. It focuses on clean architecture, clear APIs, and portability, making it suitable for both beginners and experienced embedded developers.
