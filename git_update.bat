@@ -1,6 +1,4 @@
 @echo off
-:: 1. Navigate to your main repository folder (Change this path to your actual project folder)
-:: cd /d "E:\GitHub\AhuraRTOS"
 
 echo =========================================
 echo Updating all submodules...
