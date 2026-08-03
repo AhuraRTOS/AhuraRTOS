@@ -64,7 +64,7 @@ as the `kernel` submodule.
 - **Mutexes with priority inheritance**, always on, the way FreeRTOS and Zephyr
   do it. It stays correct even when one task holds several contended mutexes at
   once.
-- **Counting semaphores, queues, and event groups**, all with `timeout_ms`
+- **Counting semaphores, queues, and events**, all with `timeout_ms`
   waits: try once, wait a while, or wait forever.
 - **Task notifications.** A lightweight single-value mailbox built into each
   task's own control block, so one task or an ISR can signal a specific task
