@@ -45,7 +45,19 @@ as the `kernel` submodule.
   FIFO ready list per priority, a ready bitmap for O(1) next-task lookup, and
   round-robin among equal priorities.
 - **31 priority levels**, with the idle task and the kernel service tasks at
-  reserved ends of the range.
+  reserved ends of the range. The kernel's own service tasks refuse `os_task_pause`
+  and `os_task_delete`, so an application cannot stop the timer, work or log
+  service out from under the APIs built on it.
+- **Configurable time slice.** `OS_CONFIG_TIME_SLICE_TICKS` sets how long a task
+  holds the CPU before an equal-priority peer takes over — every tick by default,
+  or 0 to turn rotation off entirely. Longer slices mean proportionally fewer
+  context switches, and a tick that would only have rotated costs a bitmap check
+  instead of a full context-switch round trip.
+- **Scheduler lock.** `os_scheduler_lock()` defers preemption *without masking a
+  single interrupt*, which is what a critical section cannot do: the tick and
+  every driver keep running, and only the scheduler is held back until the
+  outermost unlock. The right barrier for task-to-task data; interrupt-shared
+  data still wants a critical section.
 
 ### Synchronization and IPC
 
@@ -147,6 +159,7 @@ every module's API are documented in [`kernel/README.md`](kernel/README.md).
 ```text
 AhuraRTOS/
 ├── kernel/     <- ahura_kernel submodule (core, arch ports, self-test suite)
+├── examples/   <- ahura_examples submodule (one runnable main per feature)
 ├── LICENSE
 └── README.md   <- this file
 ```
