@@ -5,8 +5,8 @@ architecture-independent core, a single public header, and an explicit boundary
 between the application and the kernel. There are no editable kernel files and
 no hidden configuration.
 
-**The kernel is not tied to any one architecture.** Everything a CPU changes —
-the context switch, the tick, critical sections, atomics, low-power entry — is
+**The kernel is not tied to any one architecture.** Everything a CPU changes -
+the context switch, the tick, critical sections, atomics, low-power entry - is
 confined to a small port layer, and the rest of the kernel is ordinary portable
 C. ARM Cortex-M is the first architecture ported and the one that works today;
 others follow on the same interface, without touching the core.
@@ -20,8 +20,10 @@ licensing. The kernel itself lives in
 [`ahura_kernel`](https://github.com/AhuraRTOS/ahura_kernel) and is included here
 as the `kernel` submodule.
 
-📖 **For API details, configuration, and integration steps, see
-[`kernel/README.md`](kernel/README.md). That is the authoritative reference.**
+📖 **For API details, configuration, and integration steps, see the
+[kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md).
+That is the authoritative reference.** (In a local clone it is `kernel/README.md`,
+once `git submodule update --init` has fetched it.)
 
 ---
 
@@ -49,11 +51,11 @@ as the `kernel` submodule.
   and `os_task_delete`, so an application cannot stop the timer, work or log
   service out from under the APIs built on it.
 - **Configurable time slice.** `OS_CONFIG_TIME_SLICE_TICKS` sets how long a task
-  holds the CPU before an equal-priority peer takes over — every tick by default,
+  holds the CPU before an equal-priority peer takes over - every tick by default,
   or 0 to turn rotation off entirely. Longer slices mean proportionally fewer
   context switches, and a tick that would only have rotated costs a bitmap check
   instead of a full context-switch round trip.
-- **Scheduler lock.** `os_scheduler_lock()` defers preemption *without masking a
+- **Scheduler lock.** `os_kernel_lock()` defers preemption *without masking a
   single interrupt*, which is what a critical section cannot do: the tick and
   every driver keep running, and only the scheduler is held back until the
   outermost unlock. The right barrier for task-to-task data; interrupt-shared
@@ -91,7 +93,7 @@ as the `kernel` submodule.
   low-power hooks. Nothing above that layer knows which CPU it is running on.
 - **Broad Cortex-M coverage today.** ARMv6-M through ARMv8.1-M (M0, M0+, M3, M4,
   M7, M23, M33, M35P, M52, M55, M85) across just three shared port
-  implementations — evidence that the port interface is small enough for one
+  implementations - evidence that the port interface is small enough for one
   file to serve a whole architecture family.
 - **Where the instruction set differs, the port decides.** Cores with exclusive
   load/store get lock-free atomics; cores without them fall back to a critical
@@ -100,7 +102,7 @@ as the `kernel` submodule.
 - **Other architectures planned**, RISC-V and Xtensa (ESP32) first. See the
   roadmap below.
 - **TrustZone support on ARMv8-M**, in secure, non-secure, or disabled mode,
-  with weak callbacks for banking secure contexts.
+  with application callbacks for banking secure contexts.
 - **Multi-core scheduling (experimental).** Per-task core affinity across shared
   ready lists, though it has not yet run on real multi-core silicon.
 - **No mandatory HAL or CMSIS dependency.**
@@ -152,7 +154,8 @@ as the `kernel` submodule.
    `os_main()`.
 
 Full configuration options, the integration checklist, task-priority rules, and
-every module's API are documented in [`kernel/README.md`](kernel/README.md).
+every module's API are documented in the
+[kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md).
 
 ## Repository layout
 
@@ -168,17 +171,17 @@ AhuraRTOS/
 
 AhuraRTOS is written to be multi-platform. The kernel core is architecture-
 independent C, and each architecture is added as a port behind a fixed
-interface — so supporting a new CPU means writing that port, not changing the
+interface - so supporting a new CPU means writing that port, not changing the
 kernel.
 
 ### Available today
 
-**ARM Cortex-M** — ARMv6-M through ARMv8.1-M: M0, M0+, M3, M4, M7, M23, M33,
+**ARM Cortex-M** - ARMv6-M through ARMv8.1-M: M0, M0+, M3, M4, M7, M23, M33,
 M35P, M52, M55 and M85, covered by three shared port implementations, with
 TrustZone support on ARMv8-M.
 
 STM32 is the primary bring-up and testing target, because that is the hardware
-on hand — not because anything in the kernel is STM32-specific. There is no
+on hand - not because anything in the kernel is STM32-specific. There is no
 mandatory HAL or CMSIS dependency, and the platform touchpoints (CPU clock,
 sleep hooks, multi-core glue) are weak callbacks the application overrides.
 
@@ -186,7 +189,7 @@ sleep hooks, multi-core glue) are weak callbacks the application overrides.
 
 RISC-V and Xtensa (ESP32) are the next architectures, since a portable kernel
 has to prove itself against a different instruction set. Note that vendor
-families built on Cortex-M — NXP, TI, Nordic, Renesas and the rest — are already
+families built on Cortex-M - NXP, TI, Nordic, Renesas and the rest - are already
 covered by the ARM ports today: what a new port adds is a new *instruction set*,
 not a new vendor. See the roadmap below.
 
