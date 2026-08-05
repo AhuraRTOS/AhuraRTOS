@@ -63,8 +63,9 @@ once `git submodule update --init` has fetched it.)
 
 ### Synchronization and IPC
 
-- **Mutexes with priority inheritance**, always on, the way FreeRTOS and Zephyr
-  do it. It stays correct even when one task holds several contended mutexes at
+- **Mutexes with priority inheritance**, always on rather than opt-in. A lower-
+  priority owner is boosted to the priority of the task waiting on it, and the
+  accounting stays correct even when one task holds several contended mutexes at
   once.
 - **Counting semaphores, queues, and events**, all with `timeout_ms`
   waits: try once, wait a while, or wait forever.
@@ -74,14 +75,16 @@ once `git submodule update --init` has fetched it.)
 
 ### Time and deferred work
 
-- **Software timers** (one-shot and periodic) and a **deferrable work queue** in
-  the style of Zephyr, each running on its own dedicated kernel service task.
+- **Software timers** (one-shot and periodic) and a **deferrable work queue**,
+  each running on its own dedicated kernel service task, so callbacks and
+  handlers run in task context rather than in the tick interrupt.
 - Millisecond, second, and cycle-accurate microsecond delays.
 
 ### Memory and diagnostics
 
-- **Optional kernel heap.** A coalescing first-fit allocator over a static
-  array, comparable to FreeRTOS `heap_4`, compiled out entirely when unused.
+- **Optional kernel heap.** A first-fit allocator over a static array, with an
+  address-ordered free list and coalescing of adjacent blocks, compiled out
+  entirely when unused. Nothing is taken from the linker heap.
 - **Stack watermarking and CPU-load sampling**, both opt-in and close to free at
   runtime.
 
