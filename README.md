@@ -30,7 +30,8 @@ once `git submodule update --init` has fetched it.)
 ## Contents
 
 [Highlights](#highlights) ·
-[Getting started](#getting-started) ·
+[Installation](#installation) ·
+[Running the self-test suite](#running-the-self-test-suite) ·
 [Repository layout](#repository-layout) ·
 [Platforms](#platforms) ·
 [Roadmap](#roadmap) ·
@@ -94,6 +95,17 @@ once `git submodule update --init` has fetched it.)
   are plain portable C. A port supplies only what the CPU decides: the context
   switch, the tick, the critical-section mask, the atomic operations, and the
   low-power hooks. Nothing above that layer knows which CPU it is running on.
+- **A one-vector footprint.** The kernel takes over PendSV and nothing else.
+  `SVC` is left entirely to the application - the first task starts through
+  PendSV instead - which keeps the kernel compatible with everything that
+  legitimately wants `SVC` for itself: Nordic's SoftDevice, TF-M and other
+  secure firmware, vendor bootloaders and ROM APIs. The tick is a single
+  application call, and its timer is configurable, so parts whose SysTick stops
+  in low-power modes are first-class rather than special cases.
+- **Misintegration fails loudly.** The kernel checks at boot that the vector
+  table really routes PendSV to it, and traps at the cause if not. The
+  alternative - the usual one - is a board that reaches `os_start()` and stops
+  dead with no fault and nothing to attach a debugger to.
 - **Broad Cortex-M coverage today.** ARMv6-M through ARMv8.1-M (M0, M0+, M3, M4,
   M7, M23, M33, M35P, M52, M55, M85) across just three shared port
   implementations - evidence that the port interface is small enough for one
@@ -122,42 +134,203 @@ once `git submodule update --init` has fetched it.)
   the port with no application code at all. It finishes with a cycle-accurate
   benchmark table covering every hot kernel path.
 
-## Getting started
+## Installation
 
-1. Add the kernel as a submodule (already the case in this repo, see
-   `.gitmodules`):
+**The kernel takes over exactly one exception - PendSV - and asks the
+application for exactly one thing: a periodic call to `os_tick_handler()`.** It
+claims no `SVC_Handler`, no `SysTick_Handler`, no HAL, and no vendor headers.
+That is the whole integration contract, and it is why the same kernel drops onto
+an STM32, an nRF52 and an LPC without changing anything but a config file.
 
-   ```bash
-   git submodule update --init --recursive
-   ```
+### Step 1 - get the source
 
-2. Copy `kernel/os_config_template.h` into your project as `os_config.h` and
-   point the kernel build at it:
+As a submodule of your own project (recommended, keeps updates a `git pull`
+away):
 
-   ```cmake
-   set(OS_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc)
-   add_subdirectory(kernel)
-   ```
+```bash
+git submodule add https://github.com/AhuraRTOS/ahura_kernel.git AhuraRTOS/kernel
+git submodule update --init --recursive
+```
 
-3. Copy `kernel/os_cb_template.c` (platform callbacks) and
-   `kernel/os_main_template.c` (default task body) into your application source
-   tree as `os_cb.c` and `os_main.c`, then add both to your **application**
-   build.
+Or clone this umbrella repo, which already wires up the kernel and the examples
+(see `.gitmodules`):
 
-4. Route `SysTick_Handler` to `os_tick_handler()`, call `os_init()` after clocks
-   are configured, then `os_start()`:
+```bash
+git clone https://github.com/AhuraRTOS/AhuraRTOS.git
+cd AhuraRTOS
+git submodule update --init --recursive
+```
+
+A plain copy of the `kernel/` directory works too - there is nothing
+git-specific about the build.
+
+### Step 2 - copy three files into your project
+
+The kernel deliberately compiles none of these. Two are your code, one is your
+configuration. Their locations do not matter, only that the build can see them.
+
+| Copy this template | into your project as | and add it to |
+|---|---|---|
+| `kernel/os_config_template.h` | `os_config.h` | nothing - it is a header |
+| `kernel/os_cb_template.c` | `os_cb.c` | your **application** build |
+| `kernel/os_main_template.c` | `os_main.c` | your **application** build |
+
+`os_config.h` is every build-time option at its default value - edit it in
+place. `os_cb.c` holds the platform callbacks (assert reporting, log transport).
+`os_main.c` is where your application code goes.
+
+### Step 3 - add the kernel to the build
+
+`OS_CONFIG_DIR` must be set **before** `add_subdirectory`, so the kernel library
+and your application compile against the same configuration. If only the
+application saw `os_config.h`, their structure sizes would silently disagree.
+
+```cmake
+set(OS_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc)   # wherever your copy lives
+add_subdirectory(AhuraRTOS/kernel)
+
+target_sources(my_firmware PRIVATE
+    Core/Src/os_cb.c
+    Core/Src/os_main.c
+)
+target_link_libraries(my_firmware ahura_kernel)
+```
+
+**Not using CMake?** Nothing here requires it. The kernel is plain C11 with
+GCC-style inline assembly, no generated sources and no build-time code
+generation, so Keil, IAR-style project files, MPLAB X, SEGGER Embedded Studio or
+a hand-written Makefile all work. Compile every `core/*.c` plus **one**
+`arch/arm/<core>/os_arch_port.c` matching your device, and add three include
+paths. The kernel README's "Adding the kernel to a build" lists them exactly.
+
+### Step 4 - give the kernel its tick
+
+On a stock CMSIS device that is one line, anywhere in your interrupt file:
+
+```c
+void SysTick_Handler(void) { os_tick_handler(); }
+```
+
+Where SysTick is unavailable or already taken - Nordic nRF5x, whose SysTick
+stops in sleep, is the classic case - set `OS_CONFIG_TICK_SOURCE_EXTERNAL` in
+`os_config.h` and drive `os_tick_handler()` from any timer you like instead.
+
+If a vendor HAL also wants SysTick, move one of them rather than sharing the
+handler. On STM32 that is CubeMX → SYS → Timebase Source → any spare timer.
+
+### Step 5 - make sure nothing else defines `PendSV_Handler`
+
+Usually nothing does, and there is nothing to do. The one common exception is a
+vendor IDE that generates an empty stub - **STM32CubeMX does**, and it is a
+checkbox: NVIC → Code generation → clear "Generate IRQ handler" for *Pendable
+request for system service*.
+
+The kernel verifies the live vector table at boot and traps immediately if it
+was not wired up, instead of hanging silently.
+
+### Step 6 - boot it
+
+From `main()`, after the clock tree is configured:
+
+```c
+int main(void)
+{
+    SystemClock_Config();      /* whatever your device needs */
+
+    os_init();
+    os_start();                /* never returns */
+}
+```
+
+`os_init()` has already created and started a default application task, so there
+is nothing else to create just to get moving. Write your code in `os_main()`:
+
+```c
+void os_main(void)
+{
+    while (1)
+    {
+        my_led_toggle();
+        os_delay_ms(500U);
+    }
+}
+```
+
+### If it does not build
+
+| Message | Cause |
+|---|---|
+| `No os_config.h found` | Step 2 missed, or `OS_CONFIG_DIR` does not point at it |
+| `os_config.h is incomplete` | An option was deleted from the copy - start again from the template |
+| `multiple definition of 'PendSV_Handler'` | Step 5: something else defines it, usually a vendor IDE stub |
+| `undefined reference to 'os_main'` | `os_main.c` is not in the application build (step 2) |
+| `undefined reference to 'os_assert_failed_cb'` (or `os_log_output_cb`) | `os_cb.c` is not in the application build, or that callback was deleted from it |
+| Builds and runs, but nothing happens | Step 4: the tick is not reaching `os_tick_handler()` |
+
+## Running the self-test suite
+
+The kernel ships a suite that exercises every enabled feature and reports
+PASS/FAIL over `printf`, finishing with a cycle-accurate benchmark table. It
+needs no application code and no board support beyond a working `printf`, which
+makes it the fastest way to prove a new target is correctly integrated **before**
+writing anything on top of it.
+
+Three things have to line up:
+
+1. **Turn it on** in `os_config.h`:
 
    ```c
-   os_init();
-   os_start();   /* never returns */
+   #define OS_CONFIG_TEST_ENABLE  1U
    ```
 
-   `os_init()` has already created and started a default application task, so
-   there is nothing else to create just to get moving. Write your code in
-   `os_main()`.
+2. **Link the suite.** `os_test()` is declared in `ahura.h` and defined only in
+   this library - the kernel ships no stub, not even a weak one, so forgetting
+   this fails at link time rather than booting a test build that silently tests
+   nothing:
 
-Full configuration options, the integration checklist, task-priority rules, and
-every module's API are documented in the
+   ```cmake
+   add_subdirectory(AhuraRTOS/kernel/test)
+   target_link_libraries(my_firmware os_test)
+   ```
+
+3. **Let the suite own `os_log_output_cb`** (only matters when
+   `OS_CONFIG_LOG_ENABLE` is 1). The suite defines that callback itself, because
+   testing the log means inspecting what the kernel actually emitted, so your
+   `os_cb.c` copy must step aside. The current `os_cb_template.c` already does
+   this for you with:
+
+   ```c
+   #if (OS_CONFIG_LOG_ENABLE == 1U) && (OS_CONFIG_TEST_ENABLE == 0U)
+   ```
+
+   An `os_cb.c` copied before that guard existed needs the same condition added.
+
+With the switch on, `os_init()` creates the test task **instead of** the default
+application task, so the suite runs alone and `os_main()` is never called.
+
+| Message | Cause |
+|---|---|
+| `undefined reference to 'os_test'` | Point 2: the test library is not linked |
+| `multiple definition of 'os_log_output_cb'` | Point 3: your `os_cb.c` still defines it |
+
+To avoid keeping points 1 and 2 in sync by hand, let CMake read the switch out
+of the config so there is only one place to change:
+
+```cmake
+file(READ ${OS_CONFIG_DIR}/os_config.h _os_cfg)
+if(_os_cfg MATCHES "#define[ \t]+OS_CONFIG_TEST_ENABLE[ \t]+1")
+    add_subdirectory(AhuraRTOS/kernel/test)
+    target_link_libraries(my_firmware os_test)
+endif()
+```
+
+Re-run CMake after changing that define - a header is not a configure-time
+dependency, so the build will not notice on its own.
+
+---
+
+Full configuration options, the integration contract, per-vendor notes,
+task-priority rules, and every module's API are documented in the
 [kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md).
 
 ## Repository layout
@@ -183,10 +356,21 @@ kernel.
 M35P, M52, M55 and M85, covered by three shared port implementations, with
 TrustZone support on ARMv8-M.
 
+**Every one of those cores is supported on every silicon vendor.** Nothing in
+the kernel or the ports names a vendor, a family, or a HAL. The only
+device-specific symbol anywhere is CMSIS `SystemCoreClock`, and that has a
+documented one-line fallback for devices whose startup code omits it. What
+differs between vendors is only their *tooling* - specifically whether the code
+generator emits a competing `PendSV_Handler` - and the kernel README has a short
+note per vendor covering it.
+
+Toolchains: GCC, Clang and Arm Compiler 6 (`armclang`). IAR and the end-of-life
+`armcc` are not supported, because the port layer uses GCC-style inline
+assembly; the portable `core/` tree would build anywhere, so an IAR port is a
+contained piece of work confined to four files.
+
 STM32 is the primary bring-up and testing target, because that is the hardware
-on hand - not because anything in the kernel is STM32-specific. There is no
-mandatory HAL or CMSIS dependency, and the platform touchpoints (CPU clock,
-sleep hooks, multi-core glue) are weak callbacks the application overrides.
+on hand - not because anything in the kernel is STM32-specific.
 
 ### Planned
 
@@ -208,11 +392,14 @@ Known gaps tracked for later:
 
 - Tickless idle is implemented for the ARMv8-M mainline port but is not yet
   wired into the idle task. The ARMv6-M and ARMv7-M ports still need the same
-  change.
+  change, and an application-owned tick (`OS_CONFIG_TICK_SOURCE_EXTERNAL`)
+  currently degrades to a plain WFI because the callback pair cannot yet express
+  suppressing a timer the kernel does not own.
 - Multi-core (SMP) scheduling compiles and is exercised in CI, but has not run
   on real multi-core silicon.
 - Mutex priority inheritance is single-level. It does not propagate through a
   chain of nested mutexes held by different tasks.
+- IAR EWARM is not supported; the port layer needs GCC-style inline assembly.
 
 ## Contributing
 
