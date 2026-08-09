@@ -1,6 +1,0 @@
-[submodule "kernel"]
-	path = kernel
-	url = https://github.com/AhuraRTOS/ahura_kernel.git
-[submodule "examples"]
-	path = examples
-	url = https://github.com/AhuraRTOS/ahura_examples.git
