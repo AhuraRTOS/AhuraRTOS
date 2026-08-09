@@ -11,7 +11,7 @@ build changes.
 New to AhuraRTOS? Install it first -
 [AhuraRTOS → Installation](../doc/installation.md).
 What each API actually guarantees is documented in the
-[kernel README](../kernel/README.md).
+[kernel reference](../doc/kernel.md).
 
 ---
 

@@ -20,10 +20,10 @@
 
 ## The kernel itself
 
-The kernel is in this repository, under [`kernel/`](../kernel/), and its README
-is the authoritative reference for everything the kernel *does*:
+The source is in this repository under [`kernel/`](../kernel/), and this is the
+authoritative reference for everything the kernel *does*:
 
-- **[Kernel README](../kernel/README.md)** -
+- **[Kernel reference](kernel.md)** -
   what the kernel is, **how it works** (boot sequence, scheduler, context
   switch, tick, blocking and waking, priority inheritance, the three barriers,
   memory), every API, every `os_config.h` option, platform support, and

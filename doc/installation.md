@@ -90,7 +90,7 @@ a missing one is a link error rather than a silently empty hook. `os_main.c` is
 where your application code goes.
 
 Every option is documented in the
-[kernel README → Configuration](../kernel/README.md#configuration).
+[kernel reference → Configuration](kernel.md#configuration).
 
 ## Step 3 - add the kernel to the build
 
@@ -302,5 +302,5 @@ If `os_cb_template.c` grew a callback you do not have, the link error names it.
 - **[Run the self-test suite](self-test.md)** to prove the port before writing
   anything on top of it - it validates every enabled feature with no application
   code at all.
-- **[Kernel README](../kernel/README.md)**
+- **[Kernel reference](kernel.md)**
   for every configuration option, every API, and how the kernel works inside.

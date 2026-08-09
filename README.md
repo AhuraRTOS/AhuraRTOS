@@ -102,7 +102,7 @@ coalescing · stack watermarking, stack-overflow detection and CPU-load sampling
 scheduling and tickless idle.
 
 Every one of these is described in full, with the mechanism behind it, in the
-[kernel README](kernel/README.md).
+[kernel reference](doc/kernel.md).
 
 ## Documentation
 
@@ -122,7 +122,7 @@ Every one of these is described in full, with the mechanism behind it, in the
 
 | The kernel | |
 |---|---|
-| [Kernel README](kernel/README.md) | **The authoritative reference:** how the kernel works inside, every API, every configuration option |
+| [Kernel reference](doc/kernel.md) | **The authoritative reference:** how the kernel works inside, every API, every configuration option |
 | [Examples](examples/README.md) | One runnable `os_main.c` per feature, and how to run them |
 
 ## Repository layout

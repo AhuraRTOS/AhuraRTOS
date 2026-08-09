@@ -76,4 +76,4 @@ rest - are already covered by the ARM ports today: what a new port adds is a new
   task does not yet call into it.
 
 Both are documented in full in the
-[kernel README](../kernel/README.md#platform-support).
+[kernel reference](kernel.md#platform-support).
