@@ -7,8 +7,8 @@ Run it from the root of your project - the directory holding the top-level
 CMakeLists.txt and the .ioc. Nothing needs to be saved there first; piping the
 script straight into Python leaves no installer file behind:
 
-    curl -fsSL <raw-url>/tools/install.py | python3 -      # macOS, Linux
-    irm <raw-url>/tools/install.py | python -              # Windows PowerShell
+    curl -fsSL <raw-url>/tools/install_stm32.py | python3 -    # macOS, Linux
+    irm <raw-url>/tools/install_stm32.py | python -            # Windows
 
 Either way it prints the diff and asks before writing. Options go after the `-`:
 
@@ -16,35 +16,40 @@ Either way it prints the diff and asks before writing. Options go after the `-`:
     ... | python - --yes         # apply without asking
     ... | python - --uninstall   # take the integration back out
 
-A saved copy works the same way (`python install.py --dry-run`).
+A saved copy works the same way (`python install_stm32.py --dry-run`).
 
 What it does, which is exactly the six steps of doc/installation.md:
 
-    1. put kernel/ at AhuraRTOS/kernel/ in the project
-    2. copy kernel/template/{os_config.h,os_cb.c,os_main.c} into the project
+    1. put the AhuraRTOS repository at AhuraRTOS/ in the project
+    2. copy AhuraRTOS/kernel/template/{os_config.h,os_cb.c,os_main.c} into it
     3. append the kernel block to the top-level CMakeLists.txt
     4. route the tick: os_tick_handler() in SysTick_Handler
-    5. check nothing else defines PendSV_Handler
+    5. disable a CubeMX-generated PendSV_Handler, which the port defines
     6. boot it: os_init() / os_start() in main()
 
-Three rules it follows, in order of importance:
+Rules it follows, in order of importance:
 
-  * It never opens the .ioc. The .ioc is the input CubeMX generates *from*;
+  * It never opens the .ioc. That file is the input CubeMX generates *from*;
     editing it behind CubeMX's back is how a project ends up with a
-    configuration nobody can reproduce. Everything this script knows, it reads
-    out of the generated sources - which is also the only thing the compiler
-    ever sees.
+    configuration nobody can reproduce. Everything this script knows it reads
+    out of the generated sources - which is also all the compiler ever sees.
 
   * Every C edit lands inside a CubeMX `USER CODE BEGIN/END` section, so
-    regenerating the project keeps it. The one file edited outside such a
-    section is the top-level CMakeLists.txt, which CubeMX writes once and
-    never rewrites (it says so in its own header comment).
+    regenerating the project keeps it. Two exceptions, both unavoidable: the
+    top-level CMakeLists.txt, which CubeMX writes once and never rewrites (it
+    says so in its own header), and a generated PendSV_Handler, which is not in
+    a USER CODE section because CubeMX owns it.
 
   * It never silently overwrites your work. os_config.h, os_cb.c and os_main.c
-    are yours once copied, so an existing one is kept, not replaced. Every
-    other edit sits between `>>> AhuraRTOS BEGIN` / `<<< AhuraRTOS END`
-    markers, so re-running replaces that region and nothing else, and
-    --uninstall can find it again.
+    are yours once copied, so an existing one is kept, never replaced.
+
+  * Running it twice changes nothing. Every edit sits between
+    `>>> AhuraRTOS BEGIN` and `<<< AhuraRTOS END`, and each run removes those
+    regions and rebuilds them at the right anchors. That is also what repairs a
+    project where the calls were moved, or where CubeMX regenerated over them.
+
+  * Nothing it disables is lost. A generated PendSV_Handler is wrapped in
+    `#if 0` rather than deleted, and --uninstall puts it back verbatim.
 
 Requires Python 3.8 or newer and nothing else - standard library only, no pip
 install, no shell commands. Runs the same on Windows, macOS and Linux.
@@ -71,8 +76,8 @@ BEGIN_TEXT = ">>> AhuraRTOS BEGIN - managed block, changes here are overwritten"
 END_TEXT = "<<< AhuraRTOS END"
 
 # Directories never searched for project sources. "cmake" holds the CubeMX
-# sub-build and the toolchain files, which are read for the MCU identity but
-# are never edit targets.
+# sub-build and the toolchain files, which are read for the MCU identity but are
+# never edit targets.
 PRUNE = {
     ".git", ".vscode", ".settings", "__pycache__",
     "build", "Build", "Debug", "Release", "cmake-build-debug", "cmake-build-release",
@@ -144,9 +149,6 @@ def ask(prompt: str):
     stdin - `curl ... | python -` - so stdin is the source code, already read to
     EOF, and input() would raise immediately. The controlling terminal is still
     open in that case, so ask it directly: /dev/tty on POSIX, CONIN$ on Windows.
-
-    Genuinely headless runs (CI, a pipe with no terminal at all) get None, and
-    the caller turns that into "re-run with --yes" rather than a stack trace.
     """
     if sys.stdin.isatty():
         try:
@@ -182,6 +184,53 @@ def relative(path: Path, root: Path) -> str:
         return path.as_posix()
 
 
+def strip_comments(text: str) -> str:
+    """Blank out comments and string literals so a search sees code, not prose.
+
+    Length-preserving - every removed character becomes a space and newlines
+    stay - so offsets into the result still index the original text. Without
+    this, a commented-out HAL_IncTick() reads as a live call, and the word
+    "os_init()" inside our own explanatory comment would satisfy a placement
+    check that nothing actually calls it.
+    """
+    return re.sub(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\])*\"",
+                  lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S)
+
+
+def function_span(text: str, name: str):
+    """(start, end) of a whole `<type> name(void) { ... }`, or None.
+
+    Brace-matched over comment-stripped text, so a brace inside a comment or a
+    string cannot end the function early.
+    """
+    code = strip_comments(text)
+    m = re.search(r"^[ \t]*(?:__weak[ \t]+)?(?:void|int)[ \t]+" + re.escape(name) +
+                  r"[ \t]*\([ \t]*void[ \t]*\)[ \t]*\n?[ \t]*\{", code, re.M)
+    if not m:
+        return None
+    depth, i = 1, m.end()
+    while i < len(code) and depth:
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+        i += 1
+    if depth:
+        return None
+    while i < len(text) and text[i] == "\n":
+        i += 1
+    return m.start(), i
+
+
+def function_body(text: str, name: str):
+    """The inside of a function, or None."""
+    span = function_span(text, name)
+    if span is None:
+        return None
+    start, end = span
+    return text[text.index("{", start) + 1:text.rindex("}", start, end)]
+
+
 # ---------------------------------------------------------------------------
 # Managed regions
 # ---------------------------------------------------------------------------
@@ -214,6 +263,34 @@ def find_managed(text: str, start: int = 0, stop: int = None):
     return start + b.start(), start + b.start() + e.end()
 
 
+def drop_managed(src: SourceFile) -> int:
+    """Remove every managed region from the file. Returns how many went.
+
+    A region that only added code is deleted. A region that *disabled* code
+    carries the original verbatim inside `#if 0 ... #endif`, and removing it
+    means putting that code back - deleting it would throw away generated code
+    this script does not own.
+    """
+    removed = 0
+    while True:
+        span = find_managed(src.text)
+        if not span:
+            return removed
+        start, end = span
+
+        restored = re.search(r"^#if 0\n(.*?)^#endif\n", src.text[start:end], re.S | re.M)
+        if restored:
+            replacement = restored.group(1)
+        else:
+            replacement = ""
+            # Take the blank line we added ahead of the block back out with it.
+            while start >= 2 and src.text[start - 2:start] == "\n\n":
+                start -= 1
+
+        src.text = src.text[:start] + replacement + src.text[end:]
+        removed += 1
+
+
 def user_code_span(text: str, tag: str):
     """Offsets of the body between USER CODE BEGIN/END <tag>, plus both indents.
 
@@ -238,13 +315,13 @@ def user_code_span(text: str, tag: str):
 
 
 def put_in_user_code(src: SourceFile, tag: str, payload: str, where: str = "end") -> bool:
-    """Insert or refresh our block inside a USER CODE section. Idempotent.
+    """Insert our block into a USER CODE section, at the start or the end.
 
-    Existing user content in the section is always preserved: on first install
-    the block goes at `where` ("start" or "end") of whatever is already there,
-    and on every later run only the block itself is rewritten.
+    Existing user content in the section is copied through byte for byte,
+    including its blank lines: `while (1) {` lives inside USER CODE WHILE, and
+    re-spacing generated code is not this script's job.
 
-    `where="start"` exists for USER CODE BEGIN WHILE, where appending would put
+    `where="start"` exists for exactly that section, where appending would put
     os_init() *inside* the infinite loop rather than before it.
     """
     span = user_code_span(src.text, tag)
@@ -255,15 +332,7 @@ def put_in_user_code(src: SourceFile, tag: str, payload: str, where: str = "end"
     body = src.text[start:end]
     block = managed_block(payload, begin_indent if where == "start" else end_indent)
 
-    existing = find_managed(src.text, start, end)
-    if existing:
-        # Already ours: rewrite the region in place and leave the rest of the
-        # section - including anything the user added around it - untouched.
-        new_body = src.text[start:existing[0]] + block + src.text[existing[1]:end]
-    # Whatever is already in the section is copied through byte for byte -
-    # including its blank lines. `while (1) {` lives inside USER CODE WHILE, and
-    # re-spacing generated code is not this script's job.
-    elif where == "start":
+    if where == "start":
         new_body = "\n" + block + "\n" + body.lstrip("\n")
     elif body.strip():
         new_body = body.rstrip("\n") + "\n\n" + block + "\n"
@@ -276,19 +345,44 @@ def put_in_user_code(src: SourceFile, tag: str, payload: str, where: str = "end"
     return True
 
 
-def drop_managed(src: SourceFile) -> int:
-    """Remove every managed region from the file. Returns how many went."""
-    removed = 0
-    while True:
-        span = find_managed(src.text)
-        if not span:
-            return removed
-        start, end = span
-        # Take the blank line we added ahead of the block back out with it.
-        while start >= 2 and src.text[start - 2:start] == "\n\n":
-            start -= 1
-        src.text = src.text[:start] + src.text[end:]
-        removed += 1
+PENDSV_NOTE = """\
+/* CubeMX generated a PendSV_Handler here, and the kernel's port defines
+   PendSV_Handler too - two definitions of one symbol is a link error.
+   Disabled rather than deleted, so nothing of yours is lost: --uninstall
+   restores it exactly as it was.
+
+   This is the one edit outside a USER CODE section, because CubeMX owns this
+   function and gives no section inside it. Regenerating from the .ioc brings
+   the stub back; re-run this installer afterwards and it is disabled again.
+   To stop it being generated at all: Pinout & Configuration -> System Core ->
+   NVIC -> Code generation -> uncheck 'Generate IRQ handler' for 'Pendable
+   request for system service'. */"""
+
+
+def disable_pendsv(src: SourceFile) -> bool:
+    """Wrap a generated PendSV_Handler in #if 0, keeping it recoverable.
+
+    #if 0 rather than /* */ because the function contains USER CODE comments,
+    and C has no nested block comments. The original text is copied in verbatim
+    - not through managed_block(), whose per-line rstrip would quietly drop
+    trailing whitespace and break the byte-exact --uninstall.
+    """
+    span = function_span(src.text, "PendSV_Handler")
+    if span is None:
+        return False
+
+    start, end = span
+    original = src.text[start:end]
+    if not original.endswith("\n"):
+        original += "\n"
+
+    block = ("/* " + BEGIN_TEXT + " */\n"
+             + PENDSV_NOTE + "\n"
+             "#if 0\n" + original + "#endif\n"
+             "/* " + END_TEXT + " */\n")
+
+    src.text = src.text[:start] + block + src.text[end:]
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -303,36 +397,11 @@ def walk_sources(root: Path):
                 yield Path(dirpath) / name
 
 
-def function_body(text: str, name: str):
-    """The body of `void name(void)`, or None. Brace-matched, so nested blocks
-    and the USER CODE comments inside come along."""
-    m = re.search(r"\bvoid\s+" + re.escape(name) + r"\s*\(\s*void\s*\)\s*\{", text)
-    if not m:
-        return None
-    depth, i = 1, m.end()
-    while i < len(text) and depth:
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-        i += 1
-    return text[m.end():i - 1]
-
-
-def strip_comments(text: str) -> str:
-    """Blank out comments and strings so a search sees code, not prose.
-
-    Without this, the commented-out `HAL_IncTick()` that CubeMX leaves behind
-    in some versions reads as a live call and the tick check fires wrongly.
-    """
-    return re.sub(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\])*\"", " ", text, flags=re.S)
-
-
 class Project:
     """Everything the installer needs to know, all of it read from generated
     sources - never from the .ioc."""
 
-    def __init__(self, root: Path, app_dir: Path = None):
+    def __init__(self, root: Path, app_dir: str = None):
         self.root = root
 
         top = root / "CMakeLists.txt"
@@ -343,23 +412,23 @@ class Project:
                 "  CMakeLists.txt and the .ioc. If your project has a .cproject but no\n"
                 "  CMakeLists.txt it was generated for STM32CubeIDE; regenerate it with\n"
                 "  Project Manager -> Toolchain/IDE -> CMake, or install by hand from\n"
-                "  doc/installation.md."
-            )
+                "  doc/installation.md.")
         self.cmake = SourceFile(top)
 
         sources = list(walk_sources(root))
         if app_dir:
-            app_dir = (root / app_dir).resolve()
-            sources = [p for p in sources if app_dir in p.resolve().parents or p.parent == app_dir]
+            wanted = (root / app_dir).resolve()
+            sources = [p for p in sources
+                       if wanted == p.parent.resolve() or wanted in p.resolve().parents]
 
         self.main_c = self._pick(
-            [p for p in sources
-             if p.name == "main.c" and re.search(r"\bint\s+main\s*\(", p.read_text(errors="replace"))],
+            [p for p in sources if p.name == "main.c"
+             and re.search(r"\bint\s+main\s*\(", p.read_text(errors="replace"))],
             "main.c")
 
         self.it_c = self._pick(
-            [p for p in sources
-             if p.suffix == ".c" and "void SysTick_Handler" in p.read_text(errors="replace")],
+            [p for p in sources if p.suffix == ".c"
+             and "void SysTick_Handler" in p.read_text(errors="replace")],
             "the interrupt file defining SysTick_Handler")
 
         self.src_dir = self.main_c.parent
@@ -379,7 +448,7 @@ class Project:
                 "  This is normal on a dual-core part (H7 dual, WB, WL, MP1): each core\n"
                 "  gets its own tree and the kernel is installed into one of them.\n"
                 "  Re-run with --app-dir pointing at the core you want, e.g.\n"
-                "      python install.py --app-dir CM7".format(what, listing))
+                "      --app-dir CM7".format(what, listing))
         return candidates[0]
 
     def _cmake_target(self) -> str:
@@ -405,38 +474,24 @@ class Project:
         if generated.is_file():
             m = re.search(r"\b(STM32[A-Z0-9]+xx)\b", generated.read_text(errors="replace"))
             mcu = m.group(1) if m else None
-        for toolchain in sorted((self.root / "cmake").glob("*.cmake")) if (self.root / "cmake").is_dir() else []:
-            m = re.search(r"-mcpu=(cortex-m[0-9a-z.+]*)", toolchain.read_text(errors="replace"))
-            if m:
-                core = m.group(1)
-                break
+        cmake_dir = self.root / "cmake"
+        if cmake_dir.is_dir():
+            for toolchain in sorted(cmake_dir.glob("*.cmake")):
+                m = re.search(r"-mcpu=(cortex-m[0-9a-z.+]*)",
+                              toolchain.read_text(errors="replace"))
+                if m:
+                    core = m.group(1)
+                    break
         return mcu, core
-
-    # -- preflight ----------------------------------------------------------
 
     def check(self, tick: str):
         """Everything that would make the build fail or the board hang, checked
         before a single byte is written."""
         it_text = self.it_c.read_text(errors="replace")
-        code = strip_comments(it_text)
-
-        # Step 5. The port defines PendSV_Handler; a CubeMX stub is a duplicate
-        # symbol. Deleting generated code is not this script's call - and CubeMX
-        # would put it straight back on the next regeneration anyway.
-        for path in [self.it_c, self.main_c]:
-            if re.search(r"\bvoid\s+PendSV_Handler\s*\(", strip_comments(path.read_text(errors="replace"))):
-                raise Fatal(
-                    "{} defines PendSV_Handler, which the kernel's port also defines.\n"
-                    "  Fix it in CubeMX, not here - it is generated code and would come\n"
-                    "  back on the next regeneration:\n"
-                    "      Pinout & Configuration -> System Core -> NVIC -> Code generation\n"
-                    "      -> uncheck 'Generate IRQ handler' for 'Pendable request for\n"
-                    "         system service'\n"
-                    "  Regenerate, then run this script again."
-                    .format(relative(path, self.root)))
 
         # Two RTOSes on one PendSV cannot both win.
-        if re.search(r"\b(osKernelInitialize|MX_FREERTOS_Init|xPortStartScheduler)\b", code) \
+        if re.search(r"\b(osKernelInitialize|MX_FREERTOS_Init|xPortStartScheduler)\b",
+                     strip_comments(it_text)) \
                 or (self.root / "Middlewares" / "Third_Party" / "FreeRTOS").is_dir():
             raise Fatal(
                 "this project already has FreeRTOS/CMSIS-RTOS in it.\n"
@@ -447,9 +502,9 @@ class Project:
         if tick == "external":
             return  # the user drives os_tick_handler() from their own timer
 
-        # Step 4. SysTick must be free. When the HAL timebase is still SysTick,
-        # CubeMX emits HAL_IncTick() into the handler - two time bases on one
-        # interrupt drift against each other, so this is a stop.
+        # The tick. When the HAL timebase is still SysTick, CubeMX emits
+        # HAL_IncTick() into the handler - two time bases on one interrupt drift
+        # against each other, so this is a stop rather than something to patch.
         body = function_body(it_text, "SysTick_Handler")
         if body is None:
             raise Fatal("no SysTick_Handler in {} - cannot route the tick"
@@ -467,21 +522,27 @@ class Project:
 
 
 # ---------------------------------------------------------------------------
-# Getting the kernel
+# Getting the source
 # ---------------------------------------------------------------------------
 
+def looks_like_ahura(path: Path) -> bool:
+    """A usable AhuraRTOS tree: the kernel and the three templates to copy."""
+    return ((path / "kernel" / "ahura.h").is_file()
+            and (path / "kernel" / "template" / "os_config.h").is_file())
+
+
 @contextlib.contextmanager
-def kernel_source(source: str, ref: str):
-    """Yield a directory that is the kernel/ tree, from wherever it can be had."""
+def repo_source(source: str, ref: str):
+    """Yield a directory that is the AhuraRTOS repository root."""
     if source:
         given = Path(source).expanduser().resolve()
-        for candidate in (given, given / "kernel"):
-            if (candidate / "ahura.h").is_file():
-                yield candidate
-                return
-        raise Fatal("--source {} does not contain a kernel (no ahura.h)".format(source))
+        if looks_like_ahura(given):
+            yield given
+            return
+        raise Fatal("--source {} is not an AhuraRTOS checkout "
+                    "(no kernel/ahura.h in it)".format(source))
 
-    # Running from inside a checkout - tools/install.py next to kernel/.
+    # Running from inside a checkout - tools/install_stm32.py beside kernel/.
     #
     # __file__ is not a reliable signal on its own: piped in as `python -` it is
     # set to the literal string "<stdin>", which resolves against the working
@@ -489,8 +550,8 @@ def kernel_source(source: str, ref: str):
     # an existing file rules that out.
     here = globals().get("__file__")
     if here and Path(here).is_file():
-        local = Path(here).resolve().parent.parent / "kernel"
-        if (local / "ahura.h").is_file():
+        local = Path(here).resolve().parent.parent
+        if looks_like_ahura(local):
             yield local
             return
 
@@ -501,10 +562,10 @@ def kernel_source(source: str, ref: str):
             payload = response.read()
     except (urllib.error.URLError, OSError) as exc:
         raise Fatal(
-            "could not download the kernel: {}\n"
+            "could not download AhuraRTOS: {}\n"
             "  Clone it yourself and point the script at the clone instead:\n"
             "      git clone https://github.com/{}.git\n"
-            "      python install.py --source AhuraRTOS".format(exc, REPO))
+            "      python install_stm32.py --source AhuraRTOS".format(exc, REPO))
 
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
@@ -513,29 +574,19 @@ def kernel_source(source: str, ref: str):
             for member in tar.getmembers():
                 if member.name.startswith("/") or ".." in Path(member.name).parts:
                     raise Fatal("refusing to extract unsafe path from tarball: " + member.name)
-            # filter= is 3.12+; on 3.14 'data' is the default anyway.
             try:
-                tar.extractall(tmp, filter="data")
+                tar.extractall(tmp, filter="data")   # filter= is 3.12+
             except TypeError:
                 tar.extractall(tmp)
         roots = [p for p in Path(tmp).iterdir() if p.is_dir()]
-        if len(roots) != 1 or not (roots[0] / "kernel" / "ahura.h").is_file():
+        if len(roots) != 1 or not looks_like_ahura(roots[0]):
             raise Fatal("downloaded archive does not look like the AhuraRTOS repository")
-        yield roots[0] / "kernel"
-
-
-def looks_like_kernel(path: Path) -> bool:
-    return (path / "ahura.h").is_file() and (path / "core" / "os_kernel.c").is_file()
+        yield roots[0]
 
 
 # ---------------------------------------------------------------------------
 # The plan
 # ---------------------------------------------------------------------------
-
-# The payloads below are written exactly as they will appear in the file,
-# comment markers and all. An earlier version derived the comments from prose
-# by pattern-matching which lines "looked like code", and quietly commented out
-# a set_property() call - so the templates are now literal.
 
 CMAKE_BLOCK = """\
 # Everything the kernel needs from this build lives in this one block, appended after the
@@ -596,57 +647,101 @@ os_init();
 os_start();"""
 
 
-def plan(project: Project, kernel_dir: Path, tick: str, force: bool):
+def verify_placement(it: SourceFile, mc: SourceFile, tick: str):
+    """Prove the calls ended up where they have to be, before anything is written.
+
+    Cheap insurance against a project laid out in some way not seen before: a
+    USER CODE section that turns up somewhere unexpected would otherwise put
+    os_init() outside main() and produce a board that does nothing.
+    """
+    if tick == "systick":
+        body = function_body(it.text, "SysTick_Handler")
+        if body is None or "os_tick_handler" not in strip_comments(body):
+            raise Fatal("os_tick_handler() did not land inside SysTick_Handler in {} - "
+                        "refusing to write a build that would never tick"
+                        .format(it.path.name))
+
+    body = function_body(mc.text, "main")
+    if body is None:
+        raise Fatal("could not find main() in {}".format(mc.path.name))
+    code = strip_comments(body)
+
+    at_init = code.find("os_init()")
+    at_start = code.find("os_start()")
+    if at_init < 0 or at_start < 0:
+        raise Fatal("os_init()/os_start() did not land inside main() in {}"
+                    .format(mc.path.name))
+
+    at_loop = re.search(r"\bwhile[ \t]*\([ \t]*1[ \t]*\)", code)
+    if at_loop and at_init > at_loop.start():
+        raise Fatal("os_init() landed inside the infinite loop in {} - "
+                    "it has to run before it".format(mc.path.name))
+    if at_start < at_init:
+        raise Fatal("os_start() landed before os_init() in {}".format(mc.path.name))
+
+
+def plan(project: Project, repo_dir: Path, tick: str, force: bool, copy_tree: bool):
     """Return (file edits, copy actions, notes) without touching the disk."""
     edits, copies, notes = [], [], []
 
-    kernel_dest = project.root / "AhuraRTOS" / "kernel"
-    copies.append(("kernel", kernel_dir, kernel_dest))
+    ahura_dest = project.root / "AhuraRTOS"
+    if copy_tree:
+        copies.append(("repo", repo_dir, ahura_dest))
+    else:
+        notes.append("AhuraRTOS/ is already in the project - left as it is "
+                     "(--update fetches the current version)")
 
+    # The three files become yours the moment they exist. Each is checked for
+    # individually, so a project missing just one gets just that one.
     for name, dest_dir in (("os_config.h", project.inc_dir),
                            ("os_cb.c", project.src_dir),
                            ("os_main.c", project.src_dir)):
         dest = dest_dir / name
-        if dest.exists() and not force:
-            notes.append("kept your existing {} (use --force-templates to replace it)"
-                         .format(relative(dest, project.root)))
+        if dest.is_file() and not force:
+            notes.append("{} is already there - kept as it is "
+                         "(--force-templates replaces it)".format(relative(dest, project.root)))
         else:
-            copies.append(("template", kernel_dir / "template" / name, dest))
+            copies.append(("template", repo_dir / "kernel" / "template" / name, dest))
 
-    # CMakeLists.txt: append, or refresh in place.
     body = CMAKE_BLOCK.format(
         cfg=relative(project.inc_dir, project.root),
         src=relative(project.src_dir, project.root),
-        kernel=relative(kernel_dest, project.root),
+        kernel=relative(ahura_dest / "kernel", project.root),
         target=project.target,
     )
-    block = managed_block(body, "", comment="cmake")
-    existing = find_managed(project.cmake.text, 0)
-    if existing:
-        project.cmake.text = project.cmake.text[:existing[0]] + block + project.cmake.text[existing[1]:]
-    else:
-        project.cmake.text = project.cmake.text.rstrip("\n") + "\n\n" + block
+    drop_managed(project.cmake)
+    project.cmake.text = project.cmake.text.rstrip("\n") + "\n\n" + managed_block(
+        body, "", comment="cmake")
     if project.cmake.changed:
         edits.append(project.cmake)
 
-    # The interrupt file: include + tick.
+    # Both C files are reconciled, not patched: every managed region comes out
+    # first and is rebuilt at the right anchor. That is what makes a second run
+    # a no-op, and what repairs a file where the calls were moved or where
+    # CubeMX regenerated over the top.
     it = SourceFile(project.it_c)
+    drop_managed(it)
     put_in_user_code(it, "Includes", '#include "ahura.h"')
     if tick == "systick":
         put_in_user_code(it, "SysTick_IRQn 0", TICK_PAYLOAD)
     else:
         notes.append("--tick external: wire os_tick_handler() to your own timer yourself, "
                      "and set OS_CONFIG_TICK_SOURCE_EXTERNAL in os_config.h")
-    if it.changed:
-        edits.append(it)
+    if disable_pendsv(it):
+        notes.append("{} has a CubeMX-generated PendSV_Handler - it will be wrapped in "
+                     "#if 0 (the kernel's port defines that symbol)"
+                     .format(relative(project.it_c, project.root)))
 
-    # main.c: include + boot. USER CODE BEGIN WHILE is the last user section
-    # before the infinite loop, so everything main() sets up has already run.
     mc = SourceFile(project.main_c)
+    drop_managed(mc)
     put_in_user_code(mc, "Includes", '#include "ahura.h"')
     put_in_user_code(mc, "WHILE", BOOT_PAYLOAD, where="start")
-    if mc.changed:
-        edits.append(mc)
+
+    verify_placement(it, mc, tick)
+
+    for src in (it, mc):
+        if src.changed:
+            edits.append(src)
 
     return edits, copies, notes
 
@@ -670,20 +765,19 @@ def apply(edits, copies, root: Path):
     written, created = [], []
     try:
         for kind, src, dest in copies:
-            if kind == "kernel":
+            if kind == "repo":
                 if dest.exists():
-                    if not looks_like_kernel(dest):
+                    if not looks_like_ahura(dest):
                         raise Fatal(
-                            "{} exists but does not look like the kernel (no ahura.h).\n"
-                            "  Refusing to delete it. Move it aside and re-run."
-                            .format(relative(dest, root)))
+                            "{} exists but is not an AhuraRTOS checkout (no\n"
+                            "  kernel/ahura.h in it). Refusing to delete it - move it aside\n"
+                            "  and re-run.".format(relative(dest, root)))
                     # Updating is a replacement, never a merge: a file dropped
                     # upstream would otherwise linger and keep compiling.
                     shutil.rmtree(dest)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(src, dest)
+                shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
                 created.append(dest)
-                print("  kernel  -> {}".format(relative(dest, root)))
+                print("  tree    -> {}".format(relative(dest, root)))
             else:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(src, dest)
@@ -703,7 +797,10 @@ def apply(edits, copies, root: Path):
             src.path.write_bytes(
                 src.original.replace("\n", src.newline).encode(src.encoding))
         for path in created:
-            shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
         raise
 
 
@@ -713,10 +810,9 @@ def apply(edits, copies, root: Path):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        prog="install.py",
+        prog="install_stm32.py",
         description="Install AhuraRTOS into an STM32CubeMX-generated CMake project. "
-                    "Run it from the project root. It never touches the .ioc.",
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+                    "Run it from the project root. It never touches the .ioc.")
     parser.add_argument("--project", default=".", metavar="DIR",
                         help="project root (default: the current directory)")
     parser.add_argument("--app-dir", metavar="DIR",
@@ -727,6 +823,9 @@ def main(argv=None) -> int:
                         help="branch or tag to download (default: main)")
     parser.add_argument("--tick", choices=("systick", "external"), default="systick",
                         help="tick source (default: systick)")
+    parser.add_argument("--update", action="store_true",
+                        help="replace an AhuraRTOS/ already in the project with the "
+                             "current version (otherwise it is left alone)")
     parser.add_argument("--force-templates", action="store_true",
                         help="overwrite an existing os_config.h / os_cb.c / os_main.c")
     parser.add_argument("--dry-run", action="store_true",
@@ -734,7 +833,7 @@ def main(argv=None) -> int:
     parser.add_argument("-y", "--yes", action="store_true",
                         help="do not ask for confirmation")
     parser.add_argument("--uninstall", action="store_true",
-                        help="remove the managed blocks and AhuraRTOS/kernel")
+                        help="remove the managed blocks and the AhuraRTOS directory")
     args = parser.parse_args(argv)
 
     root = Path(args.project).expanduser().resolve()
@@ -745,31 +844,44 @@ def main(argv=None) -> int:
         print("AhuraRTOS installer")
         print("  project   {}".format(root))
         if project.mcu:
-            print("  device    {}{}".format(project.mcu,
-                                            " ({})".format(project.core) if project.core else ""))
+            print("  device    {}{}".format(
+                project.mcu, " ({})".format(project.core) if project.core else ""))
         print("  target    {}".format(project.target))
         print("  sources   {} / {}".format(relative(project.main_c, root),
                                            relative(project.it_c, root)))
         print()
 
         if args.uninstall:
-            edits, copies, notes = plan_uninstall(project), [], []
-            kernel_dest = root / "AhuraRTOS" / "kernel"
-            if kernel_dest.is_dir() and looks_like_kernel(kernel_dest):
-                notes.append("AhuraRTOS/kernel will be deleted")
+            edits, notes = plan_uninstall(project), []
+            if (root / "AhuraRTOS").is_dir() and looks_like_ahura(root / "AhuraRTOS"):
+                notes.append("AhuraRTOS/ will be deleted")
             notes.append("your os_config.h, os_cb.c and os_main.c are left alone - "
                          "they are your files now")
-        else:
-            project.check(args.tick)
-            with kernel_source(args.source, args.ref) as kernel_dir:
-                edits, copies, notes = plan(project, kernel_dir, args.tick, args.force_templates)
+            if not edits and not notes:
+                print("Nothing installed here.")
+                return 0
+            return finish(args, project, root, edits, [], notes)
 
-                if not edits and not copies:
-                    print("Already installed and up to date. Nothing to do.")
-                    return 0
-                return finish(args, project, root, edits, copies, notes, kernel_dir)
+        project.check(args.tick)
 
-        return finish(args, project, root, edits, copies, notes, None)
+        # A project that already carries AhuraRTOS/ has everything needed to
+        # finish - kernel and templates both - so a re-run neither downloads nor
+        # replaces it. That is what makes running this twice free, and what
+        # keeps a second run from resetting a tree you pinned deliberately.
+        # --update is the way to ask for the current version.
+        installed = looks_like_ahura(root / "AhuraRTOS")
+        source = contextlib.nullcontext(root / "AhuraRTOS") \
+            if installed and not args.update and not args.source \
+            else repo_source(args.source, args.ref)
+
+        with source as repo_dir:
+            edits, copies, notes = plan(project, repo_dir, args.tick,
+                                        args.force_templates,
+                                        copy_tree=not installed or args.update or bool(args.source))
+            if not edits and not copies:
+                print("Already installed, and everything is where it should be.")
+                return 0
+            return finish(args, project, root, edits, copies, notes)
 
     except Fatal as exc:
         print("\nerror: {}".format(exc), file=sys.stderr)
@@ -779,14 +891,14 @@ def main(argv=None) -> int:
         return 130
 
 
-def finish(args, project, root, edits, copies, notes, kernel_dir):
+def finish(args, project, root, edits, copies, notes):
     for src in edits:
         print(src.diff(root))
 
     for kind, src, dest in copies:
-        print("  {} {} -> {}".format("copy" if kind == "template" else "tree",
-                                     src.name if kind == "template" else "kernel/",
-                                     relative(dest, root)))
+        print("  {}  {} -> {}".format("tree  " if kind == "repo" else "copy  ",
+                                      "AhuraRTOS" if kind == "repo" else src.name,
+                                      relative(dest, root)))
     for note in notes:
         print("  note: {}".format(note))
     print()
@@ -806,14 +918,13 @@ def finish(args, project, root, edits, copies, notes, kernel_dir):
             return 0
 
     if args.uninstall:
-        kernel_dest = root / "AhuraRTOS" / "kernel"
         apply(edits, [], root)
-        if kernel_dest.is_dir() and looks_like_kernel(kernel_dest):
-            shutil.rmtree(kernel_dest)
-            print("  removed -> {}".format(relative(kernel_dest, root)))
-            with contextlib.suppress(OSError):
-                kernel_dest.parent.rmdir()
-        print("\nUninstalled. os_config.h, os_cb.c and os_main.c were left in place.")
+        ahura = root / "AhuraRTOS"
+        if ahura.is_dir() and looks_like_ahura(ahura):
+            shutil.rmtree(ahura)
+            print("  removed -> {}".format(relative(ahura, root)))
+        print("\nUninstalled. os_config.h, os_cb.c and os_main.c were left in place,")
+        print("and any PendSV_Handler that was disabled is back exactly as it was.")
         return 0
 
     apply(edits, copies, root)

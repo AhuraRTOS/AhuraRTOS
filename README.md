@@ -104,6 +104,38 @@ scheduling and tickless idle.
 Every one of these is described in full, with the mechanism behind it, in the
 [kernel reference](doc/kernel.md).
 
+## Install
+
+On an **STM32CubeMX project generated with the CMake toolchain**, one command
+from the project root - the directory holding `CMakeLists.txt` and the `.ioc` -
+does the whole integration:
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32.py | python -
+```
+
+**Linux and macOS** (bash, zsh):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32.py | python3 -
+```
+
+It prints the exact diff first and asks before writing anything; add
+`--dry-run` to stop after the diff, or `--yes` to skip the question. Nothing is
+saved into your project but the integration itself - the script runs straight
+out of the pipe. Python 3.8+ and nothing else.
+
+Running it twice is free: it checks what is already in place and only fills in
+what is missing, so it is also the repair when CubeMX regenerates over the
+integration. It never touches your `.ioc`, and never overwrites your
+`os_config.h`, `os_cb.c` or `os_main.c` once they exist. `--uninstall` takes it
+all back out.
+
+Any other vendor, IDE or build system - and the same six steps by hand - is
+**[Installation](doc/installation.md)**.
+
 ## Documentation
 
 **[📖 Documentation index](doc/README.md)**
@@ -130,8 +162,9 @@ Every one of these is described in full, with the mechanism behind it, in the
 ```text
 AhuraRTOS/
 ├── doc/        <- the documentation above
-├── kernel/     <- the kernel: core, arch ports, self-test suite
+├── kernel/     <- the kernel: core, arch ports, templates, self-test suite
 ├── examples/   <- one runnable main per feature
+├── tools/      <- install_stm32.py, the one-command CubeMX installer
 ├── LICENSE
 └── README.md   <- this file
 ```

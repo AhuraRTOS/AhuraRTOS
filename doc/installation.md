@@ -45,14 +45,14 @@ If your project came out of STM32CubeMX with the **CMake** toolchain, all six
 steps below are scripted. From the root of your project - the directory holding
 `CMakeLists.txt` and the `.ioc`:
 
-```bash
-# macOS, Linux
-curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install.py | python3 -
-```
-
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install.py | python -
+irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32.py | python -
+```
+
+```bash
+# Linux, macOS
+curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32.py | python3 -
 ```
 
 The script goes straight into Python, so no installer file is left in your
@@ -64,25 +64,47 @@ Options go after the `-`: `--dry-run` stops after the diff, `--yes` skips the
 question, `--uninstall` takes the integration back out.
 
 ```bash
-curl -fsSL .../tools/install.py | python3 - --dry-run
+curl -fsSL .../tools/install_stm32.py | python3 - --dry-run
 ```
 
 With output redirected to a file or a log - CI, a background job - there is
 nobody to answer the question, so it writes nothing and tells you to add
 `--yes`. Python 3.8+ and nothing else; Windows, macOS and Linux alike.
 
-Two things it will not do. It never opens the `.ioc` - that file is CubeMX's
-input, and every fact the script needs is in the generated sources anyway. And
-it never overwrites your `os_config.h`, `os_cb.c` or `os_main.c` once they
-exist; everything else it writes sits between `>>> AhuraRTOS BEGIN` and
-`<<< AhuraRTOS END` markers, so re-running replaces that region and nothing
-else. C edits go inside CubeMX `USER CODE` sections, so regenerating the project
-keeps them.
+### Running it twice
 
-It stops with an explanation, before writing, if the HAL still owns SysTick, if
-something else defines `PendSV_Handler`, or if FreeRTOS is already in the
-project - the three ways this integration goes wrong. The fix is a CubeMX
-checkbox in each case, and the message names it.
+Nothing happens twice. Each run works out what is already in place and fills in
+only what is missing:
+
+| Already there | What the second run does |
+|---|---|
+| `AhuraRTOS/` | left exactly as it is - `--update` replaces it with the current version |
+| `os_config.h`, `os_cb.c`, `os_main.c` | kept, never overwritten - they are yours the moment they exist |
+| the CMake block, the tick, the boot calls | rebuilt at the correct anchor, so a call that was moved or lost comes back |
+
+With everything in place it does no work and no network access at all, and says
+so. That last row is also the repair: if CubeMX regenerates over the
+integration, or someone deletes a block by hand, running the command again puts
+it back where it belongs.
+
+### What it will not do
+
+It never opens the `.ioc` - that file is CubeMX's input, and every fact the
+script needs is in the generated sources anyway. It never overwrites the three
+files that become yours. And nothing it disables is lost: a CubeMX-generated
+`PendSV_Handler` is wrapped in `#if 0` rather than deleted, because the kernel's
+port defines that symbol and two definitions are a link error. `--uninstall`
+restores it verbatim.
+
+That last one is the single edit outside a CubeMX `USER CODE` section, since
+CubeMX owns the function and offers no section inside it - so regenerating
+brings the stub back, and re-running the installer disables it again. To stop it
+being generated at all: **NVIC → Code generation →** uncheck *Generate IRQ
+handler* for *Pendable request for system service*.
+
+It stops with an explanation, before writing, if the HAL still owns SysTick or
+if FreeRTOS is already in the project. The fix is a CubeMX checkbox in both
+cases, and the message names it.
 
 The rest of this page is the same procedure by hand, and the reference for what
 the script did.
