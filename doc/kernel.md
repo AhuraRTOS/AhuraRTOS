@@ -137,9 +137,9 @@ are the only two places the kernel touches the device.
 
    | Copy this template | into the project as | and add it to |
    |---|---|---|
-   | [`os_config_template.h`](../kernel/os_config_template.h) | `os_config.h` | nothing (it is a header) |
-   | [`os_cb_template.c`](../kernel/os_cb_template.c) | `os_cb.c` | the **application** build |
-   | [`os_main_template.c`](../kernel/os_main_template.c) | `os_main.c` | the **application** build |
+   | [`template/os_config.h`](../kernel/template/os_config.h) | `os_config.h` | nothing (it is a header) |
+   | [`template/os_cb.c`](../kernel/template/os_cb.c) | `os_cb.c` | the **application** build |
+   | [`template/os_main.c`](../kernel/template/os_main.c) | `os_main.c` | the **application** build |
 
    The kernel deliberately compiles none of the three. `os_config.h` is the
    application's configuration, and `os_cb.c` / `os_main.c` hold application
@@ -249,7 +249,7 @@ Projects never edit kernel files, and the kernel ships no editable configuration
 of its own. The application owns the one and only config file, following the
 same model as `FreeRTOSConfig.h`:
 
-1. Copy `AhuraRTOS/kernel/os_config_template.h` into the project as `os_config.h`.
+1. Copy `AhuraRTOS/kernel/template/os_config.h` into the project as `os_config.h`.
    Any directory works. Every option is active at its default value, so adjust
    values in place.
 2. Make that directory visible to the **kernel library build**, not just the
@@ -953,10 +953,10 @@ error rather than a task that silently idles. It is deliberately **not** a `_cb`
 function: this is where the application's own code runs, not a kernel query for
 platform behavior.
 
-Override it with its own template, separate from `os_cb_template.c`. Copy
-`AhuraRTOS/kernel/os_main_template.c` into the project as `os_main.c`, add it to the
+Override it with its own template, separate from `template/os_cb.c`. Copy
+`AhuraRTOS/kernel/template/os_main.c` into the project as `os_main.c`, add it to the
 **application** build (never to the kernel, where it is deliberately absent from
-the CMakeLists, just like `os_cb_template.c`), and replace `os_main()`'s body
+the CMakeLists, just like `template/os_cb.c`), and replace `os_main()`'s body
 with the application's own code. That can be a plain `while (1)` loop, or it can
 spawn further tasks. Two config options size the task:
 
@@ -1418,7 +1418,7 @@ void os_stack_overflow_cb(const char *task_name);   /* you define it; no kernel 
 
 The kernel ships no default for it, so a build with the check enabled and no
 callback is a link error rather than an overflow detector reporting to nobody -
-same rule as `os_assert_failed_cb`. Copy the definition from `os_cb_template.c`.
+same rule as `os_assert_failed_cb`. Copy the definition from `template/os_cb.c`.
 
 and then parks the core, exactly as a failed `OS_ASSERT` does - there is no
 attempt to continue, because memory outside the task has already been written
@@ -1582,7 +1582,7 @@ Application hooks carry the `_cb` suffix. Most are weak, so overriding them is
 optional and the kernel's default applies otherwise; a few have no default at all
 because a silent one would hide the very thing the hook exists to report, and
 those are link errors until the application supplies them. For a clean starting
-point, copy `AhuraRTOS/kernel/os_cb_template.c` into the application source tree as
+point, copy `AhuraRTOS/kernel/template/os_cb.c` into the application source tree as
 `os_cb.c`, add it to the **application** build (never to the kernel, where the
 template is deliberately absent from the CMakeLists), and adapt:
 
@@ -1851,7 +1851,7 @@ Three things have to line up, and the build says clearly if any is missing:
    **the suite defines it itself**, because testing the log means inspecting
    what the kernel actually emitted, so it captures into a buffer it can search.
    A second definition in the application's `os_cb.c` is a duplicate-symbol link
-   error, which is why `os_cb_template.c` guards its copy with:
+   error, which is why `template/os_cb.c` guards its copy with:
 
    ```c
    #if (OS_CONFIG_LOG_ENABLE == 1U) && (OS_CONFIG_TEST_ENABLE == 0U)
@@ -1993,17 +1993,17 @@ so copy any of them over the project's `os_main.c` to see it run.
   reserved for callbacks the kernel queries for platform behavior, such as
   `os_tickless_pre_sleep_cb`, whereas `os_main()` and `os_test()` are where the
   application's or suite's own code runs.
-- `os_config_template.h` is the template for the application's `os_config.h`. It
+- `template/os_config.h` is the template for the application's `os_config.h`. It
   lists every build-time option at its default value - see
   [Configuration](#configuration) for the full table. This file is never
   included by the kernel, so copy it into the project. Disabling a feature
   compiles out its code and API, and disabling timer, work, the default task, or
   the self-test task also removes the corresponding kernel service task and its
   stack.
-- `os_cb_template.c` is the template for the application-side callbacks, and is
+- `template/os_cb.c` is the template for the application-side callbacks, and is
   deliberately not compiled into the kernel. See [Application
   callbacks](#application-callbacks).
-- `os_main_template.c` is the template for the default application task's body,
+- `template/os_main.c` is the template for the default application task's body,
   also deliberately not compiled into the kernel. See [Default application
   task](#default-application-task).
 - `test/` holds the kernel self-test suite (`os_test.c`), its own buildable

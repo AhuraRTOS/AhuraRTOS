@@ -349,7 +349,7 @@ void os_tickless_idle_process(void)
  * suppressed sleep short at that source's period, which looks like tickless idle simply not
  * working. Requiring real definitions turns that into a link error naming the missing function.
  *
- * Write them in the application's callback file (see os_cb_template.c) whenever tickless idle is
+ * Write them in the application's callback file (see template/os_cb.c) whenever tickless idle is
  * enabled. */
 
 #endif /* OS_CONFIG_TICKLESS_ENABLE */

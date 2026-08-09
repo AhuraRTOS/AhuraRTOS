@@ -15,7 +15,7 @@
  *
  * Copy this file into the application source tree as os_main.c to run it. Needs
  * OS_CONFIG_LOG_ENABLE=1 in os_config.h, and the application must define
- * os_log_output_cb() (see os_cb_template.c) or the output goes nowhere.
+ * os_log_output_cb() (see template/os_cb.c) or the output goes nowhere.
  *
  * @copyright (c) 2026 Ahura Project Contributors
  *            SPDX-License-Identifier: MIT

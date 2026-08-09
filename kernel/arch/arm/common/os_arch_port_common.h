@@ -27,13 +27,13 @@
 
 /*
  * The application provides the kernel configuration: copy
- * ahura_kernel/os_config_template.h into the project as os_config.h
+ * kernel/template/os_config.h into the project as os_config.h
  * and make its directory visible to the kernel build (OS_CONFIG_DIR in
  * CMake, see the README "Configuration" section).
  */
 #if defined(__has_include)
 #if !__has_include("os_config.h")
-#error "No os_config.h found: copy ahura_kernel/os_config_template.h into your project as os_config.h and put its directory on the kernel include path (OS_CONFIG_DIR)."
+#error "No os_config.h found: copy kernel/template/os_config.h into your project as os_config.h and put its directory on the kernel include path (OS_CONFIG_DIR)."
 #endif
 #endif
 
@@ -41,7 +41,7 @@
 
 /* Reject incomplete configurations: a missing option would otherwise read
  * as 0 in #if directives and silently disable or misconfigure features.
- * Start from os_config_template.h, which lists every required option. */
+ * Start from template/os_config.h, which lists every required option. */
 #if !defined(OS_CONFIG_MUTEX_ENABLE) || !defined(OS_CONFIG_SEMAPHORE_ENABLE) ||                        \
     !defined(OS_CONFIG_QUEUE_ENABLE) || !defined(OS_CONFIG_EVENT_ENABLE) ||                            \
     !defined(OS_CONFIG_TIMER_ENABLE) || !defined(OS_CONFIG_WORK_ENABLE) ||                             \
@@ -70,7 +70,7 @@
     !defined(OS_CONFIG_TICKLESS_ENABLE) ||                                                             \
     !defined(OS_CONFIG_TICKLESS_MIN_IDLE) || !defined(OS_CONFIG_LPTIM_CLOCK_HZ) ||                     \
     !defined(OS_CONFIG_MAX_SUPPRESSED_TICKS)
-#error "os_config.h is incomplete: it must define every option listed in ahura_kernel/os_config_template.h."
+#error "os_config.h is incomplete: it must define every option listed in kernel/template/os_config.h."
 #endif
 
 #if (OS_CONFIG_CORE_COUNT < 1U)
@@ -91,7 +91,7 @@
  * something. The three below are different in kind: each is a NAME or a
  * yes/no diagnostic that the kernel can default correctly on its own, and a
  * missing one is caught by #ifndef rather than misread as 0. They are
- * documented in os_config_template.h, so a config copied from the template
+ * documented in template/os_config.h, so a config copied from the template
  * carries them, but an older config that predates them still builds and
  * behaves exactly as it did before.
 */
@@ -1255,7 +1255,7 @@ static inline uint32_t os_arch_core_id_get(void)
  * the spinlock's memory is not Shareable-mapped - STREX then only excludes
  * within one core and the built-in backend would silently stop locking
  * across cores. See the OS_CONFIG_CORE_COUNT precondition notes in
- * os_config_template.h.
+ * template/os_config.h.
  */
 #define OS_ARCH_SPINLOCK_USE_CB  ((OS_ARCH_HAS_EXCLUSIVES == 0) || (OS_CONFIG_SPINLOCK_SOC_BACKEND != 0))
 

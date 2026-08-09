@@ -73,9 +73,9 @@ code and keep `HAL_Delay()` for driver init that runs before `os_start()`.
 ## 4. Copy the three files
 
 ```bash
-cp AhuraRTOS/kernel/os_config_template.h Core/Inc/os_config.h
-cp AhuraRTOS/kernel/os_cb_template.c     Core/Src/os_cb.c
-cp AhuraRTOS/kernel/os_main_template.c   Core/Src/os_main.c
+cp AhuraRTOS/kernel/template/os_config.h Core/Inc/os_config.h
+cp AhuraRTOS/kernel/template/os_cb.c     Core/Src/os_cb.c
+cp AhuraRTOS/kernel/template/os_main.c   Core/Src/os_main.c
 ```
 
 `Core/Inc` and `Core/Src` are only a convention - CubeMX never overwrites files

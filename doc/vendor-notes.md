@@ -51,7 +51,7 @@ The thing to get right on these parts is the tick. SysTick does not run when the
 CPU sleeps, so anything using the low-power modes these devices are chosen for
 will lose time. Set `OS_CONFIG_TICK_SOURCE_EXTERNAL` and drive
 `os_tick_handler()` from an RTC peripheral instead, as Nordic's own software
-does - `os_cb_template.c` has the skeleton.
+does - `template/os_cb.c` has the skeleton.
 
 If a SoftDevice is present, note that it owns the top of the vector table and
 forwards the lower SVC range to the application. That is not a problem here,

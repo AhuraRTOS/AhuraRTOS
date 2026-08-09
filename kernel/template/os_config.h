@@ -1,5 +1,5 @@
 /**
- * @file os_config_template.h
+ * @file os_config.h
  * @brief Template for the application's os_config.h - every kernel option at its default value.
  *
  * NOT included by the kernel: copy it into the application source tree as os_config.h, adjust the
@@ -146,7 +146,7 @@
 */
 
 /* os_init() unconditionally creates and starts a default application task running os_main(),
- * which the application must define in its own os_main.c (copied from os_main_template.c) -
+ * which the application must define in its own os_main.c (copied from kernel/template/os_main.c) -
  * the kernel ships no stub, so a missing one is a link error. See the README "Default
  * application task" section. Not created when OS_CONFIG_TEST_ENABLE (PART 2) is 1: the
  * self-test task runs alone instead, and no os_main.c is needed at all.
@@ -496,7 +496,7 @@
  * Number of cores that schedule tasks (max 31). Each runs its own PendSV and idle task and pulls
  * from the shared ready lists honoring core_affinity; core 0 owns the time base, and secondary
  * cores enter through os_core_start(). The SoC layer must supply os_arch_core_id_get_cb(), the IPI
- * callback, and - on cores without LDREX/STREX - the spinlock callbacks. See os_cb_template.c.
+ * callback, and - on cores without LDREX/STREX - the spinlock callbacks. See os_cb.c.
  *
  * Two preconditions the kernel cannot verify, both SoC properties, before setting this above 1:
  *
@@ -523,7 +523,7 @@
  * this when your SoC's interconnect has no GLOBAL exclusive monitor for the
  * spinlock's memory, or that memory cannot be marked Shareable (see the
  * OS_CONFIG_CORE_COUNT precondition notes above); implement
- * os_arch_spinlock_acquire_cb/_release_cb (os_cb_template.c) against your
+ * os_arch_spinlock_acquire_cb/_release_cb (os_cb.c) against your
  * SoC's hardware semaphore in that case. Only meaningful when
  * OS_CONFIG_CORE_COUNT > 1; keep 0 on single-core builds.
  */

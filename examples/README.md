@@ -31,7 +31,7 @@ What each API actually guarantees is documented in the
 
 The kernel calls `os_main()` from the default application task that `os_init()`
 creates for you, and the application supplies that function in its own
-`os_main.c` (copied from `os_main_template.c` during installation). Every file
+`os_main.c` (copied from `template/os_main.c` during installation). Every file
 here defines exactly that function - so running an example is replacing one file
 and rebuilding. Nothing is added to the build, and nothing is removed from it.
 
@@ -95,7 +95,7 @@ order to follow and no state carried between them.
 
 All of them live in [`kernel/`](kernel/). "Needs" is the `os_config.h` switch
 the file requires; every one of those is already `1` in
-`os_config_template.h`, so the default configuration runs every example except
+`template/os_config.h`, so the default configuration runs every example except
 where noted. "Tasks" is how many tasks the example creates on top of the
 default application task.
 
@@ -147,7 +147,7 @@ Switch names are short here: `MUTEX` means `OS_CONFIG_MUTEX_ENABLE`, and so on.
 
 ## Configuration they assume
 
-The stock `os_config_template.h` runs every example as-is. If you have edited
+The stock `template/os_config.h` runs every example as-is. If you have edited
 yours, three values matter:
 
 | Option | Needed | Why |
@@ -160,7 +160,7 @@ Two examples need something beyond a switch:
 
 - **`os_main_log.c`** needs `os_log_output_cb()` defined in your `os_cb.c`, or
   the log goes nowhere and the example looks broken while working perfectly.
-  `os_cb_template.c` has the definition to copy.
+  `template/os_cb.c` has the definition to copy.
 - **`os_main_queue.c`** runs its static half with `OS_CONFIG_ALLOC_ENABLE` at
   `0`, but the dynamic half needs the kernel heap.
 

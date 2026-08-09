@@ -94,7 +94,7 @@ target_include_directories(ahura_kernel PUBLIC
 
 # Application configuration: set OS_CONFIG_DIR (before add_subdirectory, or as
 # a cache variable) to the directory holding the project's os_config.h —
-# copied from os_config_template.h; the project layout does not matter,
+# copied from template/os_config.h; the project layout does not matter,
 # any directory works. PUBLIC so the kernel library and everything linking it
 # see the exact same configuration — a mismatch would silently change
 # structure sizes.
@@ -103,19 +103,22 @@ if(OS_CONFIG_DIR)
 else()
 	message(WARNING
 		"OS_CONFIG_DIR is not set: the Ahura kernel needs the directory containing "
-		"your os_config.h (copy ahura_kernel/os_config_template.h). Set it "
+		"your os_config.h (copy kernel/template/os_config.h). Set it "
 		"before add_subdirectory(ahura_kernel), or add the directory to the "
 		"ahura_kernel target include paths yourself.")
 endif()
 
-# Note: the template files are deliberately NOT part of this build.
-# - os_config_template.h: headers are never compiled; copy it into the
+# Note: the files under template/ are deliberately NOT part of this build.
+# They sit in a directory of their own precisely because nothing here
+# compiles them: the source list above names every file individually, so a
+# template cannot be swept into the library by a stray glob later.
+# - template/os_config.h: headers are never compiled; copy it into the
 #   application as os_config.h (see OS_CONFIG_DIR above).
-# - os_cb_template.c: copy it into the application source tree as os_cb.c
+# - template/os_cb.c: copy it into the application source tree as os_cb.c
 #   and add it to the APPLICATION build; its functions override the
 #   kernel's weak _cb defaults (platform clock, tickless sleep, TrustZone,
 #   multi-core SoC glue).
-# - os_main_template.c: copy it into the application source tree as
+# - template/os_main.c: copy it into the application source tree as
 #   os_main.c and add it to the APPLICATION build; it defines os_main() -
 #   the default application task's body (not a "_cb" function: this is
 #   where the application's own code runs). Task creation itself is

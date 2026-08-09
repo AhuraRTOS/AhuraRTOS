@@ -43,7 +43,7 @@ Three things have to line up:
 3. **Let the suite own `os_log_output_cb`** (only matters when
    `OS_CONFIG_LOG_ENABLE` is 1). The suite defines that callback itself, because
    testing the log means inspecting what the kernel actually emitted, so your
-   `os_cb.c` copy must step aside. The current `os_cb_template.c` already does
+   `os_cb.c` copy must step aside. The current `template/os_cb.c` already does
    this for you with:
 
    ```c

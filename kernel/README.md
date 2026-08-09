@@ -9,9 +9,10 @@ kernel/
 ├── core/                   <- portable C11: scheduler, sync/IPC, timers, memory, log
 ├── arch/arm/               <- the port layer, one directory per Cortex-M core
 ├── test/                   <- the self-test suite, built as a separate os_test library
-├── os_config_template.h    <- copy into your project as os_config.h
-├── os_cb_template.c        <- copy into your project as os_cb.c
-├── os_main_template.c      <- copy into your project as os_main.c
+├── template/               <- the three files you copy into your project
+│   ├── os_config.h         <- copy into your project as os_config.h
+│   ├── os_cb.c             <- copy into your project as os_cb.c
+│   └── os_main.c           <- copy into your project as os_main.c
 └── CMakeLists.txt          <- builds the ahura_kernel library
 ```
 

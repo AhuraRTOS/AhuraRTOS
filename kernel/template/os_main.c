@@ -1,8 +1,8 @@
 /**
- * @file os_main_template.c
+ * @file os_main.c
  * @brief Template for the application's default task body.
  *
- * NOT part of the kernel build (like os_cb_template.c): copy this file into the application source
+ * NOT part of the kernel build (like os_cb.c): copy this file into the application source
  * tree as os_main.c, add it to the APPLICATION build, and write the application's own code inside
  * os_main(). Its prototype is already in ahura.h.
  *

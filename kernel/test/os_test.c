@@ -480,7 +480,7 @@ static void      test_stress_timer_churn(void);
  *
  * The suite has to define this itself - there is no way to test the log without seeing what the
  * kernel actually emitted - which means the APPLICATION must not also define it in a test build,
- * or the two collide at link time. os_cb_template.c guards its copy with
+ * or the two collide at link time. template/os_cb.c guards its copy with
  * (OS_CONFIG_TEST_ENABLE == 0U) for exactly this reason; a project whose os_cb.c predates that
  * guard needs the same condition adding.
  *

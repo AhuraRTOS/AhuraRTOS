@@ -1,5 +1,5 @@
 /**
- * @file os_cb_template.c
+ * @file os_cb.c
  * @brief Template for the application-side kernel callbacks (_cb functions).
  *
  * NOT part of the kernel build, and it must never be added to it: copy this file into the

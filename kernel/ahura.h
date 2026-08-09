@@ -24,7 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 /* os_arch_port.h includes and validates the application's os_config.h
- * (copy ahura_kernel/os_config_template.h, see README "Configuration"). */
+ * (copy kernel/template/os_config.h, see README "Configuration"). */
 #include "os_arch_port.h"
 
 #ifdef __cplusplus
@@ -371,7 +371,7 @@ bool os_kernel_is_running(void);
 /**
  * @brief Default application task body (see OS_CONFIG_MAIN_TASK_* in os_config.h). os_init()
  *        creates and starts this task automatically, so the application must define it: copy
- *        os_main_template.c into the project as os_main.c (see README "Default application
+ *        template/os_main.c into the project as os_main.c (see README "Default application
  *        task"). The kernel ships no stub, so a missing definition is a link error rather than
  *        a task that silently does nothing. Not a "_cb" hook: this is where the application's
  *        own code runs, not a kernel query for platform behavior.
@@ -471,7 +471,7 @@ uint32_t os_tick_get(void);
  *                      two fight over the same interrupt (see the kernel README).
  *
  *   EXTERNAL           The application's own timer ISR calls it, having started that timer in
- *                      os_arch_tick_init_cb(). See os_cb_template.c.
+ *                      os_arch_tick_init_cb(). See template/os_cb.c.
  *
  * Give the tick interrupt the lowest priority the device offers. It drives preemption, so it
  * should never itself preempt an application interrupt.
@@ -1373,7 +1373,7 @@ void os_assert_failed(const char *file, uint32_t line);
 /******************************************************************************************************/
 /**
  * @brief Application hook for a failed assertion: record or print the location before the
- *        kernel halts. The application must define it (see os_cb_template.c) - the kernel
+ *        kernel halts. The application must define it (see template/os_cb.c) - the kernel
  *        ships no stub, because a silent one would leave an assertion with nothing to report.
  *        Runs with the failure's own context still intact, so keep it short and do not expect
  *        to return from the assertion.

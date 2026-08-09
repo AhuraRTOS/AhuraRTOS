@@ -110,7 +110,7 @@ Every one of these is described in full, with the mechanism behind it, in the
 
 | Getting it running | |
 |---|---|
-| [Installation](doc/installation.md) | The six-step procedure, for any vendor, IDE and build system |
+| [Installation](doc/installation.md) | The six-step procedure, for any vendor, IDE and build system - and the [one command](doc/installation.md#on-stm32cubemx-in-one-command) that does all six on a CubeMX project |
 | [Vendor notes](doc/vendor-notes.md) | The one thing that differs per vendor, and what to do about it |
 | [STM32CubeMX / CubeIDE](doc/stm32cubemx.md) | The same steps on real hardware, checkbox by checkbox |
 | [Self-test suite](doc/self-test.md) | Prove a fresh port before writing anything on top of it |

@@ -26,6 +26,7 @@ being able to see the files.
 
 ## Contents
 
+[On STM32CubeMX, in one command](#on-stm32cubemx-in-one-command) ·
 [1. Get the source](#step-1---get-the-source) ·
 [2. Copy three files](#step-2---copy-three-files-into-your-project) ·
 [3. Add the kernel to the build](#step-3---add-the-kernel-to-the-build) ·
@@ -35,6 +36,46 @@ being able to see the files.
 [If it does not build](#if-it-does-not-build) ·
 [Keeping it up to date](#keeping-the-kernel-up-to-date) ·
 [Next steps](#next-steps)
+
+---
+
+## On STM32CubeMX, in one command
+
+If your project came out of STM32CubeMX with the **CMake** toolchain, all six
+steps below are scripted. From the root of your project - the directory holding
+`CMakeLists.txt` and the `.ioc`:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install.py
+python install.py
+```
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install.py -OutFile install.py
+python install.py
+```
+
+It prints the exact diff it wants to apply and asks before writing anything.
+`--dry-run` stops after the diff, `--yes` skips the question, and `--uninstall`
+takes the integration back out. Python 3.8+ and nothing else; Windows, macOS and
+Linux alike.
+
+Two things it will not do. It never opens the `.ioc` - that file is CubeMX's
+input, and every fact the script needs is in the generated sources anyway. And
+it never overwrites your `os_config.h`, `os_cb.c` or `os_main.c` once they
+exist; everything else it writes sits between `>>> AhuraRTOS BEGIN` and
+`<<< AhuraRTOS END` markers, so re-running replaces that region and nothing
+else. C edits go inside CubeMX `USER CODE` sections, so regenerating the project
+keeps them.
+
+It stops with an explanation, before writing, if the HAL still owns SysTick, if
+something else defines `PendSV_Handler`, or if FreeRTOS is already in the
+project - the three ways this integration goes wrong. The fix is a CubeMX
+checkbox in each case, and the message names it.
+
+The rest of this page is the same procedure by hand, and the reference for what
+the script did.
 
 ---
 
@@ -77,9 +118,9 @@ configuration. Their locations do not matter, only that the build can see them.
 
 | Copy this template | into your project as | and add it to |
 |---|---|---|
-| `AhuraRTOS/kernel/os_config_template.h` | `os_config.h` | nothing - it is a header |
-| `AhuraRTOS/kernel/os_cb_template.c` | `os_cb.c` | your **application** build |
-| `AhuraRTOS/kernel/os_main_template.c` | `os_main.c` | your **application** build |
+| `AhuraRTOS/kernel/template/os_config.h` | `os_config.h` | nothing - it is a header |
+| `AhuraRTOS/kernel/template/os_cb.c` | `os_cb.c` | your **application** build |
+| `AhuraRTOS/kernel/template/os_main.c` | `os_main.c` | your **application** build |
 
 `os_config.h` is every build-time option at its default value - edit it in
 place, and do not delete options: a missing one would read as `0` in an `#if`
@@ -284,7 +325,7 @@ Then, either way, two things to check afterwards:
    only helpful if you know to look:
 
    ```bash
-   diff AhuraRTOS/kernel/os_config_template.h Core/Inc/os_config.h
+   diff AhuraRTOS/kernel/template/os_config.h Core/Inc/os_config.h
    ```
 
    Add any new `#define` to your `os_config.h`; leave your edited values alone.
@@ -293,7 +334,7 @@ Then, either way, two things to check afterwards:
    fastest confirmation that the new kernel still agrees with your port, your
    tick and your callbacks.
 
-If `os_cb_template.c` grew a callback you do not have, the link error names it.
+If `template/os_cb.c` grew a callback you do not have, the link error names it.
 
 ## Next steps
 
