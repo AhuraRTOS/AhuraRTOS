@@ -15,23 +15,26 @@ others follow on the same interface, without touching the core.
 > self-testing across the Cortex-M range, but APIs may still change, and no
 > other architecture is ported yet. Not yet recommended for production use.
 
-This repository is the project umbrella, covering the overview, roadmap, and
-licensing. The kernel itself lives in
+This repository is the project umbrella: **what AhuraRTOS is, and how to install
+it.** The kernel itself lives in
 [`ahura_kernel`](https://github.com/AhuraRTOS/ahura_kernel) and is included here
 as the `kernel` submodule.
 
-📖 **For API details, configuration, and integration steps, see the
+📖 **How the kernel works - the scheduler, the context switch, every API, every
+configuration option - is documented in the
 [kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md).
-That is the authoritative reference.** (In a local clone it is `kernel/README.md`,
-once `git submodule update --init` has fetched it.)
+That is the authoritative reference.** (In a local clone it is
+`kernel/README.md`, once `git submodule update --init` has fetched it.) This
+page keeps the kernel description brief and spends its length on installation.
 
 ---
 
 ## Contents
 
-[Highlights](#highlights) ·
+[What you get](#what-you-get) ·
 [Installation](#installation)
 ([general](#general---any-platform-any-toolchain) ·
+[vendor notes](#vendor-notes) ·
 [STM32Cube](#stm32cubemx--stm32cubeide---step-by-step)) ·
 [Running the self-test suite](#running-the-self-test-suite) ·
 [Repository layout](#repository-layout) ·
@@ -42,99 +45,55 @@ once `git submodule update --init` has fetched it.)
 
 ---
 
-## Highlights
+## What you get
 
-### Scheduling
+A summary. Every line here is covered in depth in the
+[kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md).
 
-- **Preemptive, priority-based scheduler.** O(1) list-based scheduling with one
-  FIFO ready list per priority, a ready bitmap for O(1) next-task lookup, and
-  round-robin among equal priorities.
-- **31 priority levels**, with the idle task and the kernel service tasks at
-  reserved ends of the range. The kernel's own service tasks refuse `os_task_pause`
-  and `os_task_delete`, so an application cannot stop the timer, work or log
-  service out from under the APIs built on it.
-- **Configurable time slice.** `OS_CONFIG_TIME_SLICE_TICKS` sets how long a task
-  holds the CPU before an equal-priority peer takes over - every tick by default,
-  or 0 to turn rotation off entirely. Longer slices mean proportionally fewer
-  context switches, and a tick that would only have rotated costs a bitmap check
-  instead of a full context-switch round trip.
-- **Scheduler lock.** `os_kernel_lock()` defers preemption *without masking a
-  single interrupt*, which is what a critical section cannot do: the tick and
-  every driver keep running, and only the scheduler is held back until the
-  outermost unlock. The right barrier for task-to-task data; interrupt-shared
-  data still wants a critical section.
+**Scheduling.** A preemptive, priority-based scheduler with 31 priority levels,
+O(1) list-based ready queues (one FIFO list per priority plus a ready bitmap),
+and round-robin among equal priorities with a configurable time slice. Plus a
+scheduler lock that defers preemption *without masking a single interrupt* -
+the barrier a critical section cannot be.
 
-### Synchronization and IPC
+**Synchronization and IPC.** Mutexes with always-on priority inheritance,
+counting semaphores, queues, events, and a lightweight per-task notification
+mailbox - all with `timeout_ms` waits: try once, wait a while, or wait forever.
 
-- **Mutexes with priority inheritance**, always on rather than opt-in. A lower-
-  priority owner is boosted to the priority of the task waiting on it, and the
-  accounting stays correct even when one task holds several contended mutexes at
-  once.
-- **Counting semaphores, queues, and events**, all with `timeout_ms`
-  waits: try once, wait a while, or wait forever.
-- **Task notifications.** A lightweight single-value mailbox built into each
-  task's own control block, so one task or an ISR can signal a specific task
-  without allocating a separate object.
+**Time and deferred work.** One-shot and periodic software timers and a
+deferrable work queue, each on its own kernel service task, so callbacks run in
+task context rather than in the tick interrupt. Millisecond, second and
+cycle-accurate microsecond delays.
 
-### Time and deferred work
+**Memory and diagnostics.** An optional first-fit kernel heap with coalescing
+over a static array (nothing is taken from the linker heap), stack watermarking,
+stack-overflow detection, and CPU-load sampling. No dynamic allocation anywhere
+in the kernel itself - every object is a statically sized array.
 
-- **Software timers** (one-shot and periodic) and a **deferrable work queue**,
-  each running on its own dedicated kernel service task, so callbacks and
-  handlers run in task context rather than in the tick interrupt.
-- Millisecond, second, and cycle-accurate microsecond delays.
+**Portability.** ARMv6-M through ARMv8.1-M (M0, M0+, M3, M4, M7, M23, M33, M35P,
+M52, M55, M85) across just three shared port implementations, with TrustZone
+support on ARMv8-M and experimental multi-core scheduling. No mandatory HAL or
+CMSIS dependency. Other architectures - RISC-V, Xtensa - are planned on the same
+port interface.
 
-### Memory and diagnostics
+**A one-vector footprint.** The kernel takes over PendSV and nothing else. `SVC`
+is left entirely to the application, which keeps the kernel compatible with
+everything that legitimately wants it: Nordic's SoftDevice, TF-M and other
+secure firmware, vendor bootloaders and ROM APIs. The tick is a single
+application call, and its timer is configurable, so parts whose SysTick stops in
+low-power modes are first-class rather than special cases.
 
-- **Optional kernel heap.** A first-fit allocator over a static array, with an
-  address-ordered free list and coalescing of adjacent blocks, compiled out
-  entirely when unused. Nothing is taken from the linker heap.
-- **Stack watermarking and CPU-load sampling**, both opt-in and close to free at
-  runtime.
+**Misintegration fails loudly.** The kernel checks at boot that the vector table
+really routes PendSV to it, and traps at the cause if not. The alternative - the
+usual one - is a board that reaches `os_start()` and stops dead with no fault
+and nothing to attach a debugger to.
 
-### Portability
-
-- **Architecture-independent core.** Scheduler, IPC, timers, work queue and heap
-  are plain portable C. A port supplies only what the CPU decides: the context
-  switch, the tick, the critical-section mask, the atomic operations, and the
-  low-power hooks. Nothing above that layer knows which CPU it is running on.
-- **A one-vector footprint.** The kernel takes over PendSV and nothing else.
-  `SVC` is left entirely to the application - the first task starts through
-  PendSV instead - which keeps the kernel compatible with everything that
-  legitimately wants `SVC` for itself: Nordic's SoftDevice, TF-M and other
-  secure firmware, vendor bootloaders and ROM APIs. The tick is a single
-  application call, and its timer is configurable, so parts whose SysTick stops
-  in low-power modes are first-class rather than special cases.
-- **Misintegration fails loudly.** The kernel checks at boot that the vector
-  table really routes PendSV to it, and traps at the cause if not. The
-  alternative - the usual one - is a board that reaches `os_start()` and stops
-  dead with no fault and nothing to attach a debugger to.
-- **Broad Cortex-M coverage today.** ARMv6-M through ARMv8.1-M (M0, M0+, M3, M4,
-  M7, M23, M33, M35P, M52, M55, M85) across just three shared port
-  implementations - evidence that the port interface is small enough for one
-  file to serve a whole architecture family.
-- **Where the instruction set differs, the port decides.** Cores with exclusive
-  load/store get lock-free atomics; cores without them fall back to a critical
-  section. Both are inside the port, so the API and its behaviour are identical
-  either way.
-- **Other architectures planned**, RISC-V and Xtensa (ESP32) first. See the
-  roadmap below.
-- **TrustZone support on ARMv8-M**, in secure, non-secure, or disabled mode,
-  with application callbacks for banking secure contexts.
-- **Multi-core scheduling (experimental).** Per-task core affinity across shared
-  ready lists, though it has not yet run on real multi-core silicon.
-- **No mandatory HAL or CMSIS dependency.**
-
-### Build and verification
-
-- **Single public header** (`ahura.h`) and a single application-owned config
-  file (`os_config.h`, copied from a template). The kernel ships no
-  configuration of its own.
-- **Every feature is a compile-time switch.** `OS_CONFIG_<FEATURE>_ENABLE`
-  removes unused code, RAM, and API surface entirely, not just at runtime.
-- **Built-in self-test suite.** A standalone module that exercises every enabled
-  feature and reports PASS/FAIL over `printf`, so a board bring-up can validate
-  the port with no application code at all. It finishes with a cycle-accurate
-  benchmark table covering every hot kernel path.
+**Build and verification.** A single public header (`ahura.h`) and a single
+application-owned config file (`os_config.h`, copied from a template); the
+kernel ships no configuration of its own. Every feature is a compile-time switch
+that removes code, RAM and API surface entirely. And a built-in self-test suite
+validates a fresh port over `printf` with no application code at all, finishing
+with a cycle-accurate benchmark table.
 
 ## Installation
 
@@ -144,10 +103,12 @@ claims no `SVC_Handler`, no `SysTick_Handler`, no HAL, and no vendor headers.
 That is the whole integration contract, and it is why the same kernel drops onto
 an STM32, an nRF52 and an LPC without changing anything but a config file.
 
-This section is in two parts, covering the same six steps twice:
+This section is in three parts:
 
-- **[General](#general---any-platform-any-toolchain)** - the procedure itself,
-  independent of vendor, IDE and build system. Read this one.
+- **[General](#general---any-platform-any-toolchain)** - the six-step procedure
+  itself, independent of vendor, IDE and build system. Read this one.
+- **[Vendor notes](#vendor-notes)** - the one thing that differs per vendor, and
+  what to do about it on STM32, Nordic, NXP and everything else.
 - **[STM32CubeMX / STM32CubeIDE](#stm32cubemx--stm32cubeide---step-by-step)** -
   the same six steps carried out on a concrete board, with the exact CubeMX
   checkboxes, file paths, CMake lines and build commands. Read it if you use ST
@@ -235,8 +196,8 @@ Override it with `-DOS_ARCH_VARIANT=cortex_m4` if that guess is ever wrong.
 
 **Not using CMake?** Nothing here requires it. The kernel is plain C11 with
 GCC-style inline assembly, no generated sources and no build-time code
-generation, so Keil, IAR-style project files, MPLAB X, SEGGER Embedded Studio or
-a hand-written Makefile all work. Compile:
+generation, so Keil, MPLAB X, SEGGER Embedded Studio or a hand-written Makefile
+all work. Compile:
 
 ```text
 AhuraRTOS/kernel/core/*.c                        <- all 16 files
@@ -293,7 +254,8 @@ below.
 Usually nothing does, and there is nothing to do: the port defines
 `PendSV_Handler`, which is the name every CMSIS startup file already has in the
 vector table. The one common exception is a vendor IDE that generates an empty
-stub - **STM32CubeMX does**, and it is a checkbox; see the STM32 section below.
+stub - **STM32CubeMX does**, and it is a checkbox; see
+[Vendor notes](#vendor-notes).
 
 If your vector table calls entry 14 something else (a hand-written startup file,
 a bootloader's own table), point the kernel at that name instead:
@@ -356,6 +318,71 @@ step 2. Swap one in, build, read the console, swap the next.
 | `undefined reference to 'os_assert_failed_cb'` (or `os_stack_overflow_cb`, `os_log_output_cb`) | `os_cb.c` is not in the application build, or that callback was deleted from it |
 | Duplicate symbols from the port | `arch/arm/common/*.c` was added to the build (step 3) - remove it |
 | Builds and runs, but nothing happens | Step 4: the tick is not reaching `os_tick_handler()` |
+
+### Vendor notes
+
+Nothing in the kernel is vendor-specific, but vendor *tooling* differs in
+exactly one way that matters: whether it generates an interrupt file that also
+defines `PendSV_Handler`.
+
+#### STM32 (STM32CubeMX / CubeIDE)
+
+CubeMX generates a non-weak `PendSV_Handler` into `Core/Src/stm32<family>_it.c`,
+which collides with the kernel's. Deleting it by hand works until the next code
+generation overwrites the file, so turn it off at the source instead:
+
+> **CubeMX → System Core → NVIC → Code generation tab → clear "Generate IRQ
+> handler" for *Pendable request for system service*.**
+
+That setting is stored in the `.ioc`, so regeneration keeps honouring it. Leave
+*System tick timer* generating, since that is where `os_tick_handler()` goes,
+and leave *System service call via SWI instruction* (`SVC_Handler`) alone - the
+kernel does not use it.
+
+Then move the HAL off SysTick, or the HAL and the kernel will fight over it:
+
+> **CubeMX → System Core → SYS → Timebase Source → any spare timer** (TIM6,
+> TIM7 and TIM17 are common picks).
+
+CubeMX adds `stm32<family>_hal_timebase_tim.c` to the project, and from then on
+`HAL_Delay()` and `HAL_GetTick()` run off that timer while SysTick belongs to
+the kernel. Do **not** call `HAL_IncTick()` from `SysTick_Handler` afterwards.
+
+Note that `HAL_Delay()` still busy-waits - it does not yield. Use
+`os_delay_ms()` in task code and keep `HAL_Delay()` for driver init paths that
+run before `os_start()`.
+
+The full walkthrough is [below](#stm32cubemx--stm32cubeide---step-by-step).
+
+#### Nordic (nRF5x, nRF53, nRF91)
+
+Nordic's MDK startup files use the standard CMSIS names, so `PendSV_Handler`
+binds with no configuration and nothing needs disabling.
+
+The thing to get right on these parts is the tick. SysTick does not run when the
+CPU sleeps, so anything using the low-power modes these devices are chosen for
+will lose time. Set `OS_CONFIG_TICK_SOURCE_EXTERNAL` and drive
+`os_tick_handler()` from an RTC peripheral instead, as Nordic's own software
+does - `os_cb_template.c` has the skeleton.
+
+If a SoftDevice is present, note that it owns the top of the vector table and
+forwards the lower SVC range to the application. That is not a problem here,
+because the kernel does not use SVC at all.
+
+#### NXP, TI, Silicon Labs, Renesas, Microchip, Infineon, GD32
+
+All use CMSIS-Pack startup files with the standard names, and none of their
+generators emits a competing `PendSV_Handler`. Copy the three files, route the
+tick, build. If a vendor RTOS abstraction is enabled in the project (MCUXpresso
+with FreeRTOS selected, for instance), disable it - two RTOSes cannot both own
+PendSV.
+
+#### Anything else
+
+Open the startup file, find the vector table, and read the name at entry 14
+(offset `0x38`). If it is `PendSV_Handler`, there is nothing to do. If it is
+something else, set `OS_CONFIG_ARCH_PENDSV_HANDLER` to that name. The boot-time
+vector check will confirm it either way.
 
 ### STM32CubeMX / STM32CubeIDE - step by step
 
@@ -808,8 +835,9 @@ printing a `[SKIP]` that names the cause; `-Os` runs the full set. Parts with
 
 ---
 
-Full configuration options, the integration contract, per-vendor notes,
-task-priority rules, and every module's API are documented in the
+Full configuration options, the integration contract, task-priority rules, how
+the scheduler and the context switch actually work, and every module's API are
+documented in the
 [kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md).
 
 ## Repository layout
@@ -840,8 +868,8 @@ the kernel or the ports names a vendor, a family, or a HAL. The only
 device-specific symbol anywhere is CMSIS `SystemCoreClock`, and that has a
 documented one-line fallback for devices whose startup code omits it. What
 differs between vendors is only their *tooling* - specifically whether the code
-generator emits a competing `PendSV_Handler` - and the kernel README has a short
-note per vendor covering it.
+generator emits a competing `PendSV_Handler` - and [Vendor
+notes](#vendor-notes) above covers it.
 
 Toolchains: GCC, Clang and Arm Compiler 6 (`armclang`). IAR and the end-of-life
 `armcc` are not supported, because the port layer uses GCC-style inline
