@@ -8,8 +8,15 @@ claims no `SVC_Handler`, no `SysTick_Handler`, no HAL, and no vendor headers.
 That is the whole integration contract, and it is why the same kernel drops onto
 an STM32, an nRF52 and an LPC without changing anything but a config file.
 
-This page is the procedure itself, independent of vendor, IDE and build system.
-Two companion pages go with it:
+There are two ways in, and they do the same six things:
+
+- **[Automatic](#automatic---stm32cubemx)** - one command, on an STM32CubeMX
+  project generated with the CMake toolchain.
+- **[Manual](#manual---any-vendor-any-toolchain)** - the six steps by hand, for
+  any vendor, IDE and build system. Also the reference for what the automatic
+  route did.
+
+Two companion pages go with them:
 
 - **[Vendor notes](vendor-notes.md)** - the one thing that differs per vendor,
   and what to do about it on STM32, Nordic, NXP and everything else.
@@ -26,20 +33,26 @@ being able to see the files.
 
 ## Contents
 
-[On STM32CubeMX, in one command](#on-stm32cubemx-in-one-command) ·
+**[Automatic - STM32CubeMX](#automatic---stm32cubemx)** ·
+[Running it twice](#running-it-twice) ·
+[What it will not do](#what-it-will-not-do)
+
+**[Manual - any vendor, any toolchain](#manual---any-vendor-any-toolchain)** ·
 [1. Get the source](#step-1---get-the-source) ·
 [2. Copy three files](#step-2---copy-three-files-into-your-project) ·
 [3. Add the kernel to the build](#step-3---add-the-kernel-to-the-build) ·
 [4. Give the kernel its tick](#step-4---give-the-kernel-its-tick) ·
 [5. Check `PendSV_Handler`](#step-5---make-sure-nothing-else-defines-pendsv_handler) ·
-[6. Boot it](#step-6---boot-it) ·
+[6. Boot it](#step-6---boot-it)
+
+**Either way:**
 [If it does not build](#if-it-does-not-build) ·
 [Keeping it up to date](#keeping-the-kernel-up-to-date) ·
 [Next steps](#next-steps)
 
 ---
 
-## On STM32CubeMX, in one command
+## Automatic - STM32CubeMX
 
 If your project came out of STM32CubeMX with the **CMake** toolchain, all six
 steps below are scripted. From the root of your project - the directory holding
@@ -106,12 +119,15 @@ It stops with an explanation, before writing, if the HAL still owns SysTick or
 if FreeRTOS is already in the project. The fix is a CubeMX checkbox in both
 cases, and the message names it.
 
-The rest of this page is the same procedure by hand, and the reference for what
-the script did.
-
 ---
 
-## Step 1 - get the source
+## Manual - any vendor, any toolchain
+
+The same six steps by hand. This is the route for anything that is not a CubeMX
+CMake project - Nordic, NXP, Keil, MPLAB X, SEGGER, a hand-written Makefile -
+and it is also the reference for what the automatic route did to your project.
+
+### Step 1 - get the source
 
 Everything lives in one repository - the kernel, the examples and these docs.
 There are no submodules, so a plain clone is the whole story:
@@ -143,7 +159,7 @@ git submodule add https://github.com/AhuraRTOS/AhuraRTOS.git AhuraRTOS
 Either way, see [Keeping the kernel up to date](#keeping-the-kernel-up-to-date)
 below once you are running.
 
-## Step 2 - copy three files into your project
+### Step 2 - copy three files into your project
 
 The kernel deliberately compiles none of these. Two are your code, one is your
 configuration. Their locations do not matter, only that the build can see them.
@@ -165,7 +181,7 @@ where your application code goes.
 Every option is documented in the
 [kernel reference → Configuration](kernel.md#configuration).
 
-## Step 3 - add the kernel to the build
+### Step 3 - add the kernel to the build
 
 `OS_CONFIG_DIR` must be set **before** `add_subdirectory`, so the kernel library
 and your application compile against the same configuration. If only the
@@ -228,7 +244,7 @@ Then add `os_cb.c` and `os_main.c` to the application. No linker-script edits,
 no `OS_CONFIG_` defines from the build system - `os_config.h` is the single
 source of configuration.
 
-## Step 4 - give the kernel its tick
+### Step 4 - give the kernel its tick
 
 `os_tick_handler()` is declared in `ahura.h`, the kernel's single public header.
 On a stock CMSIS device, routing it is one line in your interrupt file:
@@ -253,7 +269,7 @@ handler - two time bases on one interrupt drift against each other. On STM32
 that is CubeMX → SYS → Timebase Source → any spare timer; see
 [Vendor notes](vendor-notes.md).
 
-## Step 5 - make sure nothing else defines `PendSV_Handler`
+### Step 5 - make sure nothing else defines `PendSV_Handler`
 
 Usually nothing does, and there is nothing to do: the port defines
 `PendSV_Handler`, which is the name every CMSIS startup file already has in the
@@ -271,7 +287,7 @@ a bootloader's own table), point the kernel at that name instead:
 The kernel verifies the live vector table at boot and traps immediately if it
 was not wired up, instead of hanging silently.
 
-## Step 6 - boot it
+### Step 6 - boot it
 
 From `main()`, after the clock tree is configured - `os_init()` programs the
 tick from the live `SystemCoreClock`, so a still-default clock would give you
