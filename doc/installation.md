@@ -46,20 +46,30 @@ steps below are scripted. From the root of your project - the directory holding
 `CMakeLists.txt` and the `.ioc`:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install.py
-python install.py
+# macOS, Linux
+curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install.py | python3 -
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install.py -OutFile install.py
-python install.py
+irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install.py | python -
 ```
 
-It prints the exact diff it wants to apply and asks before writing anything.
-`--dry-run` stops after the diff, `--yes` skips the question, and `--uninstall`
-takes the integration back out. Python 3.8+ and nothing else; Windows, macOS and
-Linux alike.
+The script goes straight into Python, so no installer file is left in your
+project. It prints the exact diff it wants to apply and asks before writing
+anything - piped in like this it still asks, reading your answer from the
+terminal rather than from stdin, which is busy carrying the script.
+
+Options go after the `-`: `--dry-run` stops after the diff, `--yes` skips the
+question, `--uninstall` takes the integration back out.
+
+```bash
+curl -fsSL .../tools/install.py | python3 - --dry-run
+```
+
+With output redirected to a file or a log - CI, a background job - there is
+nobody to answer the question, so it writes nothing and tells you to add
+`--yes`. Python 3.8+ and nothing else; Windows, macOS and Linux alike.
 
 Two things it will not do. It never opens the `.ioc` - that file is CubeMX's
 input, and every fact the script needs is in the generated sources anyway. And

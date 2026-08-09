@@ -4,12 +4,19 @@
 Install AhuraRTOS into an STM32CubeMX-generated CMake project.
 
 Run it from the root of your project - the directory holding the top-level
-CMakeLists.txt and the .ioc:
+CMakeLists.txt and the .ioc. Nothing needs to be saved there first; piping the
+script straight into Python leaves no installer file behind:
 
-    python install.py               # show the diff, then ask before writing
-    python install.py --yes         # apply without asking
-    python install.py --dry-run     # show the diff and exit, writing nothing
-    python install.py --uninstall   # take the integration back out
+    curl -fsSL <raw-url>/tools/install.py | python3 -      # macOS, Linux
+    irm <raw-url>/tools/install.py | python -              # Windows PowerShell
+
+Either way it prints the diff and asks before writing. Options go after the `-`:
+
+    ... | python - --dry-run     # show the diff and exit, writing nothing
+    ... | python - --yes         # apply without asking
+    ... | python - --uninstall   # take the integration back out
+
+A saved copy works the same way (`python install.py --dry-run`).
 
 What it does, which is exactly the six steps of doc/installation.md:
 
@@ -128,6 +135,43 @@ class SourceFile:
             self.text.splitlines(keepends=True),
             fromfile=rel, tofile=rel, n=3,
         ))
+
+
+def ask(prompt: str):
+    """Read one line from the user, or None if there is no terminal to ask at.
+
+    input() is not enough. In the one-line install the script itself arrives on
+    stdin - `curl ... | python -` - so stdin is the source code, already read to
+    EOF, and input() would raise immediately. The controlling terminal is still
+    open in that case, so ask it directly: /dev/tty on POSIX, CONIN$ on Windows.
+
+    Genuinely headless runs (CI, a pipe with no terminal at all) get None, and
+    the caller turns that into "re-run with --yes" rather than a stack trace.
+    """
+    if sys.stdin.isatty():
+        try:
+            return input(prompt)
+        except EOFError:
+            return None
+
+    # stdin is the script itself, so ask the terminal directly - but only when
+    # something is likely to answer. That /dev/tty opens proves a terminal
+    # device exists, not that a human is watching it: Git Bash and CI runners
+    # both provide one, and a blocking read there hangs the install forever.
+    # An unredirected stdout is the usable signal - that is where the prompt
+    # goes, so if it is not a terminal, nobody is reading the question either.
+    if not sys.stdout.isatty():
+        return None
+
+    try:
+        terminal = open("CONIN$" if os.name == "nt" else "/dev/tty")
+    except OSError:
+        return None
+    with terminal:
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        line = terminal.readline()
+    return line or None
 
 
 def relative(path: Path, root: Path) -> str:
@@ -438,8 +482,14 @@ def kernel_source(source: str, ref: str):
         raise Fatal("--source {} does not contain a kernel (no ahura.h)".format(source))
 
     # Running from inside a checkout - tools/install.py next to kernel/.
-    if "__file__" in globals():
-        local = Path(__file__).resolve().parent.parent / "kernel"
+    #
+    # __file__ is not a reliable signal on its own: piped in as `python -` it is
+    # set to the literal string "<stdin>", which resolves against the working
+    # directory and would point two levels above the project. Requiring it to be
+    # an existing file rules that out.
+    here = globals().get("__file__")
+    if here and Path(here).is_file():
+        local = Path(here).resolve().parent.parent / "kernel"
         if (local / "ahura.h").is_file():
             yield local
             return
@@ -746,11 +796,12 @@ def finish(args, project, root, edits, copies, notes, kernel_dir):
         return 0
 
     if not args.yes:
-        if not sys.stdin.isatty():
-            print("Nothing written: stdin is not a terminal, so there is no way to confirm.\n"
-                  "Re-run with --yes to apply.")
+        answer = ask("Apply these changes? [y/N] ")
+        if answer is None:
+            print("Nothing written: there is no terminal to confirm at.\n"
+                  "Add --yes to apply, or --dry-run to see this diff again.")
             return 1
-        if input("Apply these changes? [y/N] ").strip().lower() not in ("y", "yes"):
+        if answer.strip().lower() not in ("y", "yes"):
             print("Cancelled - nothing was written.")
             return 0
 
