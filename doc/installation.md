@@ -33,31 +33,42 @@ being able to see the files.
 [5. Check `PendSV_Handler`](#step-5---make-sure-nothing-else-defines-pendsv_handler) ·
 [6. Boot it](#step-6---boot-it) ·
 [If it does not build](#if-it-does-not-build) ·
+[Keeping it up to date](#keeping-the-kernel-up-to-date) ·
 [Next steps](#next-steps)
 
 ---
 
 ## Step 1 - get the source
 
-As a submodule of your own project (recommended, keeps updates a `git pull`
-away):
-
-```bash
-git submodule add https://github.com/AhuraRTOS/ahura_kernel.git AhuraRTOS/kernel
-git submodule update --init --recursive
-```
-
-Or clone the umbrella repo, which already wires up the kernel and the examples
-(see `.gitmodules`):
+Everything lives in one repository - the kernel, the examples and these docs.
+There are no submodules, so a plain clone is the whole story:
 
 ```bash
 git clone https://github.com/AhuraRTOS/AhuraRTOS.git
-cd AhuraRTOS
-git submodule update --init --recursive
 ```
 
-A plain copy of the `kernel/` directory works too - there is nothing
-git-specific about the build.
+Then get `kernel/` into your project. Both routes below land it at
+`AhuraRTOS/kernel/`, which is the path the rest of this page assumes.
+
+**Copy it in** - the simplest thing that works, and the recommended default.
+Nothing about the build is git-specific:
+
+```bash
+mkdir -p my_project/AhuraRTOS
+cp -r AhuraRTOS/kernel my_project/AhuraRTOS/kernel
+```
+
+**Or track it as a submodule** of your project, if you would rather updates be a
+`git pull`. This brings `doc/` and `examples/` along with it, which is a little
+over a megabyte:
+
+```bash
+cd my_project
+git submodule add https://github.com/AhuraRTOS/AhuraRTOS.git AhuraRTOS
+```
+
+Either way, see [Keeping the kernel up to date](#keeping-the-kernel-up-to-date)
+below once you are running.
 
 ## Step 2 - copy three files into your project
 
@@ -79,7 +90,7 @@ a missing one is a link error rather than a silently empty hook. `os_main.c` is
 where your application code goes.
 
 Every option is documented in the
-[kernel README → Configuration](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md#configuration).
+[kernel README → Configuration](../kernel/README.md#configuration).
 
 ## Step 3 - add the kernel to the build
 
@@ -221,7 +232,7 @@ Tasks you need before the scheduler runs go between the two calls; everything
 else is better created from `os_main()`.
 
 **Learning a specific feature?** The
-[examples](https://github.com/AhuraRTOS/ahura_examples) hold one standalone
+[examples](../examples/README.md) hold one standalone
 `os_main_<feature>.c` per feature - mutexes, queues, events, timers, the work
 queue, notifications, atomics, the heap, logging, and so on. Each one *is* an
 `os_main.c`: it includes only `ahura.h` and `<stdio.h>`, needs no board support
@@ -240,6 +251,50 @@ step 2. Swap one in, build, read the console, swap the next.
 | Duplicate symbols from the port | `arch/arm/common/*.c` was added to the build (step 3) - remove it |
 | Builds and runs, but nothing happens | Step 4: the tick is not reaching `os_tick_handler()` |
 
+## Keeping the kernel up to date
+
+Updating is a replacement, never a merge. You never edited a kernel file, so
+there is nothing of yours inside `kernel/` to preserve - your three files
+(`os_config.h`, `os_cb.c`, `os_main.c`) live in your own tree and are not
+touched by any of this.
+
+**If you copied it in**, delete the directory and copy the new one over:
+
+```bash
+cd AhuraRTOS-checkout && git pull
+rm -rf my_project/AhuraRTOS/kernel
+cp -r kernel my_project/AhuraRTOS/kernel
+```
+
+Deleting first rather than copying over the top matters: a file removed upstream
+would otherwise linger and keep compiling.
+
+**If you tracked it as a submodule**, pull the pointer forward and commit it:
+
+```bash
+cd my_project
+git submodule update --remote AhuraRTOS
+git add AhuraRTOS && git commit -m "Update AhuraRTOS"
+```
+
+Then, either way, two things to check afterwards:
+
+1. **Diff the config template against your copy.** New releases add options, and
+   a missing one is a hard error rather than a silent default - by design, but
+   only helpful if you know to look:
+
+   ```bash
+   diff AhuraRTOS/kernel/os_config_template.h Core/Inc/os_config.h
+   ```
+
+   Add any new `#define` to your `os_config.h`; leave your edited values alone.
+
+2. **Re-run the [self-test suite](self-test.md)** before shipping. It is the
+   fastest confirmation that the new kernel still agrees with your port, your
+   tick and your callbacks.
+
+If `os_cb_template.c` grew a callback you do not have, the link error names it.
+
 ## Next steps
 
 - **[Vendor notes](vendor-notes.md)** if your silicon vendor's tooling generates
@@ -247,5 +302,5 @@ step 2. Swap one in, build, read the console, swap the next.
 - **[Run the self-test suite](self-test.md)** to prove the port before writing
   anything on top of it - it validates every enabled feature with no application
   code at all.
-- **[Kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md)**
+- **[Kernel README](../kernel/README.md)**
   for every configuration option, every API, and how the kernel works inside.

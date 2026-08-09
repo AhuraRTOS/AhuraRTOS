@@ -16,7 +16,7 @@ thing: a periodic call to `os_tick_handler()`. It claims no `SVC_Handler`, no
 
 > **This README is the kernel reference: what it does, and how it does it.**
 > For step-by-step installation - vendor by vendor, IDE by IDE - see the
-> [AhuraRTOS documentation](https://github.com/AhuraRTOS/AhuraRTOS/tree/main/doc).
+> [AhuraRTOS documentation](../doc/README.md).
 > The [Getting the kernel into a project](#getting-the-kernel-into-a-project)
 > section below is the short version of it.
 
@@ -119,9 +119,9 @@ at compile time and visible in the map file.
 
 Full installation - CubeMX checkboxes, per-vendor notes, exact CMake blocks,
 build and flash commands - lives in the AhuraRTOS documentation:
-[Installation](https://github.com/AhuraRTOS/AhuraRTOS/blob/main/doc/installation.md),
-[Vendor notes](https://github.com/AhuraRTOS/AhuraRTOS/blob/main/doc/vendor-notes.md),
-[STM32CubeMX step by step](https://github.com/AhuraRTOS/AhuraRTOS/blob/main/doc/stm32cubemx.md).
+[Installation](../doc/installation.md),
+[Vendor notes](../doc/vendor-notes.md),
+[STM32CubeMX step by step](../doc/stm32cubemx.md).
 This section is the short form plus the kernel-side reference those pages point
 back to.
 
@@ -150,7 +150,7 @@ are the only two places the kernel touches the device.
 
    ```cmake
    set(OS_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc)  # wherever the copy lives
-   add_subdirectory(ahura_kernel)
+   add_subdirectory(AhuraRTOS/kernel)
    target_link_libraries(my_firmware ahura_kernel)
    ```
 
@@ -172,8 +172,8 @@ are the only two places the kernel touches the device.
    must have, and on most projects there is nothing to do: the port defines
    `PendSV_Handler`, which is the name every CMSIS startup file already puts in
    the vector table. The exception is a vendor IDE that generates its own empty
-   `PendSV_Handler` - STM32CubeMX does - which must be turned off; the umbrella
-   README has the per-vendor notes.
+   `PendSV_Handler` - STM32CubeMX does - which must be turned off;
+   [Vendor notes](../doc/vendor-notes.md) covers it vendor by vendor.
 
 5. **Boot it** from `main()`, after the clock tree is configured:
 
@@ -238,7 +238,7 @@ the build system (`os_config.h` is the single source of configuration - see
 [Configuration](#configuration)), and no vendor headers.
 
 New to a specific feature?
-[`ahura_examples/kernel/`](https://github.com/AhuraRTOS/ahura_examples/tree/main/kernel)
+[`examples/kernel/`](../examples/kernel/)
 has a minimal, standalone example per feature. See [Examples](#examples).
 
 ### Configuration
@@ -247,16 +247,16 @@ Projects never edit kernel files, and the kernel ships no editable configuration
 of its own. The application owns the one and only config file, following the
 same model as `FreeRTOSConfig.h`:
 
-1. Copy `ahura_kernel/os_config_template.h` into the project as `os_config.h`.
+1. Copy `AhuraRTOS/kernel/os_config_template.h` into the project as `os_config.h`.
    Any directory works. Every option is active at its default value, so adjust
    values in place.
 2. Make that directory visible to the **kernel library build**, not just the
    application, by setting `OS_CONFIG_DIR` before
-   `add_subdirectory(ahura_kernel)`:
+   `add_subdirectory(AhuraRTOS/kernel)`:
 
    ```cmake
    set(OS_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc)  # wherever the copy lives
-   add_subdirectory(ahura_kernel)
+   add_subdirectory(AhuraRTOS/kernel)
    ```
 
    If only the application saw the file, the kernel and the application would
@@ -952,7 +952,7 @@ function: this is where the application's own code runs, not a kernel query for
 platform behavior.
 
 Override it with its own template, separate from `os_cb_template.c`. Copy
-`ahura_kernel/os_main_template.c` into the project as `os_main.c`, add it to the
+`AhuraRTOS/kernel/os_main_template.c` into the project as `os_main.c`, add it to the
 **application** build (never to the kernel, where it is deliberately absent from
 the CMakeLists, just like `os_cb_template.c`), and replace `os_main()`'s body
 with the application's own code. That can be a plain `while (1)` loop, or it can
@@ -1580,7 +1580,7 @@ Application hooks carry the `_cb` suffix. Most are weak, so overriding them is
 optional and the kernel's default applies otherwise; a few have no default at all
 because a silent one would hide the very thing the hook exists to report, and
 those are link errors until the application supplies them. For a clean starting
-point, copy `ahura_kernel/os_cb_template.c` into the application source tree as
+point, copy `AhuraRTOS/kernel/os_cb_template.c` into the application source tree as
 `os_cb.c`, add it to the **application** build (never to the kernel, where the
 template is deliberately absent from the CMakeLists), and adapt:
 
@@ -1820,13 +1820,13 @@ Remaining work:
 ### Self-test suite
 
 The suite is not copied into the application. It is a normal buildable module
-with its own `CMakeLists.txt` (`ahura_kernel/test/CMakeLists.txt`), producing a
+with its own `CMakeLists.txt` (`AhuraRTOS/kernel/test/CMakeLists.txt`), producing a
 static library `os_test` that links against `ahura_kernel` and supplies
 `os_test()`. Any project that already builds the kernel can add it:
 
 ```cmake
-add_subdirectory(ahura_kernel)
-add_subdirectory(ahura_kernel/test)   # builds the os_test library
+add_subdirectory(AhuraRTOS/kernel)
+add_subdirectory(AhuraRTOS/kernel/test)   # builds the os_test library
 
 target_link_libraries(my_app PRIVATE
     ahura_kernel
@@ -1859,7 +1859,7 @@ Three things have to line up, and the build says clearly if any is missing:
    Nothing is lost: the suite's own PASS/FAIL report goes to `printf`, not
    through that callback.
 
-[Running the self-test suite](https://github.com/AhuraRTOS/AhuraRTOS/blob/main/doc/self-test.md)
+[Running the self-test suite](../doc/self-test.md)
 has the full run-through, including how to derive point 2 from point 1 in CMake
 so there is only one switch to flip, how to read the output, and how much flash
 to budget for it.
@@ -1940,9 +1940,9 @@ anyway. Define `OS_TEST_STRESS_EXTENDED` to override in either direction.
 
 ### Examples
 
-[`ahura_examples/kernel/`](https://github.com/AhuraRTOS/ahura_examples/tree/main/kernel)
+[`examples/kernel/`](../examples/kernel/)
 has one small, focused example per kernel feature, each meant to be copied over
-`os_main.c` (in an umbrella clone it is the `examples/` submodule). Same rule
+`os_main.c`. It sits alongside the kernel in this repository. Same rule
 as the self-test suite: they depend on nothing but `ahura.h`, with no board or
 HAL headers.
 
@@ -2118,7 +2118,7 @@ application routes to `os_tick_handler()`.
 - The build selects the variant from `-mcpu`, falling back to `-march`, so
   `armv8.1-m.main` maps to `cortex_m55` and so on. All folders of one profile
   include the same shared port, so any core of the right architecture is
-  equivalent. See `ahura_kernel/CMakeLists.txt`. Override the choice with
+  equivalent. See `AhuraRTOS/kernel/CMakeLists.txt`. Override the choice with
   `-DOS_ARCH_VARIANT=cortex_m4`. Note that GCC learned `-mcpu=cortex-m52` in GCC
   14, so older toolchains build that core with `-march=armv8.1-m.main+mve.fp`,
   which the fallback resolves automatically.
@@ -2160,4 +2160,4 @@ application routes to `os_tick_handler()`.
 
 MIT - every source file carries `SPDX-License-Identifier: MIT` in its header.
 See the
-[project LICENSE](https://github.com/AhuraRTOS/AhuraRTOS/blob/main/LICENSE).
+[project LICENSE](../LICENSE).

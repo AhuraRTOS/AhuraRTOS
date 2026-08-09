@@ -18,12 +18,26 @@ SysTick for `HAL_GetTick()`. Steps 2 and 3 deal with those.
 
 ## 1. Add the kernel to the project
 
-From the project root (the directory holding `CMakeLists.txt` and the `.ioc`):
+From the project root (the directory holding `CMakeLists.txt` and the `.ioc`),
+copy the `kernel/` directory out of a clone of AhuraRTOS:
 
 ```bash
-git submodule add https://github.com/AhuraRTOS/ahura_kernel.git AhuraRTOS/kernel
-git submodule update --init --recursive
+git clone https://github.com/AhuraRTOS/AhuraRTOS.git /tmp/AhuraRTOS
+mkdir AhuraRTOS
+cp -r /tmp/AhuraRTOS/kernel AhuraRTOS/kernel
 ```
+
+Or track the whole repository as a submodule instead, if you would rather
+updates be a `git pull`:
+
+```bash
+git submodule add https://github.com/AhuraRTOS/AhuraRTOS.git AhuraRTOS
+```
+
+Both put the kernel at `AhuraRTOS/kernel/`, which is the path every CMake line
+below uses. See [Installation → Step 1](installation.md#step-1---get-the-source)
+for the details and [Keeping the kernel up to
+date](installation.md#keeping-the-kernel-up-to-date) for later.
 
 ## 2. CubeMX: stop generating `PendSV_Handler`
 

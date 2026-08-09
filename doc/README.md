@@ -20,13 +20,13 @@
 
 ## The kernel itself
 
-The kernel lives in its own repository, and its README is the authoritative
-reference for everything the kernel *does*:
+The kernel is in this repository, under [`kernel/`](../kernel/), and its README
+is the authoritative reference for everything the kernel *does*:
 
-- **[Kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md)** -
+- **[Kernel README](../kernel/README.md)** -
   what the kernel is, **how it works** (boot sequence, scheduler, context
   switch, tick, blocking and waking, priority inheritance, the three barriers,
   memory), every API, every `os_config.h` option, platform support, and
   internals.
-- **[Examples](https://github.com/AhuraRTOS/ahura_examples)** - one runnable
+- **[Examples](../examples/README.md)** - one runnable
   `os_main.c` per kernel feature, with a README on how to run them.

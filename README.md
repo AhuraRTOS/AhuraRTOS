@@ -56,7 +56,9 @@ rather than producing a subtly wrong context switch.
 
 **You never edit a kernel file.** One template becomes your `os_config.h`, and
 that is the single source of configuration for both the kernel library and your
-application. Updating the kernel is a `git pull`, every time.
+application. Updating the kernel is a drop-in replacement of `kernel/`, every
+time - there are no local modifications to re-apply, because there are none to
+make.
 
 **Every feature is a compile-time switch.** `OS_CONFIG_<FEATURE>_ENABLE` removes
 code, RAM *and* API surface - not just runtime behavior. And nothing in the
@@ -100,7 +102,7 @@ coalescing · stack watermarking, stack-overflow detection and CPU-load sampling
 scheduling and tickless idle.
 
 Every one of these is described in full, with the mechanism behind it, in the
-[kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md).
+[kernel README](kernel/README.md).
 
 ## Documentation
 
@@ -120,25 +122,29 @@ Every one of these is described in full, with the mechanism behind it, in the
 
 | The kernel | |
 |---|---|
-| [Kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md) | **The authoritative reference:** how the kernel works inside, every API, every configuration option |
-| [Examples](https://github.com/AhuraRTOS/ahura_examples) | One runnable `os_main.c` per feature, and how to run them |
+| [Kernel README](kernel/README.md) | **The authoritative reference:** how the kernel works inside, every API, every configuration option |
+| [Examples](examples/README.md) | One runnable `os_main.c` per feature, and how to run them |
 
 ## Repository layout
 
 ```text
 AhuraRTOS/
 ├── doc/        <- the documentation above
-├── kernel/     <- ahura_kernel submodule (core, arch ports, self-test suite)
-├── examples/   <- ahura_examples submodule (one runnable main per feature)
+├── kernel/     <- the kernel: core, arch ports, self-test suite
+├── examples/   <- one runnable main per feature
 ├── LICENSE
 └── README.md   <- this file
 ```
 
+One repository, no submodules - a plain clone gives you everything:
+
 ```bash
 git clone https://github.com/AhuraRTOS/AhuraRTOS.git
 cd AhuraRTOS
-git submodule update --init --recursive
 ```
+
+To put the kernel in your own project, see
+**[Installation](doc/installation.md)**.
 
 ## Contributing
 

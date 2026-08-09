@@ -76,4 +76,4 @@ rest - are already covered by the ARM ports today: what a new port adds is a new
   task does not yet call into it.
 
 Both are documented in full in the
-[kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md#platform-support).
+[kernel README](../kernel/README.md#platform-support).

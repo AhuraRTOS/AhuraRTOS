@@ -9,9 +9,9 @@ build changes.
   Catalogue [below](#the-examples).
 
 New to AhuraRTOS? Install it first -
-[AhuraRTOS → Installation](https://github.com/AhuraRTOS/AhuraRTOS/blob/main/doc/installation.md).
+[AhuraRTOS → Installation](../doc/installation.md).
 What each API actually guarantees is documented in the
-[kernel README](https://github.com/AhuraRTOS/ahura_kernel/blob/main/README.md).
+[kernel README](../kernel/README.md).
 
 ---
 
@@ -175,13 +175,13 @@ at all, whichever file is in the build. Set it back to `0`.
 | `undefined reference to 'os_main'` | No example (and no `os_main.c`) is in the application build |
 | `multiple definition of 'os_main'` | Two of them are. Exactly one at a time |
 | `#error "os_main_X.c needs OS_CONFIG_..."` | That feature is switched off in your `os_config.h` |
-| Builds and runs, console silent | Almost always `printf` buffering, not the kernel - see [Nothing on the terminal?](https://github.com/AhuraRTOS/AhuraRTOS/blob/main/doc/self-test.md#nothing-on-the-terminal-check-the-libc-before-the-kernel). `setvbuf(stdout, NULL, _IONBF, 0)` in `main()` settles it |
+| Builds and runs, console silent | Almost always `printf` buffering, not the kernel - see [Nothing on the terminal?](../doc/self-test.md#nothing-on-the-terminal-check-the-libc-before-the-kernel). `setvbuf(stdout, NULL, _IONBF, 0)` in `main()` settles it |
 | Console silent, and it is the `log` example | `os_log_output_cb()` is missing from `os_cb.c` |
 | First lines missing | The console was opened after reset. Open it first, then reset |
 | Nothing runs, whichever example is in the build | `OS_CONFIG_TEST_ENABLE` is `1` - the self-test task replaced the application task |
 
 If the board itself is in question rather than the example, the kernel's
-[self-test suite](https://github.com/AhuraRTOS/AhuraRTOS/blob/main/doc/self-test.md)
+[self-test suite](../doc/self-test.md)
 validates the whole port with no application code at all. Run that first.
 
 ## Writing your own
