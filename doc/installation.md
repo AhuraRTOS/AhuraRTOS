@@ -8,22 +8,20 @@ claims no `SVC_Handler`, no `SysTick_Handler`, no HAL, and no vendor headers.
 That is the whole integration contract, and it is why the same kernel drops onto
 an STM32, an nRF52 and an LPC without changing anything but a config file.
 
-There are two ways in, and they do the same six things:
+This page is the procedure itself: **six steps, by hand, for any vendor, IDE and
+build system.** CMake gets the exact lines to paste; everything else gets the
+source and include lists it needs.
 
-- **[Automatic](#automatic---stm32cubemx)** - one command, on an STM32CubeMX
-  project generated with the CMake toolchain.
-- **[Manual](#manual---any-vendor-any-toolchain)** - the six steps by hand, for
-  any vendor, IDE and build system. Also the reference for what the automatic
-  route did.
+> **On STM32CubeMX?** There is a one-command installer that does all six for
+> you - see **[STM32CubeMX → Automatic](stm32cubemx.md#automatic---one-command)**.
+> This page is still worth reading as the reference for what it did.
 
-Two companion pages go with them:
+Two companion pages go with this one:
 
-- **[Vendor notes](vendor-notes.md)** - the one thing that differs per vendor,
-  and what to do about it on STM32, Nordic, NXP and everything else.
-- **[STM32CubeMX / STM32CubeIDE, step by step](stm32cubemx.md)** - the same six
-  steps carried out on a concrete board, with the exact checkboxes, file paths,
-  CMake lines and build commands. Read it if you use ST tooling; skim it as a
-  worked example if you do not.
+| Page | When to read it |
+|---|---|
+| **[Vendor notes](vendor-notes.md)** | The one thing that differs per vendor, and what to do about it on STM32, Nordic, NXP and everything else |
+| **[STM32CubeMX / STM32CubeIDE](stm32cubemx.md)** | ST tooling, on a concrete board: the one-command installer, then the same steps by hand with exact checkboxes and file paths |
 
 Paths below assume the kernel sits at `AhuraRTOS/kernel/` in your project, which
 is what step 1 produces. Nothing depends on that layout - only on the build
@@ -33,11 +31,8 @@ being able to see the files.
 
 ## Contents
 
-**[Automatic - STM32CubeMX](#automatic---stm32cubemx)** ·
-[Running it twice](#running-it-twice) ·
-[What it will not do](#what-it-will-not-do)
+**The six steps**
 
-**[Manual - any vendor, any toolchain](#manual---any-vendor-any-toolchain)** ·
 [1. Get the source](#step-1---get-the-source) ·
 [2. Copy three files](#step-2---copy-three-files-into-your-project) ·
 [3. Add the kernel to the build](#step-3---add-the-kernel-to-the-build) ·
@@ -45,89 +40,15 @@ being able to see the files.
 [5. Check `PendSV_Handler`](#step-5---make-sure-nothing-else-defines-pendsv_handler) ·
 [6. Boot it](#step-6---boot-it)
 
-**Either way:**
+**Afterwards**
+
 [If it does not build](#if-it-does-not-build) ·
 [Keeping it up to date](#keeping-the-kernel-up-to-date) ·
 [Next steps](#next-steps)
 
 ---
 
-## Automatic - STM32CubeMX
-
-If your project came out of STM32CubeMX with the **CMake** toolchain, all six
-steps below are scripted. From the root of your project - the directory holding
-`CMakeLists.txt` and the `.ioc`:
-
-```powershell
-# Windows PowerShell
-irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32.py | python -
-```
-
-```bash
-# Linux, macOS
-curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32.py | python3 -
-```
-
-The script goes straight into Python, so no installer file is left in your
-project. It prints the exact diff it wants to apply and asks before writing
-anything - piped in like this it still asks, reading your answer from the
-terminal rather than from stdin, which is busy carrying the script.
-
-Options go after the `-`: `--dry-run` stops after the diff, `--yes` skips the
-question, `--uninstall` takes the integration back out.
-
-```bash
-curl -fsSL .../tools/install_stm32.py | python3 - --dry-run
-```
-
-With output redirected to a file or a log - CI, a background job - there is
-nobody to answer the question, so it writes nothing and tells you to add
-`--yes`. Python 3.8+ and nothing else; Windows, macOS and Linux alike.
-
-### Running it twice
-
-Nothing happens twice. Each run works out what is already in place and fills in
-only what is missing:
-
-| Already there | What the second run does |
-|---|---|
-| `AhuraRTOS/` | left exactly as it is - `--update` replaces it with the current version |
-| `os_config.h`, `os_cb.c`, `os_main.c` | kept, never overwritten - they are yours the moment they exist |
-| the CMake block, the tick, the boot calls | rebuilt at the correct anchor, so a call that was moved or lost comes back |
-
-With everything in place it does no work and no network access at all, and says
-so. That last row is also the repair: if CubeMX regenerates over the
-integration, or someone deletes a block by hand, running the command again puts
-it back where it belongs.
-
-### What it will not do
-
-It never opens the `.ioc` - that file is CubeMX's input, and every fact the
-script needs is in the generated sources anyway. It never overwrites the three
-files that become yours. And nothing it disables is lost: a CubeMX-generated
-`PendSV_Handler` is wrapped in `#if 0` rather than deleted, because the kernel's
-port defines that symbol and two definitions are a link error. `--uninstall`
-restores it verbatim.
-
-That last one is the single edit outside a CubeMX `USER CODE` section, since
-CubeMX owns the function and offers no section inside it - so regenerating
-brings the stub back, and re-running the installer disables it again. To stop it
-being generated at all: **NVIC → Code generation →** uncheck *Generate IRQ
-handler* for *Pendable request for system service*.
-
-It stops with an explanation, before writing, if the HAL still owns SysTick or
-if FreeRTOS is already in the project. The fix is a CubeMX checkbox in both
-cases, and the message names it.
-
----
-
-## Manual - any vendor, any toolchain
-
-The same six steps by hand. This is the route for anything that is not a CubeMX
-CMake project - Nordic, NXP, Keil, MPLAB X, SEGGER, a hand-written Makefile -
-and it is also the reference for what the automatic route did to your project.
-
-### Step 1 - get the source
+## Step 1 - get the source
 
 Everything lives in one repository - the kernel, the examples and these docs.
 There are no submodules, so a plain clone is the whole story:
@@ -159,7 +80,7 @@ git submodule add https://github.com/AhuraRTOS/AhuraRTOS.git AhuraRTOS
 Either way, see [Keeping the kernel up to date](#keeping-the-kernel-up-to-date)
 below once you are running.
 
-### Step 2 - copy three files into your project
+## Step 2 - copy three files into your project
 
 The kernel deliberately compiles none of these. Two are your code, one is your
 configuration. Their locations do not matter, only that the build can see them.
@@ -181,7 +102,7 @@ where your application code goes.
 Every option is documented in the
 [kernel reference → Configuration](kernel.md#configuration).
 
-### Step 3 - add the kernel to the build
+## Step 3 - add the kernel to the build
 
 `OS_CONFIG_DIR` must be set **before** `add_subdirectory`, so the kernel library
 and your application compile against the same configuration. If only the
@@ -244,7 +165,7 @@ Then add `os_cb.c` and `os_main.c` to the application. No linker-script edits,
 no `OS_CONFIG_` defines from the build system - `os_config.h` is the single
 source of configuration.
 
-### Step 4 - give the kernel its tick
+## Step 4 - give the kernel its tick
 
 `os_tick_handler()` is declared in `ahura.h`, the kernel's single public header.
 On a stock CMSIS device, routing it is one line in your interrupt file:
@@ -269,7 +190,7 @@ handler - two time bases on one interrupt drift against each other. On STM32
 that is CubeMX → SYS → Timebase Source → any spare timer; see
 [Vendor notes](vendor-notes.md).
 
-### Step 5 - make sure nothing else defines `PendSV_Handler`
+## Step 5 - make sure nothing else defines `PendSV_Handler`
 
 Usually nothing does, and there is nothing to do: the port defines
 `PendSV_Handler`, which is the name every CMSIS startup file already has in the
@@ -287,7 +208,7 @@ a bootloader's own table), point the kernel at that name instead:
 The kernel verifies the live vector table at boot and traps immediately if it
 was not wired up, instead of hanging silently.
 
-### Step 6 - boot it
+## Step 6 - boot it
 
 From `main()`, after the clock tree is configured - `os_init()` programs the
 tick from the live `SystemCoreClock`, so a still-default clock would give you
