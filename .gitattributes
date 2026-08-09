@@ -1,0 +1,47 @@
+# Normalize everything to LF in the repository, and check out LF everywhere.
+# Embedded toolchains, CubeIDE, VS Code and arm-none-eabi-gcc all read LF fine
+# on Windows, and pinning it keeps the tree from looking modified on one OS and
+# clean on another.
+
+*               text=auto eol=lf
+
+# Sources and headers
+*.c             text eol=lf
+*.h             text eol=lf
+*.s             text eol=lf
+*.S             text eol=lf
+*.ld            text eol=lf
+
+# Build and project files
+CMakeLists.txt  text eol=lf
+*.cmake         text eol=lf
+*.json          text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+Makefile        text eol=lf
+*.mk            text eol=lf
+
+# Documentation
+*.md            text eol=lf
+*.txt           text eol=lf
+LICENSE         text eol=lf
+
+# Shell scripts must be LF or they will not run
+*.sh            text eol=lf
+
+# Windows batch files must be CRLF or cmd.exe mis-parses them
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# Binaries: never touch
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.pdf           binary
+*.ico           binary
+*.bin           binary
+*.elf           binary
+*.hex           binary
+*.a             binary
+*.o             binary
