@@ -30,6 +30,12 @@
  * this file itself. */
 #include "os_arch_cycle_systick.c"
 
+/* The atomic operation set, shared by all three ports: its backend follows the
+ * instruction set (OS_ARCH_ATOMIC_LOCK_FREE), not the v6m/v7m/v8m split - which
+ * is why ARMv8-M baseline lands on the critical-section one here. Textual
+ * include as well. */
+#include "os_arch_atomic.c"
+
 /*
  * ***********************************************************************************************************
  * Macros

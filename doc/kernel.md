@@ -1135,6 +1135,59 @@ are rejected, because an ISR has no identity of its own. It is not recursive
 either, so locking a mutex the caller already holds fails with `OS_STATUS_BUSY`
 rather than deadlocking.
 
+#### Deadlock detection
+
+**Priority inheritance does not prevent deadlock, and no version of it can.**
+The two problems are unrelated: inheritance fixes *when* a waiting task gets to
+run, while a deadlock is an *ordering* fault — task 1 takes A then B, task 2
+takes B then A, and both wait forever. No scheduler decision breaks a cycle.
+
+So the kernel detects it instead. When a task is about to block on a locked mutex
+**forever**, it walks the wait chain — who owns this mutex, and what is *that*
+owner blocked on — and if the chain arrives back at the caller, that is a cycle,
+and `OS_ASSERT` fires **at the moment the deadlock would form**, while the guilty
+task is still running and its call stack still shows which code took the locks in
+which order. Without it the symptom is a board that quietly stops, with several
+tasks blocked and nothing recording how they got there.
+
+**Waits with a timeout are never reported, and never appear inside a reported
+cycle.** A task that will give up after `timeout_ms` is not deadlocked — it is
+about to get `OS_STATUS_TIMEOUT` and carry on — and it breaks any cycle it is
+part of by doing so. So a timed `os_mutex_lock` skips the walk entirely, and
+publishes no edge for anyone else's walk to follow. What is left only fires when
+**every** task in the cycle is waiting forever, which is a deadlock that can
+never resolve itself. False alarms would be worse than useless: a detector that
+cries wolf gets switched off.
+
+Because an assertion can only carry a file and a line — and they are always the
+same ones inside `os_mutex.c` — the details go into a plain RAM record instead:
+
+```c
+/* after the board halts, break in and read: */
+os_task_deadlock_report.requested      /* the mutex that was asked for   */
+os_task_deadlock_report.waiter_name    /* the task that was about to block */
+os_task_deadlock_report.owner_name     /* the task holding it            */
+os_task_deadlock_report.cycle[]        /* every mutex in the cycle       */
+os_task_deadlock_report.cycle_length
+```
+
+It is a non-static symbol, so it can be located by name in the map file even in a
+build with no debug info. Printing on the way down is not an option: the kernel
+log is a ring drained by a task that will never run again once the core parks,
+and calling the output transport directly would hang outright if
+`os_log_output_cb` uses DMA, since the completion interrupt cannot arrive with
+interrupts masked.
+
+The whole thing rides on `OS_CONFIG_ASSERT_ENABLE` rather than having a switch of
+its own, because an assertion is the only way it can report anything. With
+assertions off, neither the walk, nor the record, nor the pointer it needs in
+each TCB exists. The walk is capped at 8 links and reports *nothing* on reaching
+the cap.
+
+The best protection is still not to need it. If a task never holds one mutex
+while taking another, a deadlock through mutexes is impossible; where nesting is
+unavoidable, take the locks in one fixed global order everywhere.
+
 ### Task notifications
 
 A lightweight, single-value mailbox built directly into every task's own control
@@ -1284,8 +1337,8 @@ Two rules worth stating outright:
 
 **Cost depends on the core**, because the whole operation set is part of the
 port rather than something portable code builds out of one primitive. There are
-two backends, selected by `OS_ARCH_ATOMIC_LOCK_FREE` in
-`os_arch_port_common.h`:
+two backends in `common/os_arch_atomic.c`, selected by
+`OS_ARCH_ATOMIC_LOCK_FREE` in `os_arch_port_common.h`:
 
 | Backend | Cores | How | Cost |
 |---|---|---|---|
@@ -1297,15 +1350,11 @@ interference mid-update, so it has to be prevented instead. Worth knowing before
 putting an atomic in an ARMv6-M interrupt-latency budget. All of them are safe
 to call from tasks and from ISRs.
 
-**Both backends are inlined into the caller**, with `always_inline` rather than
-a plain `inline` so it holds at `-O0` as well. Every one of them has exactly one
-caller - the matching one-line wrapper in `os_atomic.c`, which validates its
-argument and forwards - so leaving them in the port translation unit meant every
-atomic paid a real call and stack frame to reach five instructions. Inlining
-costs nothing in size either, because a body this small is smaller than the call
-sequence that used to reach it. On a Cortex-M7 at `-Os`, `os_atomic_add()` is
-now a NULL check followed by the bare `LDREX`/`ADD`/`STREX`/`CMP`/`BNE` loop,
-with no call anywhere in it.
+`os_arch_atomic_load` is the one operation with no backend split, and the only
+one defined in `os_arch_port_common.h` rather than the port `.c`: a single
+naturally aligned 32-bit load is already indivisible on every core here, so it
+is one `LDR` inlined into the caller. Everything else is a real function in the
+port.
 
 Writing each operation out separately, instead of sharing one implementation
 behind a selector, is what keeps the emitted code to the five instructions the
@@ -2051,8 +2100,8 @@ All filenames are `os_`-prefixed:
   the kernel work task `tsk_work`, at `OS_CONFIG_WORK_PRIORITY`.
 - `os_log.c` is the buffered log: a static ring buffer drained by `tsk_log` into
   `os_log_output_cb`.
-- `os_atomic.c` is the argument-validating wrapper layer over the port's inline
-  atomic implementations. See [Atomics](#atomics).
+- `os_atomic.c` is the argument-validating wrapper layer over the port's atomic
+  implementations. See [Atomics](#atomics).
 - `os_list.c` is the intrusive doubly-linked list. It is always compiled, since
   the scheduler itself runs on it and it cannot be configured out, and it is
   also public API.
@@ -2066,12 +2115,12 @@ and the atomics. Shared code is organized by architecture, the same split Zephyr
 and CMSIS-RTX use: one v6m implementation, one v7m implementation, one v8m
 implementation, with thin per-core wrapper folders on top.
 
-`os_arch_port_common.h` is more than a header of declarations: everything small
-and hot enough that a cross-unit call would dominate it lives there as an inline
-definition rather than in a port `.c`. That covers the interrupt mask, the
-in-ISR and core-id checks, the spinlock, the boot-time vector check, and the
-whole atomic set (see [Atomics](#atomics)). The port `.c` files are left with
-what genuinely differs per architecture and is too large to inline.
+`os_arch_port_common.h` is more than a header of declarations: the few helpers
+small and hot enough that a cross-unit call would dominate them live there as
+inline definitions rather than in a port `.c` - the interrupt mask, the in-ISR
+and core-id checks, the spinlock, the boot-time vector check, and
+`os_arch_atomic_load`, which is a single `LDR`. Everything with a real body is a
+function in a port `.c`, declared here and nowhere else.
 
 The layer defines exactly **one** externally visible vector handler,
 `PendSV_Handler` (renameable, see [The integration
@@ -2102,10 +2151,15 @@ application routes to `os_tick_handler()`.
   several devices sits behind a debug power domain that refuses the enable until
   a debugger attaches. `os_arch_init()` checks all three cases and picks once.
   Without that fallback, `os_delay_us()` on such a part would spin forever.
-- The four files under `common/` are **textual includes**, pulled in by the
+- `common/os_arch_atomic.c` is the atomic operation set, also shared by all
+  three ports. It is one file rather than a copy per port because its own split
+  - `LDREX`/`STREX` loops or a critical section, see [Atomics](#atomics) - runs
+  along the instruction set, not along `v6m`/`v7m`/`v8m`.
+- The five files under `common/` are **textual includes**, pulled in by the
   per-core wrappers below. Never add them to a build as separate compilation
-  units. Each carries a `#error` guard against being compiled for the wrong
-  architecture profile.
+  units. The three port files each carry a `#error` guard against being compiled
+  for the wrong architecture profile; the other two are pulled in by whichever
+  port includes them.
 - `cortex_m0/`, `cortex_m0plus/`, and `cortex_m23/` are thin wrappers over the
   v6m port.
 - `cortex_m3/`, `cortex_m4/`, and `cortex_m7/` are thin wrappers over the v7m

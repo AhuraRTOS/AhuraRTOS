@@ -425,6 +425,83 @@ void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node
 
 /*
  * ***********************************************************************************************************
+ * Mutex deadlock detection - development builds only
+ * ***********************************************************************************************************
+ *
+ * Tied to OS_CONFIG_ASSERT_ENABLE rather than carrying a switch of its own, because an assertion is
+ * the only way it can report: with assertions compiled out it would walk the wait chain and then
+ * throw the answer away. Off also means the TCB does not carry the field this needs, so a release
+ * build pays neither the RAM nor the walk.
+ *
+ * Worth having on in development precisely because priority inheritance cannot help here. A
+ * deadlock is an ORDERING fault - two tasks taking the same two mutexes in opposite orders - while
+ * inheritance only fixes the TIMING of a wait. Nothing the scheduler can do breaks a cycle, so
+ * without this the symptom is a board that silently stops, with every task blocked and nothing
+ * pointing at which lock pair caused it.
+*/
+#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_ASSERT_ENABLE == 1U)
+#define OS_MUTEX_DEADLOCK_CHECK  1
+#else
+#define OS_MUTEX_DEADLOCK_CHECK  0
+#endif
+
+#if (OS_MUTEX_DEADLOCK_CHECK == 1)
+
+/* Longest wait chain a walk follows, and so the most mutexes a reported cycle can name. */
+#define OS_TASK_DEADLOCK_MAX_DEPTH   8U
+
+/******************************************************************************************************/
+/**
+ * @brief What the last detected deadlock consisted of - written the instant a cycle is found, and
+ *        left in RAM for the debugger.
+ *
+ * This exists because an assertion can only carry a file and a line, and those are always the same
+ * ones inside os_mutex.c: "a deadlock happened" without saying between what. Nor can the details be
+ * printed on the way down. The kernel log is a ring drained by a task, and that task will never run
+ * again once the core parks; calling the output transport directly from here would be worse still,
+ * since a DMA-based os_log_output_cb would wait forever for a completion interrupt that cannot
+ * arrive with interrupts masked.
+ *
+ * So it is left where a halted core can still be asked: break in after the assert and read
+ * os_task_deadlock_report. A deliberately non-static symbol, so it can be found by name in the map
+ * file of a build with no debug info at all. `requested` is NULL until something is recorded.
+ */
+typedef struct
+{
+    const os_mutex_t *requested;    /* mutex the blocking task asked for                         */
+    const char       *waiter_name;  /* task that was about to block (NULL if unnamed)            */
+    uint32_t          waiter_id;
+    const char       *owner_name;   /* task holding `requested`, i.e. the one it waits behind    */
+    uint32_t          owner_id;
+    uint32_t          cycle_length; /* mutexes in the cycle: 1 = it waits behind itself, 2 = pair */
+    const os_mutex_t *cycle[OS_TASK_DEADLOCK_MAX_DEPTH]; /* those mutexes, in the order walked   */
+
+} os_task_deadlock_report_t;
+
+extern os_task_deadlock_report_t os_task_deadlock_report;
+
+/******************************************************************************************************/
+/**
+ * @brief Record the mutex the calling task is about to block on, so another task's chain walk can
+ *        follow it (os_task.c, call inside the same critical section as the wait). Cleared for the
+ *        caller by os_task_wait_end().
+ *
+ * Call it ONLY for an unbounded wait. A task that will time out is not a link in any deadlock -
+ * it breaks the chain by giving up - so it must stay invisible to the walk.
+ */
+void os_task_mutex_blocked_on_set(const os_mutex_t *mutex);
+
+/******************************************************************************************************/
+/**
+ * @brief Report whether blocking the calling task on this mutex would close a wait cycle - i.e.
+ *        deadlock (os_task.c, call inside a critical section, right before joining the waiter
+ *        list). Diagnostic only: it detects, it cannot recover.
+ */
+bool os_task_mutex_deadlock_check(const os_mutex_t *mutex);
+#endif /* OS_MUTEX_DEADLOCK_CHECK */
+
+/*
+ * ***********************************************************************************************************
  * Software timers            - OS_CONFIG_TIMER_ENABLE
  * ***********************************************************************************************************
 */

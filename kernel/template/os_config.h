@@ -347,7 +347,23 @@
  * A failure calls os_assert_failed_cb(), which the application must define, then parks the
  * core with interrupts masked so a debugger lands on the cause. Assertions only ADD checks:
  * every API still returns the same status either way, so turning this off leaves behavior
- * unchanged. */
+ * unchanged.
+ *
+ * This switch also carries MUTEX DEADLOCK DETECTION, which has no switch of its own because an
+ * assertion is its only way to report. When a task is about to block FOREVER on a locked mutex,
+ * the kernel follows the wait chain - who owns it, what is that owner itself blocked on - and
+ * asserts if it arrives back at the caller, which is a deadlock. Priority inheritance cannot
+ * prevent that (it fixes when a waiting task runs, not the ORDER two tasks took two locks in), so
+ * catching it as it forms is the difference between a debugger stopping on the guilty call and a
+ * board that silently stops with several tasks blocked forever.
+ *
+ * A lock with a timeout is never reported and never appears inside a reported cycle: it will give
+ * up, so it is not deadlocked and it breaks any cycle it is in. Only a cycle in which EVERY task
+ * waits forever is real, and only that is asserted on.
+ *
+ * Since an assertion carries just a file and a line, the mutexes and task names involved are left
+ * in os_task_deadlock_report for the debugger to read after the halt. Costs that record, one
+ * pointer per task, and a short walk on contended unbounded locks; at 0, none of it exists. */
 #define OS_CONFIG_ASSERT_ENABLE             1U
 
 /*

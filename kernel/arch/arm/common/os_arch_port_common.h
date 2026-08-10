@@ -210,30 +210,6 @@ extern "C"
 #endif
 
 /*
- * Inline even at -O0, where a plain "static inline" is not inlined at all - the compiler emits it
- * as an ordinary local function and calls it.
- *
- * Used only on the atomics below, where the body is smaller than the call sequence reaching it, so
- * forcing it is a win on both size and speed at every optimization level rather than a trade. It
- * also keeps a debug build's atomic path the same shape as a release build's, which matters because
- * the self-test suite's benchmark table is normally read from exactly such a build during bring-up.
- *
- * Same compiler ordering rule as OS_WEAK above: armclang also defines __clang__, and clang also
- * defines __GNUC__, so the most specific test has to come first.
- */
-#ifndef OS_ALWAYS_INLINE
-#if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6000000)
-#define OS_ALWAYS_INLINE __attribute__((always_inline)) static inline
-#elif defined(__clang__)
-#define OS_ALWAYS_INLINE __attribute__((always_inline)) static inline
-#elif defined(__GNUC__)
-#define OS_ALWAYS_INLINE __attribute__((always_inline)) static inline
-#else
-#define OS_ALWAYS_INLINE static inline
-#endif
-#endif
-
-/*
  * Architecture capabilities derived from the compiler target: TrustZone (the
  * ARMv8-M Security Extension) and exclusive load/store (LDREX/STREX, absent
  * on ARMv6-M).
@@ -700,34 +676,27 @@ uint32_t os_arch_elapsed_ticks_get(void);
  *   Critical section   For cores that cannot express those loops. Costs the length of the update in
  *                      interrupt latency, and needs no retry, since nothing can interfere.
  *
- * Every read-modify-write below returns the value the word held BEFORE the operation, takes a
+ * Both backends live in os_arch_atomic.c, which every port pulls in; only the declarations are
+ * here. Every read-modify-write below returns the value the word held BEFORE the operation, takes a
  * pointer to a naturally aligned 32-bit word, and is safe from tasks and from ISRs.
- *
- * ALL OF THEM ARE INLINE, and deliberately so. Each is called from exactly one place - the matching
- * one-line wrapper in os_atomic.c, which validates its argument and forwards - so leaving them in
- * the port translation unit meant every atomic operation paid a real call and stack frame to reach
- * five instructions. os_atomic.c already refuses to layer its own operations on each other for that
- * reason (increment calls the port's add directly, not os_atomic_add); defining these here finishes
- * the job by removing the last cross-unit call. It costs nothing in code size, because a body this
- * small is smaller than the call sequence that used to reach it.
 */
 
-/* Kernel services these fall back on where there are no usable exclusives. Declared here because
- * the port translation unit does not include ahura.h - it needs these two and nothing else from
- * the core. */
+/* Kernel services the atomics fall back on where there are no usable exclusives. Declared here
+ * because the port translation unit does not include ahura.h - it needs these two and nothing else
+ * from the core. */
 void os_critical_enter(void);
 void os_critical_exit(void);
 
 /*
- * Whether the LDREX/STREX retry loops below can be written for this core.
+ * Which backend os_arch_atomic.c compiles: 1 for the LDREX/STREX retry loops, 0 for the
+ * critical-section fallback.
  *
  * NOT the same question as OS_ARCH_HAS_EXCLUSIVES. ARMv8-M baseline (Cortex-M23) has the exclusive
- * instructions, but runs the Thumb-1 subset, where the three-operand data-processing forms these
+ * instructions, but runs the Thumb-1 subset, where the three-operand data-processing forms those
  * loops use ("add %1, %0, %4") have no encoding. So baseline takes the critical-section backend
- * despite having the hardware for the other one - the same conclusion the ports reached before
- * these moved into this header, and the same one their context-switch code reaches when it shares
- * os_arch_port_v6m.c. Rewriting the loops in the flag-setting Thumb-1 forms would lift that, at the
- * cost of constraining register allocation on every core.
+ * despite having the hardware for the other one - the same conclusion its context-switch code
+ * reaches when it shares os_arch_port_v6m.c. Rewriting the loops in the flag-setting Thumb-1 forms
+ * would lift that, at the cost of constraining register allocation on every core.
  */
 #if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_8M_MAIN__) ||           \
     defined(__ARM_ARCH_8_1M_MAIN__)
@@ -740,403 +709,57 @@ void os_critical_exit(void);
 /**
  * @brief Read a word indivisibly.
  *
- * The one operation that is identical on every ARM core and needs no backend split: a single
- * naturally aligned 32-bit load is already indivisible everywhere this port runs, so the whole
- * operation is one LDR. What the volatile access adds over reading the variable directly is that
- * the compiler may not reuse a value it cached before some other code path changed the word.
+ * The one operation that is identical on every ARM core and needs no backend split, so it is inline
+ * here instead of written out in os_arch_atomic.c: a single naturally aligned 32-bit load is already
+ * indivisible everywhere this port runs, which makes the whole operation one LDR - calling across to
+ * the port to perform it would cost several times what it does. What the volatile access adds over
+ * reading the variable directly is that the compiler may not reuse a value it cached before some
+ * other code path changed the word.
  */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_load(const __IO int32_t *target)
+static inline int32_t os_arch_atomic_load(const __IO int32_t *target)
 {
     return *target;
 }
 
 #if (OS_CONFIG_ATOMIC_ENABLE == 1U)
 
-#if (OS_ARCH_ATOMIC_LOCK_FREE == 1)
-
-/*
- * Lock-free backend. Each operation is a single inline-assembly block: take a reservation on the
- * word, compute from what it held, store only if the reservation survived, and go round again if it
- * did not.
- *
- * Written out per operation rather than funnelled through a shared helper or a CAS loop. Speed: the
- * whole sequence is five instructions, and CAS would re-load and compare what the reservation
- * already tells us. Safety: one asm block per loop is the same five instructions at -O0 as at -O2,
- * with no compiler spill between the LDREX and the STREX - ARM allows only one reservation per core
- * and leaves it implementation-defined whether other accesses clear it.
- *
- * "1:" and "1b" are local numeric labels, so each block stays correct even if the compiler emits it
- * more than once - which, now that these are inline, it routinely does.
- */
-
 /******************************************************************************************************/
 /**
  * @brief Store a word indivisibly, returning what it held before.
  */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_exchange(__IO int32_t *target, int32_t value)
-{
-    int32_t  current;
-    uint32_t store_failed;
-
-    __asm volatile(
-        "1:  ldrex   %0, [%2]      \n"
-        "    strex   %1, %3, [%2]  \n"
-        "    cmp     %1, #0        \n"
-        "    bne     1b            \n"
-        : "=&r"(current), "=&r"(store_failed)
-        : "r"(target), "r"(value)
-        : "cc", "memory");
-
-    return current;
-}
+int32_t os_arch_atomic_exchange(__IO int32_t *target, int32_t value);
 
 /******************************************************************************************************/
 /**
- * @brief Add, returning the value held before the operation.
- *
- * ADD and SUB wrap rather than overflow: the assembler works on raw 32-bit registers, so the
- * signed-overflow undefined behaviour that the equivalent C expression would carry never arises.
+ * @brief Arithmetic read-modify-write, each returning the value held before the operation.
+ *        Overflow wraps rather than being undefined: the lock-free backend computes in raw 32-bit
+ *        registers, the critical-section one in the unsigned domain.
  */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_add(__IO int32_t *target, int32_t value)
-{
-    int32_t  current;
-    int32_t  updated;
-    uint32_t store_failed;
-
-    __asm volatile(
-        "1:  ldrex   %0, [%3]      \n"
-        "    add     %1, %0, %4    \n"
-        "    strex   %2, %1, [%3]  \n"
-        "    cmp     %2, #0        \n"
-        "    bne     1b            \n"
-        : "=&r"(current), "=&r"(updated), "=&r"(store_failed)
-        : "r"(target), "r"(value)
-        : "cc", "memory");
-
-    return current;
-}
+int32_t os_arch_atomic_add(__IO int32_t *target, int32_t value);
+int32_t os_arch_atomic_sub(__IO int32_t *target, int32_t value);
 
 /******************************************************************************************************/
 /**
- * @brief Subtract, returning the value held before the operation.
+ * @brief Bitwise read-modify-write, each returning the value held before the operation.
  */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_sub(__IO int32_t *target, int32_t value)
-{
-    int32_t  current;
-    int32_t  updated;
-    uint32_t store_failed;
-
-    __asm volatile(
-        "1:  ldrex   %0, [%3]      \n"
-        "    sub     %1, %0, %4    \n"
-        "    strex   %2, %1, [%3]  \n"
-        "    cmp     %2, #0        \n"
-        "    bne     1b            \n"
-        : "=&r"(current), "=&r"(updated), "=&r"(store_failed)
-        : "r"(target), "r"(value)
-        : "cc", "memory");
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Bitwise OR, returning the value held before the operation.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_or(__IO int32_t *target, int32_t value)
-{
-    int32_t  current;
-    int32_t  updated;
-    uint32_t store_failed;
-
-    __asm volatile(
-        "1:  ldrex   %0, [%3]      \n"
-        "    orr     %1, %0, %4    \n"
-        "    strex   %2, %1, [%3]  \n"
-        "    cmp     %2, #0        \n"
-        "    bne     1b            \n"
-        : "=&r"(current), "=&r"(updated), "=&r"(store_failed)
-        : "r"(target), "r"(value)
-        : "cc", "memory");
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Bitwise AND, returning the value held before the operation.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_and(__IO int32_t *target, int32_t value)
-{
-    int32_t  current;
-    int32_t  updated;
-    uint32_t store_failed;
-
-    __asm volatile(
-        "1:  ldrex   %0, [%3]      \n"
-        "    and     %1, %0, %4    \n"
-        "    strex   %2, %1, [%3]  \n"
-        "    cmp     %2, #0        \n"
-        "    bne     1b            \n"
-        : "=&r"(current), "=&r"(updated), "=&r"(store_failed)
-        : "r"(target), "r"(value)
-        : "cc", "memory");
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Bitwise XOR, returning the value held before the operation.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_xor(__IO int32_t *target, int32_t value)
-{
-    int32_t  current;
-    int32_t  updated;
-    uint32_t store_failed;
-
-    __asm volatile(
-        "1:  ldrex   %0, [%3]      \n"
-        "    eor     %1, %0, %4    \n"
-        "    strex   %2, %1, [%3]  \n"
-        "    cmp     %2, #0        \n"
-        "    bne     1b            \n"
-        : "=&r"(current), "=&r"(updated), "=&r"(store_failed)
-        : "r"(target), "r"(value)
-        : "cc", "memory");
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Bitwise NAND, returning the value held before the operation.
- *
- * The only operation needing two instructions inside the window: ARM has no single NAND, so the
- * AND result is inverted in place before the store.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_nand(__IO int32_t *target, int32_t value)
-{
-    int32_t  current;
-    int32_t  updated;
-    uint32_t store_failed;
-
-    __asm volatile(
-        "1:  ldrex   %0, [%3]      \n"
-        "    and     %1, %0, %4    \n"
-        "    mvn     %1, %1        \n"
-        "    strex   %2, %1, [%3]  \n"
-        "    cmp     %2, #0        \n"
-        "    bne     1b            \n"
-        : "=&r"(current), "=&r"(updated), "=&r"(store_failed)
-        : "r"(target), "r"(value)
-        : "cc", "memory");
-
-    return current;
-}
+int32_t os_arch_atomic_or(__IO int32_t *target, int32_t value);
+int32_t os_arch_atomic_and(__IO int32_t *target, int32_t value);
+int32_t os_arch_atomic_xor(__IO int32_t *target, int32_t value);
+int32_t os_arch_atomic_nand(__IO int32_t *target, int32_t value);
 
 /******************************************************************************************************/
 /**
  * @brief Atomic compare-and-swap: if *target still holds expected, store desired and report true.
  *
  * The only operation here that does not retry internally, which is what makes it the building
- * block for lock-free algorithms the kernel knows nothing about - and so the only one that needs
- * CLREX: on a mismatch the reservation is dropped rather than left set on a word this call is
- * walking away from, since a stale one can make an unrelated later STREX succeed when it should
- * not. store_failed is seeded with 1 so the mismatch path falls out reporting failure without the
- * STREX having run.
+ * block for lock-free algorithms the kernel knows nothing about.
  *
  * A false return means only that the swap did not happen - either the value had changed, or the
- * reservation was lost to an interrupt or another core. That spurious case is part of the
- * contract, which is why callers needing certainty re-read the word instead of reading false as
- * "someone else won", and callers that only care about the final state loop.
+ * exclusives backend lost its reservation to an interrupt or another core. That spurious case is
+ * part of the contract, which is why callers needing certainty re-read the word instead of reading
+ * false as "someone else won", and callers that only care about the final state loop.
  */
-OS_ALWAYS_INLINE bool os_arch_atomic_cas(__IO int32_t *target, int32_t expected, int32_t desired)
-{
-    int32_t  current;
-    uint32_t store_failed;
-
-    __asm volatile(
-        "    mov     %1, #1        \n"
-        "    ldrex   %0, [%2]      \n"
-        "    cmp     %0, %3        \n"
-        "    bne     1f            \n"
-        "    strex   %1, %4, [%2]  \n"
-        "    b       2f            \n"
-        "1:  clrex                 \n"
-        "2:                        \n"
-        : "=&r"(current), "=&r"(store_failed)
-        : "r"(target), "r"(expected), "r"(desired)
-        : "cc", "memory");
-
-    return (store_failed == 0U);
-}
-
-#else /* OS_ARCH_ATOMIC_LOCK_FREE == 0 */
-
-/*
- * Critical-section backend. Interference cannot be DETECTED here, so it has to be PREVENTED: each
- * operation runs inside os_critical_enter/exit, which costs the length of the update in interrupt
- * latency and, on multi-core, can wait on unrelated kernel work holding the same lock. Reusing the
- * kernel's critical section rather than a second private lock is deliberate - two locks over the
- * same data is how lock-ordering bugs start. No retry loop is needed, since nothing can interfere
- * while the section is held.
- *
- * ADD and SUB compute in the unsigned domain and convert back: signed overflow is undefined
- * behaviour, and unsigned wrapping reproduces the same two's-complement pattern anyway.
- */
-
-/******************************************************************************************************/
-/**
- * @brief Store a word indivisibly, returning what it held before.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_exchange(__IO int32_t *target, int32_t value)
-{
-    int32_t current;
-
-    os_critical_enter();
-
-    current = *target;
-    *target = value;
-
-    os_critical_exit();
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Add, returning the value held before the operation.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_add(__IO int32_t *target, int32_t value)
-{
-    int32_t current;
-
-    os_critical_enter();
-
-    current = *target;
-    *target = (int32_t)((uint32_t)current + (uint32_t)value);
-
-    os_critical_exit();
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Subtract, returning the value held before the operation.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_sub(__IO int32_t *target, int32_t value)
-{
-    int32_t current;
-
-    os_critical_enter();
-
-    current = *target;
-    *target = (int32_t)((uint32_t)current - (uint32_t)value);
-
-    os_critical_exit();
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Bitwise OR, returning the value held before the operation.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_or(__IO int32_t *target, int32_t value)
-{
-    int32_t current;
-
-    os_critical_enter();
-
-    current = *target;
-    *target = current | value;
-
-    os_critical_exit();
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Bitwise AND, returning the value held before the operation.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_and(__IO int32_t *target, int32_t value)
-{
-    int32_t current;
-
-    os_critical_enter();
-
-    current = *target;
-    *target = current & value;
-
-    os_critical_exit();
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Bitwise XOR, returning the value held before the operation.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_xor(__IO int32_t *target, int32_t value)
-{
-    int32_t current;
-
-    os_critical_enter();
-
-    current = *target;
-    *target = current ^ value;
-
-    os_critical_exit();
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Bitwise NAND, returning the value held before the operation.
- */
-OS_ALWAYS_INLINE int32_t os_arch_atomic_nand(__IO int32_t *target, int32_t value)
-{
-    int32_t current;
-
-    os_critical_enter();
-
-    current = *target;
-    *target = ~(current & value);
-
-    os_critical_exit();
-
-    return current;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Atomic compare-and-swap: if *target still holds expected, store desired and report true.
- *
- * Never fails spuriously on this backend - nothing could have interfered - but callers still loop,
- * because the portable contract is written to the weaker guarantee the exclusives backend gives.
- */
-OS_ALWAYS_INLINE bool os_arch_atomic_cas(__IO int32_t *target, int32_t expected, int32_t desired)
-{
-    bool swapped = false;
-
-    os_critical_enter();
-
-    if (*target == expected)
-    {
-        *target = desired;
-        swapped = true;
-    }
-
-    os_critical_exit();
-
-    return swapped;
-}
-
-#endif /* OS_ARCH_ATOMIC_LOCK_FREE */
+bool os_arch_atomic_cas(__IO int32_t *target, int32_t expected, int32_t desired);
 
 #endif /* OS_CONFIG_ATOMIC_ENABLE */
 

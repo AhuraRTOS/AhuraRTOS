@@ -8,9 +8,9 @@
  * while one without pays interrupt latency instead.
  *
  * Each function validates and makes exactly one call into the port rather than layering on another
- * os_atomic_*: the port's operations are inline (os_arch_port_common.h), so one call here becomes
- * the five instructions the sequence actually is, while layering would re-run the argument checks.
- * The cost is the NULL check written out repeatedly below.
+ * os_atomic_* - incrementing calls the port's add directly, not os_atomic_add - so no call here
+ * costs more than the one port call the operation needs, and no argument is checked twice. The cost
+ * is the NULL check written out repeatedly below.
  *
  * All of them return the value the word held BEFORE the operation.
  *

@@ -30,6 +30,11 @@
  * device (see os_arch_cycle_count_get). Textual include, like this file itself. */
 #include "os_arch_cycle_systick.c"
 
+/* The atomic operation set, shared by all three ports: its backend follows the
+ * instruction set (OS_ARCH_ATOMIC_LOCK_FREE), not the v6m/v7m/v8m split. Textual
+ * include as well. */
+#include "os_arch_atomic.c"
+
 /*
  * ***********************************************************************************************************
  * Macros

@@ -142,6 +142,11 @@ OS_QUEUE_DEFINE_BUFFER(os_test_bench_queue, os_test_bench_queue_buf);
 #if (OS_CONFIG_EVENT_ENABLE == 1U)
 static os_event_t os_test_bench_event;
 #endif
+#if (OS_CONFIG_ATOMIC_ENABLE == 1U)
+/* File scope, not a local: the port's operations want a naturally aligned 32-bit word, which a
+ * static of this type is by definition. */
+static os_atomic_t os_test_bench_atomic = OS_ATOMIC_INIT(0);
+#endif
 
 /* Shared between two equal-priority tasks in test_context_switch_timing(): each increments
  * this once per loop turn, then yields - so its total over a fixed window is (approximately)
@@ -4632,6 +4637,42 @@ static void test_benchmarks(void)
 
     TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_SAMPLES, os_critical_enter(); os_critical_exit());
     test_bench_row("os_critical_enter + exit", TEST_BENCH_SUB(best, overhead), clock_hz);
+
+#if (OS_CONFIG_ATOMIC_ENABLE == 1U)
+    /* Placed directly under the critical section above, because that is the comparison that
+     * decides how a shared word should be updated: on a core with exclusives an atomic is the
+     * cheaper answer, and these rows say by how much. On ARMv6-M / ARMv8-M baseline the backend
+     * IS a critical section, so the two should land within a few cycles of each other - that
+     * result is the point, not a fault.
+     *
+     * The last row calls the port's operation directly, skipping the os_atomic_* wrapper's NULL
+     * check and the branch into the port. The gap between it and the os_atomic_add row above is
+     * the entire cost of the portable layer, which is the number to look at before trading the
+     * port's out-of-line implementation away for an inline one. */
+    {
+        (void)os_atomic_set(&os_test_bench_atomic, 0);
+
+        TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_SAMPLES,
+                              sink += (uint32_t)os_atomic_get(&os_test_bench_atomic));
+        test_bench_row("os_atomic_get (load)", TEST_BENCH_SUB(best, overhead), clock_hz);
+
+        TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_SAMPLES, (void)os_atomic_add(&os_test_bench_atomic, 1));
+        test_bench_row("os_atomic_add (read-modify-write)", TEST_BENCH_SUB(best, overhead), clock_hz);
+
+        TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_SAMPLES,
+                              (void)os_arch_atomic_add((__IO int32_t *)&os_test_bench_atomic, 1));
+        test_bench_row("  ^ same, os_atomic_* layer skipped", TEST_BENCH_SUB(best, overhead), clock_hz);
+
+        TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_SAMPLES, os_atomic_set_bit(&os_test_bench_atomic, 0U));
+        test_bench_row("os_atomic_set_bit", TEST_BENCH_SUB(best, overhead), clock_hz);
+
+        /* expected == desired == what the word already holds, so the swap is always taken and
+         * leaves the word where it started: this measures the successful path, not a retry. */
+        (void)os_atomic_set(&os_test_bench_atomic, 0);
+        TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_SAMPLES, (void)os_atomic_cas(&os_test_bench_atomic, 0, 0));
+        test_bench_row("os_atomic_cas (swap taken)", TEST_BENCH_SUB(best, overhead), clock_hz);
+    }
+#endif
 
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
     if (os_mutex_init(&os_test_bench_mutex) == OS_STATUS_OK)

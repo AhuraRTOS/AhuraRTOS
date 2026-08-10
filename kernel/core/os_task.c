@@ -43,6 +43,11 @@
 #define OS_MUTEX_FROM_OWNER_NODE(node)   ((const os_mutex_t *)(const void *)((const uint8_t *)(node) - offsetof(os_mutex_t, owner_node)))
 #endif
 
+/* OS_TASK_DEADLOCK_MAX_DEPTH (os_internal.h) bounds how far a wait chain is followed: a cycle
+ * that already formed among other tasks would otherwise be walked forever. Eight is far past any
+ * sane nesting depth - a design needing more than a couple of held mutexes at once has a
+ * lock-ordering problem this check cannot fix anyway. */
+
 /*
  * ***********************************************************************************************************
  * Types
@@ -76,6 +81,11 @@ typedef struct
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
     uint32_t        base_priority; /* configured priority, restored once no held mutex needs a boost */
     os_list_t       owned_mutexes; /* mutexes currently locked by this task (priority inheritance) */
+#endif
+#if (OS_MUTEX_DEADLOCK_CHECK == 1)
+    /* Mutex this task is blocked on, NULL otherwise: the forward edge a deadlock walk follows
+     * ("this owner is itself waiting for..."). Debug builds only - see os_internal.h. */
+    const os_mutex_t *blocked_on_mutex;
 #endif
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
     /* One-word mailbox owned by os_notify.c; stored here because it belongs to the task. */
@@ -1042,6 +1052,11 @@ void os_task_wait_end(void)
     {
         current->wait_signaled = false;
         current->woken_from    = NULL;
+#if (OS_MUTEX_DEADLOCK_CHECK == 1)
+        /* Cleared here rather than in os_mutex.c because every way out of a wait passes through
+         * this call, so no exit path can leave a stale edge behind for a later walk to follow. */
+        current->blocked_on_mutex = NULL;
+#endif
     }
 }
 
@@ -1302,6 +1317,107 @@ void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node
     os_task_effective_priority_set(owner, new_priority);
 }
 #endif /* OS_CONFIG_MUTEX_ENABLE */
+
+#if (OS_MUTEX_DEADLOCK_CHECK == 1)
+
+/* Post-mortem record for the debugger; see os_internal.h for why an assertion cannot carry this
+ * itself. Zero-initialised, so requested == NULL means nothing has been detected. */
+os_task_deadlock_report_t os_task_deadlock_report;
+
+/******************************************************************************************************/
+/**
+ * @brief Record the mutex the calling task is about to block on. Cleared by os_task_wait_end().
+ *
+ * @param[in] mutex  Mutex about to be waited on, NULL to clear.
+ * @return None.
+ */
+void os_task_mutex_blocked_on_set(const os_mutex_t *mutex)
+{
+    os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
+
+    if (current != NULL)
+    {
+        current->blocked_on_mutex = mutex;
+    }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Report whether blocking the calling task on this mutex would close a wait cycle.
+ *
+ * A deadlock IS a cycle in "task waits for a mutex the next task holds": each member waits for the
+ * next, so none of them can ever run again to release anything. This walks that chain forward from
+ * the mutex the caller is about to wait on - who owns it, and what is that owner itself blocked on
+ * - and stops at whichever comes first:
+ *
+ *   the caller           the chain came back to us, so waiting here would close the cycle
+ *   an owner at rest     running, ready, or waiting on something that is not a mutex: no cycle
+ *   an unresolved owner  id 0 or a deleted task, nothing left to follow
+ *   the depth cap        see below
+ *
+ * Deliberately conservative. The cap exists because a cycle that already formed among OTHER tasks
+ * would otherwise be walked forever, and reaching it reports NOTHING: a legitimately deep chain
+ * must never be accused of a deadlock it does not have. A detector that cries wolf gets disabled,
+ * which costs more than the cases it would have caught.
+ *
+ * Detection only - it cannot recover. Nothing the scheduler does can break a cycle, and priority
+ * inheritance in particular does not: inheritance fixes how SOON a waiting task runs, while this
+ * is about the ORDER two tasks took two locks in. So the answer is an assertion raised the instant
+ * the cycle WOULD form, while the offending task is still running and its call stack still names
+ * the code that took the locks in that order. The alternative is finding out later, from a board
+ * on which several tasks are blocked forever and nothing records how they got there.
+ *
+ * @param[in] mutex  Mutex the caller is about to block on.
+ * @return bool  true when blocking on it would complete a cycle.
+ */
+bool os_task_mutex_deadlock_check(const os_mutex_t *mutex)
+{
+    const os_task_tcb_t *current     = os_task_current[os_arch_core_id_get()];
+    const os_task_tcb_t *first_owner = NULL;
+    const os_mutex_t    *link        = mutex;
+    bool                 cycle       = false;
+    uint32_t             depth;
+
+    for (depth = 0U; (depth < OS_TASK_DEADLOCK_MAX_DEPTH) && (link != NULL) && (current != NULL); depth++)
+    {
+        const os_task_tcb_t *owner = os_task_find_by_id(link->owner_id);
+
+        /* Recorded as the walk goes, so a cycle report already holds the whole chain. Harmless
+         * when no cycle is found: the fields below are what mark the report valid. */
+        os_task_deadlock_report.cycle[depth] = link;
+
+        if (depth == 0U)
+        {
+            first_owner = owner;
+        }
+
+        if (owner == NULL)
+        {
+            break;
+        }
+
+        if (owner == current)
+        {
+            os_task_deadlock_report.requested    = mutex;
+            os_task_deadlock_report.waiter_name  = current->name;
+            os_task_deadlock_report.waiter_id    = current->id;
+            os_task_deadlock_report.owner_name   = (first_owner != NULL) ? first_owner->name : NULL;
+            os_task_deadlock_report.owner_id     = mutex->owner_id;
+            os_task_deadlock_report.cycle_length = depth + 1U;
+
+            cycle = true;
+            break;
+        }
+
+        /* NULL for a task waiting with a timeout, which ends the walk: it will give up and break
+         * the chain, so it cannot be part of a real deadlock (os_mutex.c publishes the edge only
+         * for OS_WAIT_FOREVER). */
+        link = owner->blocked_on_mutex;
+    }
+
+    return cycle;
+}
+#endif /* OS_MUTEX_DEADLOCK_CHECK */
 
 /******************************************************************************************************/
 /**
@@ -2011,6 +2127,9 @@ static void os_task_tcb_clear(os_task_tcb_t *tcb)
     {
         (void)os_list_pop_front(&tcb->owned_mutexes);
     }
+#endif
+#if (OS_MUTEX_DEADLOCK_CHECK == 1)
+    tcb->blocked_on_mutex = NULL;
 #endif
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
     tcb->notify.value   = 0U;

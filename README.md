@@ -79,7 +79,11 @@ atomic set that is lock-free wherever the instruction set allows it.
 
 **Priority inheritance is always on.** No switch to turn it off while still
 calling the object a mutex, and the accounting stays correct when one task holds
-several contended mutexes at once.
+several contended mutexes at once. What inheritance cannot do is prevent a
+*deadlock* - that is a lock-ordering fault, not a timing one - so development
+builds detect that instead: blocking on a mutex whose wait chain leads back to
+you asserts the moment the cycle would form, while the guilty call stack is still
+there to read, rather than leaving a board that silently stops.
 
 **It proves itself on your board.** A built-in self-test suite exercises every
 enabled feature over `printf`, with no application code and no board support,
@@ -97,9 +101,9 @@ mutexes with priority inheritance, counting semaphores, queues, events and
 per-task notifications, all with millisecond timeouts · one-shot and periodic
 software timers and a deferrable work queue, each on its own service task so
 callbacks run in task context · an optional first-fit kernel heap with
-coalescing · stack watermarking, stack-overflow detection and CPU-load sampling
-· buffered logging that never stalls the caller · experimental multi-core
-scheduling and tickless idle.
+coalescing · stack watermarking, stack-overflow detection, mutex deadlock
+detection and CPU-load sampling · buffered logging that never stalls the caller ·
+experimental multi-core scheduling and tickless idle.
 
 Every one of these is described in full, with the mechanism behind it, in the
 [kernel reference](doc/kernel.md).

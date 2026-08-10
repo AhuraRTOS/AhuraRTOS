@@ -28,7 +28,25 @@
 */
 
 static os_arch_spinlock_t os_critical_kernel_lock = OS_ARCH_SPINLOCK_INIT;
-static __IO uint32_t      os_critical_nesting_count[OS_CONFIG_CORE_COUNT];
+
+/*
+ * Neither array is __IO, and neither should be made so. What protects them is the kernel mask,
+ * not a qualifier:
+ *
+ *   - Every access below happens between this module's own mask raise and its matching restore,
+ *     so no interrupt that may call a kernel API can observe or change them mid-update. In
+ *     BASEPRI mode the interrupts the mask does not reach are forbidden from calling in at all,
+ *     and os_arch_isr_priority_check() traps one that tries.
+ *   - Each core indexes its own slot, so two cores never touch the same element.
+ *   - The compiler cannot move these accesses out of the masked region either: the cpsid/cpsie
+ *     and msr basepri sequences in the port all carry a "memory" clobber.
+ *
+ * volatile would not add safety - it does not make count++ indivisible, so it defends against
+ * nothing here - it would only forbid the compiler from keeping the value in a register. That
+ * cost os_critical_exit() four reloads of the same word on every call, on a path every mutex,
+ * semaphore, queue and event operation runs through.
+ */
+static uint32_t           os_critical_nesting_count[OS_CONFIG_CORE_COUNT];
 static uint32_t           os_critical_saved_mask[OS_CONFIG_CORE_COUNT];
 
 /*

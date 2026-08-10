@@ -134,9 +134,39 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                 }
                 else
                 {
+                    /* Development builds: would waiting here close a wait cycle? Deadlock is an
+                     * ordering fault, so the boost below cannot help - it makes the owner run
+                     * sooner, and the owner is not running at all. Checked at the moment the cycle
+                     * would form, while this task still holds the stack that took the locks in
+                     * that order; the alternative is a board that quietly stops with several tasks
+                     * blocked and nothing recording why. os_task_deadlock_report names the mutexes
+                     * involved, since an assertion can only carry this file and line.
+                     *
+                     * ONLY for an unbounded wait, and the && short-circuit means a timed lock does
+                     * not even run the walk. A caller that will give up after timeout_ms is not
+                     * deadlocked - it is about to get OS_STATUS_TIMEOUT and carry on - so treating
+                     * it as one would be a false alarm, and a detector that raises those gets
+                     * switched off. The same rule applies to every OTHER task in the chain, which
+                     * is why the edge below is published under the same condition rather than
+                     * unconditionally: a cycle is only real when every task in it waits forever.
+                     * Compiles to nothing with assertions off, including the walk itself. */
+                    OS_ASSERT((timeout_ms != OS_WAIT_FOREVER) || !os_task_mutex_deadlock_check(mutex));
+
                     /* Boost the owner before blocking: closes the priority-inversion
                      * window instead of leaving it open until the owner's next unlock. */
                     os_task_mutex_priority_inherit(mutex->owner_id);
+
+#if (OS_MUTEX_DEADLOCK_CHECK == 1)
+                    /* Publish the edge another task's walk follows to reach this owner - but only
+                     * for a wait that never ends. A timed waiter breaks any cycle it is part of by
+                     * timing out, so it must not appear in one: leaving its edge NULL is what ends
+                     * another task's walk there instead of reporting a deadlock that resolves
+                     * itself. */
+                    if (timeout_ms == OS_WAIT_FOREVER)
+                    {
+                        os_task_mutex_blocked_on_set(mutex);
+                    }
+#endif
 
                     /* Join the waiter list inside the same critical section that saw the
                      * mutex locked (no lost-wakeup window); the switch happens on exit. */
