@@ -13,9 +13,14 @@
  * The task itself is created by os_init(), unconditionally except in self-test builds, and sized
  * by OS_CONFIG_MAIN_TASK_STACK_SIZE / OS_CONFIG_MAIN_TASK_PRIORITY. Nothing to call from main().
  *
+ * os_main() is WEAK, like everything in os_cb.c: a normal definition anywhere else in the
+ * application replaces this one at link time instead of colliding with it. That is what lets a
+ * file from examples/kernel/ be dropped straight into a project that already has this copy - the
+ * example's os_main() simply takes over, and this file can stay where it is.
+ *
  * @copyright (c) 2026 Ahura Project Contributors
- *            SPDX-License-Identifier: MIT
- *            See LICENSE.md in the project root for the full license text.
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
 
 /*
@@ -39,7 +44,7 @@
  *
  * @return None.
  */
-void os_main(void)
+OS_WEAK void os_main(void)
 {
     while (1)
     {

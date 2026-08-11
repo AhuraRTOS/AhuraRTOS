@@ -158,4 +158,4 @@ all help. Open an issue or submit a pull request.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+GNU General Public License v3.0 or later. See [LICENSE](LICENSE).

@@ -11,8 +11,8 @@
  * state through the tz_context callbacks and the initial frames use the non-secure EXC_RETURN.
  *
  * @copyright (c) 2026 Ahura Project Contributors
- *            SPDX-License-Identifier: MIT
- *            See LICENSE.md in the project root for the full license text.
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
 
 /*
@@ -251,12 +251,26 @@ void os_arch_init(void)
     __asm volatile("msr psp, %0" :: "r"(0U));
     OS_ARCH_ISB();
 
-    /* PendSV and SysTick lowest, so a context switch or a tick never preempts
-     * an application interrupt. SVCall's priority is left exactly as the
+    /* PendSV lowest, which is a correctness requirement rather than a preference: the switch has to
+     * wait until every other exception has returned, or it would swap stacks underneath a handler
+     * that has not finished, and that handler would resume inside a different task. 0xFF sets every
+     * priority bit the device actually implements, whatever their number, so it lands on the lowest
+     * level without the port needing to know. SVCall's priority (SHPR2) is left exactly as the
      * application set it: the kernel does not use SVC. */
-    shpr3 &= ~((0xFFUL << OS_ARCH_SHPR3_PENDSV_PRI_POS) | (0xFFUL << OS_ARCH_SHPR3_SYSTICK_PRI_POS));
+    shpr3 &= ~(0xFFUL << OS_ARCH_SHPR3_PENDSV_PRI_POS);
     shpr3 |= ((uint32_t)OS_ARCH_PRIORITY_LOWEST << OS_ARCH_SHPR3_PENDSV_PRI_POS);
+
+#if (OS_CONFIG_TICK_SOURCE == OS_CONFIG_TICK_SOURCE_SYSTICK)
+    /* The tick goes to the lowest priority too, for latency rather than correctness: it only does
+     * scheduling bookkeeping, so it has no business delaying a device interrupt.
+     *
+     * Only where the kernel OWNS SysTick. With an EXTERNAL tick source the application owns that
+     * timer and may be using SysTick for something else entirely (a HAL timebase is the usual one),
+     * at a priority it chose. os_arch_tick_init() programs nothing in that mode, and quietly
+     * overriding the priority here would contradict it. */
+    shpr3 &= ~(0xFFUL << OS_ARCH_SHPR3_SYSTICK_PRI_POS);
     shpr3 |= ((uint32_t)OS_ARCH_PRIORITY_LOWEST << OS_ARCH_SHPR3_SYSTICK_PRI_POS);
+#endif
 
     OS_ARCH_REG_SHPR3 = shpr3;
 

@@ -12,9 +12,20 @@
  * group, in the same order as PART 2 of ahura.h and os_config.h, so the file compiles cleanly
  * under any configuration.
  *
+ * Every definition here is WEAK, the same way a vendor startup file marks its interrupt handlers.
+ * So there are two ways to work: edit a body in place, or leave this file exactly as it came and
+ * put a normal (strong) definition of that one function anywhere else in the application - the
+ * strong one wins at link time, with no duplicate-symbol error and nothing to delete here. Useful
+ * when the natural home for a callback is the driver it belongs to: os_log_output_cb next to the
+ * UART code, os_arch_tick_init_cb next to the timer setup.
+ *
+ * It costs none of the safety above. Weak or not, this file is still the ONLY definition of these
+ * symbols, so forgetting to copy it into the build is still a link error naming exactly what is
+ * missing.
+ *
  * @copyright (c) 2026 Ahura Project Contributors
- *            SPDX-License-Identifier: MIT
- *            See LICENSE.md in the project root for the full license text.
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
 
 /*
@@ -88,7 +99,7 @@
  *         os_tick_handler();
  *     }
  */
-void os_arch_tick_init_cb(void)
+OS_WEAK void os_arch_tick_init_cb(void)
 {
 }
 #endif /* OS_CONFIG_TICK_SOURCE_EXTERNAL */
@@ -115,7 +126,7 @@ void os_arch_tick_init_cb(void)
  * Do not log from here through OS_LOG_*: the log task cannot run once the core is parked, so
  * the line would sit unsent in the buffer. Write directly to the transport instead.
  */
-void os_assert_failed_cb(const char *file, uint32_t line)
+OS_WEAK void os_assert_failed_cb(const char *file, uint32_t line)
 {
     (void)file;
     (void)line;
@@ -143,7 +154,7 @@ void os_assert_failed_cb(const char *file, uint32_t line)
  * The usual fix is a bigger stack for that task (OS_TASK_DEFINE's second argument), or less on
  * it - large locals and printf-family calls are the common culprits.
  */
-void os_stack_overflow_cb(const char *task_name)
+OS_WEAK void os_stack_overflow_cb(const char *task_name)
 {
     (void)task_name;
 
@@ -171,7 +182,7 @@ void os_stack_overflow_cb(const char *task_name)
  * delays only the log, but the ring keeps filling while it runs and lines are dropped once it
  * is full.
  */
-void os_log_output_cb(const uint8_t *data, size_t length)
+OS_WEAK void os_log_output_cb(const uint8_t *data, size_t length)
 {
     (void)data;
     (void)length;
@@ -197,7 +208,7 @@ void os_log_output_cb(const uint8_t *data, size_t length)
  * default, so leaving this out is a link error rather than tasks switching with their secure
  * state left behind.
  */
-void os_arch_tz_context_save_cb(uint32_t task_id)
+OS_WEAK void os_arch_tz_context_save_cb(uint32_t task_id)
 {
     (void)task_id;
 }
@@ -206,7 +217,7 @@ void os_arch_tz_context_save_cb(uint32_t task_id)
 /**
  * @brief Restore the secure-side context of the task being switched in.
  */
-void os_arch_tz_context_restore_cb(uint32_t task_id)
+OS_WEAK void os_arch_tz_context_restore_cb(uint32_t task_id)
 {
     (void)task_id;
 }
@@ -223,7 +234,7 @@ void os_arch_tz_context_restore_cb(uint32_t task_id)
 /**
  * @brief Return the index of the calling core (0-based). SoC-specific: e.g. SIO CPUID on the RP2040.
  */
-uint32_t os_arch_core_id_get_cb(void)
+OS_WEAK uint32_t os_arch_core_id_get_cb(void)
 {
     return 0U;
 }
@@ -234,7 +245,7 @@ uint32_t os_arch_core_id_get_cb(void)
  *        inter-core FIFO/doorbell. Without an implementation the target core reacts at its
  *        next tick instead.
  */
-void os_arch_core_ipi_request_cb(uint32_t core_id)
+OS_WEAK void os_arch_core_ipi_request_cb(uint32_t core_id)
 {
     (void)core_id;
 }
@@ -254,7 +265,7 @@ void os_arch_core_ipi_request_cb(uint32_t core_id)
  * MANDATORY when the built-in LDREX/STREX backend is unavailable or opted out of: the kernel
  * ships no default, so leaving it out fails at link time.
  */
-void os_arch_spinlock_acquire_cb(os_arch_spinlock_t *lock)
+OS_WEAK void os_arch_spinlock_acquire_cb(os_arch_spinlock_t *lock)
 {
     (void)lock;
 }
@@ -264,7 +275,7 @@ void os_arch_spinlock_acquire_cb(os_arch_spinlock_t *lock)
  * @brief Release the kernel spinlock taken by os_arch_spinlock_acquire_cb. MANDATORY on the same
  *        terms.
  */
-void os_arch_spinlock_release_cb(os_arch_spinlock_t *lock)
+OS_WEAK void os_arch_spinlock_release_cb(os_arch_spinlock_t *lock)
 {
     (void)lock;
 }
@@ -303,7 +314,7 @@ void os_arch_spinlock_release_cb(os_arch_spinlock_t *lock)
  * restore them (and re-run the clock configuration if PLL/HSE were affected) in
  * os_tickless_post_sleep_cb() before anything relies on them again.
  */
-void os_tickless_pre_sleep_cb(void)
+OS_WEAK void os_tickless_pre_sleep_cb(void)
 {
 }
 
@@ -316,7 +327,7 @@ void os_tickless_pre_sleep_cb(void)
  * here; do not call kernel APIs that block, delay, or read the tick expecting it to be current.
  * Keep it short for the same reason: everything in here is added to interrupt latency.
  */
-void os_tickless_post_sleep_cb(void)
+OS_WEAK void os_tickless_post_sleep_cb(void)
 {
 }
 #endif /* OS_CONFIG_TICKLESS_ENABLE */

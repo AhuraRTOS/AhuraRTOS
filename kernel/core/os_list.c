@@ -6,8 +6,8 @@
  * lists, so this module has no configuration switch.
  *
  * @copyright (c) 2026 Ahura Project Contributors
- *            SPDX-License-Identifier: MIT
- *            See LICENSE.md in the project root for the full license text.
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
 
 /*

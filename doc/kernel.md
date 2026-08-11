@@ -2,7 +2,7 @@
 
 [← Documentation index](README.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)
 ![Standard: C11](https://img.shields.io/badge/standard-C11-blue.svg)
 ![Platform: Cortex-M](https://img.shields.io/badge/platform-Cortex--M-informational.svg)
 ![Toolchains: GCC | Clang | armclang](https://img.shields.io/badge/toolchains-GCC%20%7C%20Clang%20%7C%20armclang-informational.svg)
@@ -2214,6 +2214,7 @@ application routes to `os_tick_handler()`.
 
 ## License
 
-MIT - every source file carries `SPDX-License-Identifier: MIT` in its header.
+GNU GPL v3 (or later) - every source file carries `SPDX-License-Identifier: GPL-3.0-or-later`
+in its header.
 See the
 [project LICENSE](../LICENSE).

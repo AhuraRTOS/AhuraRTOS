@@ -9,8 +9,8 @@
  * too; nesting is per core, and both compile to nothing on single-core builds.
  *
  * @copyright (c) 2026 Ahura Project Contributors
- *            SPDX-License-Identifier: MIT
- *            See LICENSE.md in the project root for the full license text.
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
 
 /*

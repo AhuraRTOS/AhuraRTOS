@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Install AhuraRTOS into an STM32CubeMX-generated CMake project.
 

@@ -25,5 +25,6 @@ To get this into your own project, start at
 
 ## License
 
-MIT - every source file carries `SPDX-License-Identifier: MIT` in its header.
+GNU GPL v3 (or later) - every source file carries `SPDX-License-Identifier: GPL-3.0-or-later`
+in its header.
 See the [project LICENSE](../LICENSE).
