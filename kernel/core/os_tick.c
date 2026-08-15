@@ -94,9 +94,6 @@ void os_tick_handler(void)
         }
 #endif
 
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-        os_work_tick_process(1U);
-#endif
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
         os_timer_tick_process(1U);
 #endif
@@ -143,9 +140,6 @@ void os_tick_announce(uint32_t elapsed_ticks)
 
     os_arch_kernel_mask_restore(mask_state);
 
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-    os_work_tick_process(elapsed_ticks);
-#endif
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     os_timer_tick_process(elapsed_ticks);
 #endif
@@ -223,14 +217,6 @@ uint32_t os_tickless_expected_idle_ticks_get(void)
 
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     candidate = os_timer_next_expiry_ticks_get();
-    if (candidate < idle_ticks)
-    {
-        idle_ticks = candidate;
-    }
-#endif
-
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-    candidate = os_work_next_ready_ticks_get();
     if (candidate < idle_ticks)
     {
         idle_ticks = candidate;

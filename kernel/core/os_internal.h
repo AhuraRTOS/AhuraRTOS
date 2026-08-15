@@ -528,33 +528,6 @@ uint32_t os_timer_next_expiry_ticks_get(void);
 
 /*
  * ***********************************************************************************************************
- * Work queue                 - OS_CONFIG_WORK_ENABLE
- * ***********************************************************************************************************
-*/
-
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-/******************************************************************************************************/
-/**
- * @brief Create and start the kernel work service task (os_work.c).
- */
-os_status os_work_system_init(void);
-
-/******************************************************************************************************/
-/**
- * @brief Advance delayed work items by elapsed ticks (os_work.c, ISR context).
- */
-void os_work_tick_process(uint32_t elapsed_ticks);
-
-/******************************************************************************************************/
-/**
- * @brief Return ticks until the next delayed work item becomes ready, 0 when one is already
- *        ready, UINT32_MAX when none (os_work.c).
- */
-uint32_t os_work_next_ready_ticks_get(void);
-#endif /* OS_CONFIG_WORK_ENABLE */
-
-/*
- * ***********************************************************************************************************
  * Buffered logging           - OS_CONFIG_LOG_ENABLE
  * ***********************************************************************************************************
 */

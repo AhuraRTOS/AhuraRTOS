@@ -73,12 +73,10 @@ void os_init(void)
     os_task_system_init();
     (void)os_task_idle_create();
 
-    /* Kernel service tasks, at OS_CONFIG_WORK_PRIORITY and OS_CONFIG_TIMER_PRIORITY: the work
-     * queue and the timer callback task. Both are created as system tasks, so the application
-     * cannot pause or delete them whatever priority they are given. */
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-    (void)os_work_system_init();
-#endif
+    /* The kernel timer task, at OS_CONFIG_TIMER_PRIORITY: it runs both timer expiries and the
+     * deferred work, which is why there is no second service task beside it.
+     * Created as a system task, so the application cannot pause or delete it whatever priority it
+     * is given. */
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     (void)os_timer_system_init();
 #endif

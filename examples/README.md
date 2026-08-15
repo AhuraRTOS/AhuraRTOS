@@ -102,7 +102,7 @@ default application task.
 | Example | What it shows | Needs | Tasks |
 |---|---|---|---|
 | [`os_main_hello.c`](kernel/os_main_hello.c) | The smallest possible application: `os_main()`, `os_delay_ms`, `os_tick_get` | - | 0 |
-| [`os_main_delay.c`](kernel/os_main_delay.c) | The three delay flavors - `os_delay_ms`, `os_delay_us`, `os_delay_s` - against the tick counter | - | 0 |
+| [`os_main_delay.c`](kernel/os_main_delay.c) | Both delay flavors - `os_delay_ms` and `os_delay_us` - against the tick counter | - | 0 |
 | [`os_main_task.c`](kernel/os_main_task.c) | A task handle walked through every state `os_task_state_get()` can report: SUSPENDED → READY/RUNNING → SUSPENDED → INACTIVE, plus what `os_task_priority_set` refuses | - | 2 |
 | [`os_main_critical.c`](kernel/os_main_critical.c) | Two tasks hammering one non-atomic counter from inside a critical section; the total is exact because no update can tear | - | 1 |
 | [`os_main_kernel_lock.c`](kernel/os_main_kernel_lock.c) | A higher-priority task started under `os_kernel_lock()` that does not run until the unlock - while the rising tick count proves interrupts never stopped | - | 1 |
@@ -112,8 +112,7 @@ default application task.
 | [`os_main_queue.c`](kernel/os_main_queue.c) | The same items through two queues - one `OS_QUEUE_DEFINE_STATIC`, one heap-backed via `os_queue_init_dynamic` - to show that only the storage differs, never the calls | `QUEUE` (+ `ALLOC` for the dynamic half) | 1 |
 | [`os_main_event.c`](kernel/os_main_event.c) | Two tasks setting their own bit while `os_main` waits for both at once, consuming them atomically on match | `EVENT` | 2 |
 | [`os_main_notify.c`](kernel/os_main_notify.c) | Signalling one specific task with no separate object: values delivered straight into the receiver's own mailbox | `NOTIFY` | 1 |
-| [`os_main_timer.c`](kernel/os_main_timer.c) | A one-shot and a periodic timer, both firing on `tsk_timer` rather than on `os_main`, then stopped after four periods | `TIMER` | 0 |
-| [`os_main_work.c`](kernel/os_main_work.c) | Deferring functions to `tsk_work` - one delayed, then two at once - with the payload copied, so no caller buffer has to outlive the call | `WORK` | 0 |
+| [`os_main_timer.c`](kernel/os_main_timer.c) | Periodic, one-shot and deferred calls: the three DEFINE macros, and why `os_timer_submit` runs every event where `os_timer_start` keeps only the last | `TIMER` | 0 |
 | [`os_main_mem.c`](kernel/os_main_mem.c) | Heap allocate/free with the free count and watermark printed around each step; freeing both blocks restores the exact starting count, because adjacent blocks coalesce | `ALLOC` | 0 |
 | [`os_main_stack_watermark.c`](kernel/os_main_stack_watermark.c) | Worst-case stack headroom for a worker and for `os_main`, polled from a slow monitoring loop | `STACK_WATERMARK` | 1 |
 | [`os_main_cpu_usage.c`](kernel/os_main_cpu_usage.c) | Load sampling across a worker that alternates between blocking and busy-spinning - the two numbers should contrast sharply | `CPU_USAGE` | 1 |
@@ -154,7 +153,6 @@ yours, three values matter:
 |---|---|---|
 | `OS_CONFIG_MAX_USER_TASKS` | ≥ 2 (default 6) | The busiest examples create two tasks besides the default one |
 | `OS_CONFIG_MAIN_TASK_PRIORITY` | `OS_TASK_PRIO_1` (the default) | Examples create their workers at `OS_TASK_PRIO_1` to be *peers* of `os_main`, or at `PRIO_2`/`PRIO_3` to *outrank* it. Raising `os_main` past those inverts the relationship the example is demonstrating |
-| `OS_CONFIG_WORK_PAYLOAD_SIZE` | ≥ 4 (default 4) | `os_main_work.c` submits a `uint32_t` payload |
 
 Two examples need something beyond a switch:
 

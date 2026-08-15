@@ -237,14 +237,12 @@ _Static_assert((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *  sentinel - the same saturation the kernel applies internally to every timeout it converts.
  *  A duration too large for the tick range is a duration the caller cannot have, but truncating
  *  it turns it into a small, plausible-looking one (and, at the sentinel, into "wait forever"),
- *  which no caller can detect. This is what the three conversions below are built on; it expands
+ *  which no caller can detect. This is what OS_TICKS_FROM_MS below is built on; it expands
  *  its argument twice, so pass a value rather than an expression with side effects. */
 #define OS_TICKS_SATURATE(ticks) ((uint32_t)(((ticks) >= (uint64_t)OS_WAIT_FOREVER) ? \
                                              ((uint64_t)OS_WAIT_FOREVER - 1ULL) : (ticks)))
 
-#define OS_TICKS_FROM_S(sec)    OS_TICKS_SATURATE((uint64_t)(sec) * (uint64_t)OS_CONFIG_TICK_HZ)
 #define OS_TICKS_FROM_MS(ms)    OS_TICKS_SATURATE((((uint64_t)(ms) * (uint64_t)OS_CONFIG_TICK_HZ) + 999ULL) / 1000ULL)
-#define OS_TICKS_FROM_US(us)    OS_TICKS_SATURATE((((uint64_t)(us) * (uint64_t)OS_CONFIG_TICK_HZ) + 999999ULL) / 1000000ULL)
 
 /*
  * ***********************************************************************************************************
@@ -314,32 +312,41 @@ _Static_assert((uint32_t)OS_TASK_PRIO_MAX < 32U,
     static os_task_t task_name = { .storage = &task_name##_STORAGE }
 
 /** Task behaviour for os_task_create: what the task runs, with what, and at what priority. What it
- *  is called and where its stack lives came from OS_TASK_DEFINE, so neither appears here. The
- *  signature follows OS_CONFIG_CORE_COUNT:
+ *  is called and where its stack lives came from OS_TASK_DEFINE, so neither appears here.
+ *  Two forms, and the signature of each is the SAME whatever OS_CONFIG_CORE_COUNT is:
  *
- *    single-core  OS_TASK_CONFIG(entry, context, priority)
- *    multi-core   OS_TASK_CONFIG(entry, context, priority, core_affinity)
+ *    OS_TASK_CONFIG(entry, context, priority)                runs on any core
+ *    OS_TASK_CONFIG_ON(entry, context, priority, affinity)   pinned (multi-core builds only)
  *
- *  A single-core build has nowhere to place a task, so the argument does not exist there rather
- *  than being an ignored constant; on multi-core it is required, so every task states where it may
- *  run. core_affinity is a bitmask (OS_TASK_CORE(n), OR-combinable; OS_TASK_CORE_ANY = any), and
- *  bits naming cores beyond OS_CONFIG_CORE_COUNT fail with OS_STATUS_INVALID_ARG rather than being
- *  ignored. Initialized positionally, for the substitution reason noted above. */
-#if (OS_CONFIG_CORE_COUNT > 1U)
-#define OS_TASK_CONFIG(entry, context, priority, core_affinity) \
-    &(os_task_config_t) { \
-        (entry), \
-        (context), \
-        (priority), \
-        (core_affinity) \
-    }
-#else
+ *  Deliberately NOT one macro whose argument count follows the core count. That would mean every
+ *  OS_TASK_CONFIG call in an application stops compiling the day OS_CONFIG_CORE_COUNT goes from 1
+ *  to 2, turning a config change into a rewrite - and it is exactly why this kernel's own
+ *  self-test suite could not be built for multi-core at all. Source written for one core now
+ *  compiles unchanged on several, running anywhere, which is the sensible default for a task
+ *  that has no reason to care.
+ *
+ *  Pinning stays explicit and greppable, the same split FreeRTOS SMP makes between xTaskCreate
+ *  and xTaskCreateAffinitySet, and os_task_core_affinity_set can change it later either way.
+ *  core_affinity is a bitmask (OS_TASK_CORE(n), OR-combinable; OS_TASK_CORE_ANY = any), and bits
+ *  naming cores beyond OS_CONFIG_CORE_COUNT fail with OS_STATUS_INVALID_ARG rather than being
+ *  ignored. Initialized POSITIONALLY on purpose: the parameters here are named after the fields
+ *  they fill, and a designated initializer would have the preprocessor substitute inside
+ *  ".entry" and ".priority", turning them into whatever the caller passed. */
 #define OS_TASK_CONFIG(entry, context, priority) \
     &(os_task_config_t) { \
         (entry), \
         (context), \
         (priority), \
         OS_TASK_CORE_ANY \
+    }
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+#define OS_TASK_CONFIG_ON(entry, context, priority, core_affinity) \
+    &(os_task_config_t) { \
+        (entry), \
+        (context), \
+        (priority), \
+        (core_affinity) \
     }
 #endif
 
@@ -385,6 +392,22 @@ void os_main(void);
  * ***********************************************************************************************************
  * Tasks
  * ***********************************************************************************************************
+ *
+ * A NULL task handle means THIS TASK, wherever one is accepted below: os_task_pause, os_task_delete,
+ * os_task_priority_set/get, os_task_state_get, os_task_core_affinity_set, os_task_stack_watermark_get
+ * and os_notify_give. It saves a task from keeping a handle to itself just to act on itself, and it
+ * is the same shorthand FreeRTOS uses.
+ *
+ * The exceptions are the two calls where "this task" cannot mean anything: os_task_create needs
+ * somewhere to write the new handle, and os_task_start needs a task that is not already running.
+ *
+ * os_task_pause and os_task_delete are TASK-ONLY whatever handle they are given: both can act on
+ * the running task, and an interrupt must not tear down the context it is about to return to.
+ *
+ * NULL is refused with OS_STATUS_INVALID_ARG from an ISR, and before the scheduler dispatches its
+ * first task. There is no calling task in either case - inside an interrupt the running task is
+ * merely whichever one was preempted, and pausing, deleting or re-prioritising that by accident is
+ * exactly the kind of bug this shorthand must not create.
 */
 
 /******************************************************************************************************/
@@ -497,13 +520,6 @@ void os_delay_ms(uint32_t milliseconds);
  * @brief Busy-wait for the requested microseconds (precise, does not yield).
  */
 void os_delay_us(uint32_t microseconds);
-
-/******************************************************************************************************/
-/**
- * @brief Block the calling task for the requested seconds (busy-waits before os_start).
- *        OS_WAIT_FOREVER parks the calling task permanently (never returns).
- */
-void os_delay_s(uint32_t seconds);
 
 /*
  * ***********************************************************************************************************
@@ -954,16 +970,21 @@ os_status os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bo
  */
 typedef enum
 {
-    OS_TIMER_MODE_ONE_SHOT = 0, /**< Fires once, then stops.            */
-    OS_TIMER_MODE_PERIODIC = 1, /**< Reloads and fires every period.    */
+    
+    OS_TIMER_MODE_ONE_SHOT = 0, /**< Fires once, then stops.             */
+    OS_TIMER_MODE_PERIODIC = 1, /**< Reloads and fires every period.     */
+    OS_TIMER_MODE_SUBMIT   = 2, /**< Defers a callback to the timer task */
 
 } os_timer_mode_t;
 
 /******************************************************************************************************/
 /**
  * @brief Timer callback signature.
+ *
+ * Both arguments come from os_timer_start or os_timer_submit, so a call can say WHICH object
+ * it concerns and WHAT happened without the kernel copying a payload.
  */
-typedef void (*os_timer_callback_t)(void *context);
+typedef void (*os_timer_callback_t)(void *context, uint32_t value);
 
 /******************************************************************************************************/
 /**
@@ -971,48 +992,178 @@ typedef void (*os_timer_callback_t)(void *context);
  */
 typedef struct
 {
+    /** Points at this object, so the kernel can tell a real timer from a lump of memory: the
+     *  link state lives inside the object, and following a garbage node would write to an
+     *  address nobody chose. Anything else is refused with OS_STATUS_INVALID_ARG. A
+     *  self-pointer rather than a constant catches a COPIED timer too. See os_timer.c. */
+    void                *self;
     uint32_t            period_ticks;
     uint32_t            remaining_ticks;
     os_timer_mode_t     mode;
     bool                active;  /**< Counting down right now.                       */
     bool                paused;  /**< Halted by os_timer_pause, remaining_ticks kept. */
-    bool                expired; /**< Expiry noted by the tick, callback not yet run. */
+    bool                queued;  /**< Expiry noted by the tick, waiting its turn to run. */
     os_timer_callback_t callback;
     void                *context;
+    uint32_t            value;
+    os_list_node_t      ready_node;    /**< Links into the FIFO of expiries awaiting delivery.   */
+    os_list_node_t      running_node;  /**< Links into the list of timers the tick counts down. */
 
 } os_timer_t;
+
+/******************************************************************************************************/
+/**
+ * @brief A pool of deferred calls - see OS_TIMER_SUBMIT_DEFINE and os_timer_submit.
+ */
+typedef struct os_timer_pool_s os_timer_pool_t;
+
+/******************************************************************************************************/
+/**
+ * @brief One slot in a pool: a timer, plus the pool to hand it back to. The back-pointer lives
+ *        here rather than in os_timer_t so ordinary timers do not pay for it.
+ */
+typedef struct
+{
+    os_timer_t      timer;
+    os_timer_pool_t *pool;
+
+} os_timer_entry_t;
+
+/******************************************************************************************************/
+/**
+ * @brief A pool of deferred calls: the storage os_timer_submit hands out, one slot per call.
+ *
+ * Declared by OS_TIMER_SUBMIT_DEFINE and owned by the caller, which is what keeps OS_STATUS_FULL
+ * local to one pool. Everything here is settled at compile time except free_list and ready, which
+ * the kernel fills in the first time the pool is used - so a pool needs no init call and the
+ * kernel keeps no list of pools.
+ */
+struct os_timer_pool_s
+{
+    void                *self;       /**< Points at this pool; the same validity check timers use.   */
+    os_timer_entry_t    *entries;    /**< The slots, from OS_TIMER_SUBMIT_DEFINE.                    */
+    uint32_t            count;       /**< How many, so at most this many calls may be in flight.     */
+    uint32_t            delay_ticks; /**< From OS_TIMER_SUBMIT_DEFINE; 0 means deliver immediately.  */
+    os_timer_callback_t callback;    /**< What every submission to this pool runs.                   */
+    os_list_t           free_list;   /**< Slots nobody is using; they link through timer.ready_node. */
+    bool                ready;       /**< Set on first use, when the slots are threaded onto free_list. */
+};
 
 /*
  * A timer's life cycle, and what each call does to the countdown:
  *
- *   os_timer_init      set the period, mode and callback; nothing runs yet
+ *   OS_TIMER_PERIODIC_DEFINE / OS_TIMER_ONESHOT_DEFINE   period and callback, at compile time
  *   os_timer_start     run - from the full period, or from where a pause left off
  *   os_timer_restart   run from the full period, whatever the timer was doing
+ *                      both carry the context and value the callback will receive
  *   os_timer_pause     halt, keeping the time that was left
  *   os_timer_stop      cancel, discarding both the remaining time and any owed callback
- *   os_timer_delete    stop, and require os_timer_init before the object is used again
+ *   os_timer_period_set    retune the period; the countdown under way is left alone
+ *   os_timer_callback_set  point it at a different callback
+ *   os_timer_value_set     change the number the callback receives, without restarting
+ *
+ * There is no init and no delete: nothing is reserved, so os_timer_start cannot fail for want
+ * of a resource however many timers are running, and a stopped timer keeps its configuration
+ * so it can simply be started again.
+ *
+ * ALL of them are ISR-safe - each is a short critical section over a list and none blocks.
+ * Two caveats. With OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY set, the interrupt must sit at or below
+ * that priority, the rule every ISR-safe call here follows. And the CALLBACK is not ISR
+ * context: it runs on the kernel timer task, so it may block, take a mutex or wait on a queue.
  */
+
+/** A timer is set up entirely at COMPILE time - no init call, and the macro's NAME is the mode,
+ *  so there is none to pass and none to get wrong:
+ *
+ *    OS_TIMER_PERIODIC_DEFINE(blinker, 500U, on_blink);
+ *    OS_TIMER_ONESHOT_DEFINE(timeout,  250U, on_timeout);
+ *
+ *    os_timer_start(&blinker, &led2, 3U);
+ *
+ *  What the timer IS - how often it fires and what it calls - is settled here; what a RUN is
+ *  about - the context and value the callback receives - is given to os_timer_start. One place
+ *  each, so no setting can contradict another.
+ *
+ *  Parameters are prefixed (timer_period_ms, not period_ms) so a caller's own variable names
+ *  cannot be substituted into the field designators below - the trap OS_QUEUE_DEFINE_BUFFER
+ *  documents. */
+
+/** Reloads and fires every period_ms until stopped. */
+#define OS_TIMER_PERIODIC_DEFINE(timer_name, timer_period_ms, timer_callback)             \
+    _Static_assert(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
+                   "OS_TIMER_PERIODIC_DEFINE: the period is in milliseconds and cannot "  \
+                   "be 0 or OS_WAIT_FOREVER");                                            \
+    static os_timer_t timer_name = {                                                      \
+        .self         = &timer_name,                                                      \
+        .period_ticks = OS_TICKS_FROM_MS(timer_period_ms),                                \
+        .mode         = OS_TIMER_MODE_PERIODIC,                                           \
+        .callback     = (timer_callback)                                                  \
+    }
+
+/** Fires once, period_ms after it is started, then stops. */
+#define OS_TIMER_ONESHOT_DEFINE(timer_name, timer_period_ms, timer_callback)              \
+    _Static_assert(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
+                   "OS_TIMER_ONESHOT_DEFINE: the period is in milliseconds and cannot "   \
+                   "be 0 or OS_WAIT_FOREVER");                                            \
+    static os_timer_t timer_name = {                                                      \
+        .self         = &timer_name,                                                      \
+        .period_ticks = OS_TICKS_FROM_MS(timer_period_ms),                                \
+        .mode         = OS_TIMER_MODE_ONE_SHOT,                                           \
+        .callback     = (timer_callback)                                                  \
+    }
+
+/** A pool of deferred calls, for the case os_timer_start deliberately does NOT serve.
+ *
+ *    OS_TIMER_SUBMIT_DEFINE(uart_defer, 8U, 0U, on_uart_event);
+ *                                       |    |
+ *                                       |    delay before each call (0 = as soon as possible)
+ *                                       how many may be in flight at once
+ *
+ *    os_timer_submit(&uart_defer, &dev, code1);   // in the ISR
+ *    os_timer_submit(&uart_defer, &dev, code2);   // again, before the first has run
+ *    -> the callback runs TWICE, with code1 then code2
+ *
+ *  os_timer_start would have run it ONCE carrying only code2: starting a pending timer
+ *  reschedules it, which is what a debounce wants and what deferring an interrupt must not do.
+ *  A submission never coalesces - each call takes its own slot.
+ *
+ *  The slots are yours, so OS_STATUS_FULL means "your eight are in flight" and there is no
+ *  kernel-wide number to tune. The delay belongs to the pool, converted to ticks here, so
+ *  os_timer_submit does no arithmetic at all; work needing a different delay is another pool.
+ *
+ *  pool_depth slots cost pool_depth * sizeof(os_timer_entry_t), threaded on first use.
+ */
+#define OS_TIMER_SUBMIT_DEFINE(pool_name, pool_depth, pool_delay_ms, pool_callback)       \
+    _Static_assert((pool_depth) > 0U,                                                     \
+                   "OS_TIMER_SUBMIT_DEFINE: the depth is how many calls may be in "       \
+                   "flight at once and cannot be 0");                                     \
+    _Static_assert((pool_delay_ms) != OS_WAIT_FOREVER,                                    \
+                   "OS_TIMER_SUBMIT_DEFINE: the delay is in milliseconds; use 0 for "     \
+                   "as soon as possible");                                                \
+    static os_timer_entry_t pool_name##_entries[(pool_depth)];                            \
+    static os_timer_pool_t pool_name = {                                                  \
+        .self        = &pool_name,                                                        \
+        .entries     = pool_name##_entries,                                               \
+        .count       = (pool_depth),                                                      \
+        .delay_ticks = OS_TICKS_FROM_MS(pool_delay_ms),                                   \
+        .callback    = (pool_callback)                                                    \
+    }
 
 /******************************************************************************************************/
 /**
- * @brief Initialize a software timer as one-shot or periodic.
+ * @brief Start a timer, or resume one os_timer_pause halted - a paused timer continues with the
+ *        time it had left, anything else starts a full period. context and value are what the
+ *        callback receives on every expiry of this run.
  */
-os_status os_timer_init(os_timer_t *timer, uint32_t period_ticks, os_timer_mode_t mode, os_timer_callback_t callback, void *context);
-
-/******************************************************************************************************/
-/**
- * @brief Start a software timer, or resume one that os_timer_pause halted (callback runs on the
- *        kernel timer task). A paused timer continues with the time it had left; any other timer
- *        starts a full period.
- */
-os_status os_timer_start(os_timer_t *timer);
+os_status os_timer_start(os_timer_t *timer, void *context, uint32_t value);
 
 /******************************************************************************************************/
 /**
  * @brief Restart a software timer from a full period, whether it was running, paused or stopped.
- *        The call to reach for when an event should push the deadline back.
+ *        The call to reach for when an event should push the deadline back. context and value as
+ *        for os_timer_start.
  */
-os_status os_timer_restart(os_timer_t *timer);
+os_status os_timer_restart(os_timer_t *timer, void *context, uint32_t value);
 
 /******************************************************************************************************/
 /**
@@ -1029,52 +1180,39 @@ os_status os_timer_stop(os_timer_t *timer);
 
 /******************************************************************************************************/
 /**
- * @brief Stop a timer and return its registry slot, leaving the object needing os_timer_init
- *        before it can be started again.
+ * @brief Change a timer's period, in milliseconds. A countdown already under way keeps the time
+ *        it had; follow with os_timer_restart to apply the new period from now.
  */
-os_status os_timer_delete(os_timer_t *timer);
+os_status os_timer_period_set(os_timer_t *timer, uint32_t period_ms);
+
+/******************************************************************************************************/
+/**
+ * @brief Change what a timer calls. Takes effect from the next expiry; a delivery already under
+ *        way still runs what it copied out. The context stays as os_timer_start left it.
+ */
+os_status os_timer_callback_set(os_timer_t *timer, os_timer_callback_t callback);
+
+/******************************************************************************************************/
+/**
+ * @brief Change the value a timer's callback receives. Takes effect from the next expiry.
+ */
+os_status os_timer_value_set(os_timer_t *timer, uint32_t value);
+
+/******************************************************************************************************/
+/**
+ * @brief Run the pool's callback later, once per call - the deferred form that never coalesces.
+ *        Each submission takes its own slot and produces its own delivery, FIFO. ISR-safe, and
+ *        nothing is copied, so whatever context points at must outlive the call.
+ *
+ *        A submission has NO HANDLE, so once made it cannot be changed: not cancelled, not
+ *        retuned, and not given a different context or value. There is nothing to pass to
+ *        os_timer_stop or os_timer_value_set, and the pool entry carrying it is the kernel's
+ *        until it runs. If the call may need to change its mind, give the callback something to
+ *        re-read; if it may need cancelling, it wants a named timer and os_timer_start instead.
+ */
+os_status os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value);
 
 #endif /* OS_CONFIG_TIMER_ENABLE */
-
-/*
- * ***********************************************************************************************************
- * Work queue         - OS_CONFIG_WORK_ENABLE
- * ***********************************************************************************************************
-*/
-
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-
-/******************************************************************************************************/
-/**
- * @brief Work handler signature.
- *
- * data points at the kernel's own copy of what was submitted, valid for the duration of the call,
- * and len is how many bytes of it there are. Both are NULL and 0 for a submission that carried no
- * payload.
- */
-typedef void (*os_work_handler_t)(void *data, size_t len);
-
-/******************************************************************************************************/
-/**
- * @brief Submit a function to run later on the kernel work task (0 ms = as soon as possible).
- *
- * Nothing to declare, initialize or keep alive: the handler and the len bytes at data are copied
- * into one of OS_CONFIG_MAX_WORKS slots, so the caller's buffer may be a local that goes out of
- * scope the moment this returns. Pass data = NULL and len = 0 when there is no payload; to hand
- * over more than OS_CONFIG_WORK_PAYLOAD_SIZE, submit a POINTER to it, which makes the target's
- * lifetime visibly yours to manage.
- *
- * Having no handle has consequences worth stating: each call queues its own execution (the same
- * handler submitted twice runs twice), and a submission cannot be cancelled or inspected once
- * made - give the handler something in its payload to re-read if it must change its mind.
- *
- * @return OS_STATUS_OK; OS_STATUS_INVALID_ARG for a NULL handler, OS_WAIT_FOREVER, a len above
- *         OS_CONFIG_WORK_PAYLOAD_SIZE, or a NULL data with a nonzero len; OS_STATUS_FULL when all
- *         OS_CONFIG_MAX_WORKS slots are occupied.
- */
-os_status os_work_submit(os_work_handler_t handler, const void *data, size_t len, uint32_t delay_ms);
-
-#endif /* OS_CONFIG_WORK_ENABLE */
 
 /*
  * ***********************************************************************************************************
@@ -1087,18 +1225,15 @@ os_status os_work_submit(os_work_handler_t handler, const void *data, size_t len
 /******************************************************************************************************/
 /**
  * @brief Deliver a value to a task's notification mailbox (overwrite: last write wins), waking
- *        it if it is currently blocked in os_notify_wait; ISR-safe.
+ *        it if it is currently blocked in os_notify_wait; ISR-safe. NULL means the calling task,
+ *        which an ISR does not have and is refused for.
  */
 os_status os_notify_give(os_task_t *task, uint32_t value);
 
 /******************************************************************************************************/
 /**
- * @brief Wait for this task's notification mailbox, up to timeout_ms. Task-only (like
- *        os_mutex_lock, an ISR has no task identity of its own to wait as).
- *
- *        Pass NULL for value_out to wait for the notification and discard the value it carried,
- *        which is what a notification used as a plain wake-up signal wants. The notification is
- *        consumed either way.
+ * @brief Wait for this task's notification mailbox, up to timeout_ms. Task-only. value_out may
+ *        be NULL to take the wake-up and discard the value; it is consumed either way.
  */
 os_status os_notify_wait(uint32_t timeout_ms, uint32_t *value_out);
 
@@ -1610,6 +1745,7 @@ void os_tickless_post_sleep_cb(void);
 
 #ifdef __cplusplus
 }
+
 #endif
 
 #endif /* AHURA_H */

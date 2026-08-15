@@ -116,8 +116,7 @@ typedef struct
  * in os_task_idle_tcb below, outside this table, one per core. */
 #define OS_TASK_SYSTEM_SLOTS  (1U + \
                                ((OS_CONFIG_TIMER_ENABLE == 1U) ? 1U : 0U) + \
-                               ((OS_CONFIG_WORK_ENABLE  == 1U) ? 1U : 0U) + \
-                               ((OS_CONFIG_LOG_ENABLE   == 1U) ? 1U : 0U))
+                                                              ((OS_CONFIG_LOG_ENABLE   == 1U) ? 1U : 0U))
 
 #define OS_TASK_TABLE_SIZE    (OS_CONFIG_MAX_USER_TASKS + OS_TASK_SYSTEM_SLOTS)
 
@@ -172,6 +171,7 @@ static void           os_task_stack_guard_check(const os_task_tcb_t *tcb, const 
 static void           os_task_idle_entry(void *context);
 static void           os_task_tcb_clear(os_task_tcb_t *tcb);
 static os_task_tcb_t* os_task_find_by_id(uint32_t id);
+static os_task_tcb_t* os_task_self_tcb(void);
 static void           os_task_make_ready(os_task_tcb_t *tcb);
 static void           os_task_unlink(os_task_tcb_t *tcb);
 static void           os_task_wait_node_insert(os_list_t *waiters, os_task_tcb_t *tcb);
@@ -310,11 +310,22 @@ os_status os_task_pause(os_task_t *task)
     os_status      status = OS_STATUS_OK;
     os_task_tcb_t *tcb    = NULL;
 
+    /* Task-only, like os_mutex_lock and os_notify_wait. Both of these can end up acting on the
+     * CALLING task - and inside an interrupt "the calling task" is merely whichever task was
+     * preempted, whether it was named by a handle or by NULL. Deleting or suspending that one
+     * tears down the context the interrupt is about to return into, so the call is refused rather
+     * than allowed to corrupt an innocent task. */
+
+    if (os_arch_in_isr())
+    {
+        return OS_STATUS_INVALID_ARG;
+    }
+
     os_critical_enter();
 
     if (task == NULL)
     {
-        tcb = os_task_current[core];
+        tcb = os_task_self_tcb();
     }
     else if (task->id == 0U)
     {
@@ -410,11 +421,22 @@ os_status os_task_delete(os_task_t *task)
     os_task_tcb_t *tcb;
     bool          is_self;
 
+    /* Task-only, like os_mutex_lock and os_notify_wait. Both of these can end up acting on the
+     * CALLING task - and inside an interrupt "the calling task" is merely whichever task was
+     * preempted, whether it was named by a handle or by NULL. Deleting or suspending that one
+     * tears down the context the interrupt is about to return into, so the call is refused rather
+     * than allowed to corrupt an innocent task. */
+
+    if (os_arch_in_isr())
+    {
+        return OS_STATUS_INVALID_ARG;
+    }
+
     os_critical_enter();
 
     if (task == NULL)
     {
-        tcb = os_task_current[core];
+        tcb = os_task_self_tcb();
         if ((tcb == NULL) || (tcb == &os_task_idle_tcb[core]))
         {
             os_critical_exit();
@@ -547,7 +569,7 @@ os_status os_task_priority_set(os_task_t *task, os_task_priority_t priority)
 
     os_critical_enter();
 
-    tcb = (task == NULL) ? os_task_current[core]
+    tcb = (task == NULL) ? os_task_self_tcb()
                          : ((task->id == 0U) ? NULL : os_task_find_by_id(task->id));
 
     if ((tcb == NULL) || (tcb == &os_task_idle_tcb[core]))
@@ -596,7 +618,6 @@ os_status os_task_priority_set(os_task_t *task, os_task_priority_t priority)
  */
 os_status os_task_priority_get(const os_task_t *task, os_task_priority_t *priority_out)
 {
-    uint32_t  core   = os_arch_core_id_get();
     os_status status = OS_STATUS_INVALID_ARG;
 
     if (priority_out != NULL)
@@ -605,7 +626,7 @@ os_status os_task_priority_get(const os_task_t *task, os_task_priority_t *priori
 
         os_critical_enter();
 
-        tcb = (task == NULL) ? os_task_current[core]
+        tcb = (task == NULL) ? os_task_self_tcb()
                              : ((task->id == 0U) ? NULL : os_task_find_by_id(task->id));
 
         if (tcb != NULL)
@@ -640,7 +661,7 @@ os_task_state_t os_task_state_get(const os_task_t *task)
 
     if (task == NULL)
     {
-        tcb = os_task_current[os_arch_core_id_get()];
+        tcb = os_task_self_tcb();
     }
     else if (task->id == 0U)
     {
@@ -684,7 +705,7 @@ os_status os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_by
 
         if (task == NULL)
         {
-            tcb = os_task_current[os_arch_core_id_get()];
+            tcb = os_task_self_tcb();
         }
         else if (task->id == 0U)
         {
@@ -1534,15 +1555,24 @@ os_status os_task_core_affinity_set(os_task_t *task, uint32_t core_affinity)
     os_task_tcb_t *tcb;
     uint32_t      running;
 
-    if ((task == NULL) || (task->id == 0U) ||
-        ((core_affinity >> OS_CONFIG_CORE_COUNT) != 0U))
+    if ((core_affinity >> OS_CONFIG_CORE_COUNT) != 0U)
     {
         return OS_STATUS_INVALID_ARG;
     }
 
     os_critical_enter();
 
-    tcb = os_task_find_by_id(task->id);
+    /* NULL means the calling task here too, so this no longer stands out as the one task call that
+     * refuses the shorthand every other one accepts. */
+    if (task == NULL)
+    {
+        tcb = os_task_self_tcb();
+    }
+    else
+    {
+        tcb = (task->id != 0U) ? os_task_find_by_id(task->id) : NULL;
+    }
+
     if (tcb == NULL)
     {
         os_critical_exit();
@@ -2153,6 +2183,26 @@ static void os_task_tcb_clear(os_task_tcb_t *tcb)
  * @param[in] id  Task ID.
  * @return os_task_tcb_t*  Pointer to the task control block, or NULL if not found.
  */
+/******************************************************************************************************/
+/**
+ * @brief The TCB that a NULL public handle stands for: the calling task.
+ *
+ * NULL means "this task" across the task API, which needs a calling task to mean. An ISR has none:
+ * os_task_current there is merely whichever task the interrupt happened to preempt, so acting on it
+ * would hit a plausible but wrong target - silently deleting, pausing or re-prioritising a task that
+ * simply had the bad luck to be running. NULL therefore resolves to nothing in interrupt context,
+ * and every caller already turns a NULL TCB into OS_STATUS_INVALID_ARG.
+ *
+ * Also NULL before the scheduler dispatches a first task, which lands on the same status.
+ *
+ * @return os_task_tcb_t*  The calling task's TCB, or NULL when there is no calling task.
+ */
+static os_task_tcb_t* os_task_self_tcb(void)
+{
+    return os_arch_in_isr() ? NULL : os_task_current[os_arch_core_id_get()];
+}
+
+/******************************************************************************************************/
 static os_task_tcb_t* os_task_find_by_id(uint32_t id)
 {
     uint32_t index;
@@ -2519,4 +2569,3 @@ static void os_task_effective_priority_set(os_task_tcb_t *tcb, uint32_t new_prio
         os_task_wait_node_insert(tcb->wait_list, tcb);
     }
 }
-

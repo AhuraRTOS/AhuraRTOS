@@ -1,6 +1,6 @@
 /**
  * @file os_main_delay.c
- * @brief Ahura kernel example: blocking delays (os_delay_ms / os_delay_us / os_delay_s).
+ * @brief Ahura kernel example: blocking delays (os_delay_ms / os_delay_us).
  *
  * Demonstrates the three delay flavors and the kernel tick counter. Copy
  * this file into the application source tree as os_main.c to run it - no
@@ -47,7 +47,7 @@ void os_main(void)
 
         printf("[delay] %lu ticks elapsed so far\r\n", (unsigned long)(os_tick_get() - before));
 
-        printf("[delay] os_delay_s(1)...\r\n");
-        os_delay_s(1U);
+        printf("[delay] os_delay_ms(1000)...\r\n");
+        os_delay_ms(1000U);
     }
 }

@@ -108,7 +108,7 @@ appears within milliseconds of boot:
   [PASS] os_task_create() rejects priority 0 (idle-reserved)
   [PASS] ...
   (one section per subsystem: mutex, semaphore, queue, events, timers,
-   work queue, notifications, atomics, heap, logging, stress, ...)
+   deferred calls, notifications, atomics, heap, logging, stress, ...)
 
 ========================================
  RESULT: <n> passed, 0 failed (of <n> checks)

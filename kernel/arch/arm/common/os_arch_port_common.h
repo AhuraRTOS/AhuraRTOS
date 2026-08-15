@@ -44,7 +44,7 @@
  * Start from template/os_config.h, which lists every required option. */
 #if !defined(OS_CONFIG_MUTEX_ENABLE) || !defined(OS_CONFIG_SEMAPHORE_ENABLE) ||                        \
     !defined(OS_CONFIG_QUEUE_ENABLE) || !defined(OS_CONFIG_EVENT_ENABLE) ||                            \
-    !defined(OS_CONFIG_TIMER_ENABLE) || !defined(OS_CONFIG_WORK_ENABLE) ||                             \
+    !defined(OS_CONFIG_TIMER_ENABLE) ||                             \
     !defined(OS_CONFIG_ALLOC_ENABLE) ||                                                                \
     !defined(OS_CONFIG_STACK_WATERMARK_ENABLE) ||                                                      \
     !defined(OS_CONFIG_STACK_CHECK_ENABLE) ||                                                          \
@@ -58,10 +58,9 @@
     !defined(OS_CONFIG_TICK_HZ) || !defined(OS_CONFIG_TIME_SLICE_TICKS) ||                             \
     !defined(OS_CONFIG_HEAP_SIZE) ||                                                                   \
     !defined(OS_CONFIG_MAX_USER_TASKS) ||                                                              \
-    !defined(OS_CONFIG_MAX_TIMERS) || !defined(OS_CONFIG_MAX_WORKS) ||                                 \
-    !defined(OS_CONFIG_WORK_PAYLOAD_SIZE) ||                                                           \
-    !defined(OS_CONFIG_MIN_STACK_SIZE) || !defined(OS_CONFIG_WORK_STACK_SIZE) ||                           !defined(OS_CONFIG_TIMER_PRIORITY) || !defined(OS_CONFIG_WORK_PRIORITY) ||                         \
-    !defined(OS_CONFIG_TIMER_STACK_SIZE) || !defined(OS_CONFIG_WORK_CORE_AFFINITY) ||                  \
+                                    \
+    !defined(OS_CONFIG_MIN_STACK_SIZE) ||                           !defined(OS_CONFIG_TIMER_PRIORITY) ||                         \
+    !defined(OS_CONFIG_TIMER_STACK_SIZE) ||                  \
     !defined(OS_CONFIG_TIMER_CORE_AFFINITY) ||                                                         \
     !defined(OS_CONFIG_MAIN_TASK_STACK_SIZE) || !defined(OS_CONFIG_MAIN_TASK_PRIORITY) ||               \
     !defined(OS_CONFIG_TEST_STACK_SIZE) || !defined(OS_CONFIG_TEST_PRIORITY) ||                        \

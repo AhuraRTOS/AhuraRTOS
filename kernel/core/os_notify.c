@@ -39,47 +39,68 @@
  * A task blocked for any other reason (delay, mutex/queue/semaphore/event wait) is left
  * alone - the value is only latched for it to pick up on its next os_notify_wait.
  *
- * @param[in,out] task   Target task.
+ * A NULL task means THIS task, the same shorthand FreeRTOS uses for the calling task, which saves
+ * a task from having to keep a handle to itself just to pre-arm its own mailbox. It is refused
+ * from an ISR: "this task" there would mean whichever task the interrupt happened to land on, so
+ * the kernel will not guess. Note that inside a timer callback it resolves to the kernel timer
+ * task, since that is genuinely the task running the callback, and before the scheduler starts it
+ * resolves to nothing, which lands on the same INVALID_ARG as a stale handle.
+ *
+ * @param[in,out] task   Target task, or NULL for the calling task.
  * @param[in]     value  Value to store.
- * @return os_status  OK, or INVALID_ARG for a NULL/stale task handle.
+ * @return os_status  OK, or INVALID_ARG for a stale handle, or for NULL from an ISR or before any
+ *                    task is running.
  */
 os_status os_notify_give(os_task_t *task, uint32_t value)
 {
     os_status status = OS_STATUS_INVALID_ARG;
+    void      *tcb   = NULL;
 
-    if ((task != NULL) && (task->id != 0U))
+    os_critical_enter();
+
+    if (task != NULL)
     {
-        void *tcb;
-
-        os_critical_enter();
-
-        tcb = os_task_tcb_resolve(task->id);
-        if (tcb != NULL)
+        if (task->id != 0U)
         {
-            os_notify_slot_t *slot = os_task_notify_slot(tcb);
+            tcb = os_task_tcb_resolve(task->id);
+        }
+    }
+    else if (!os_arch_in_isr())
+    {
+        /* Resolves to NULL before the scheduler hands out a first task, which lands on the
+         * same INVALID_ARG as a stale handle rather than on a guess. */
+        tcb = os_task_tcb_current();
+    }
+    else
+    {
+        /* NULL from an ISR: nothing to address, and nothing worth inventing. */
+    }
 
-            slot->value   = value;
-            slot->pending = true;
+    if (tcb != NULL)
+    {
+        os_notify_slot_t *slot = os_task_notify_slot(tcb);
 
-            /* Only a task parked in os_notify_wait is woken. waiting is true only inside that
-             * block, so a task blocked on anything else keeps its own wakeup reason and finds the
-             * value waiting the next time it asks for one.
-             *
-             * os_task_wake_tcb rather than os_task_wake: the critical section above already holds
-             * both the kernel mask and (on multi-core) the cross-core spinlock that the
-             * direct-handle form requires of its caller, so it skips the id lookup and the nested
-             * critical section. */
-            if (os_task_tcb_is_blocked(tcb) && slot->waiting)
-            {
-                slot->waiting = false;
-                os_task_wake_tcb(tcb);
-            }
+        slot->value   = value;
+        slot->pending = true;
 
-            status = OS_STATUS_OK;
+        /* Only a task parked in os_notify_wait is woken. waiting is true only inside that
+         * block, so a task blocked on anything else keeps its own wakeup reason and finds the
+         * value waiting the next time it asks for one.
+         *
+         * os_task_wake_tcb rather than os_task_wake: the critical section above already holds
+         * both the kernel mask and (on multi-core) the cross-core spinlock that the
+         * direct-handle form requires of its caller, so it skips the id lookup and the nested
+         * critical section. */
+        if (os_task_tcb_is_blocked(tcb) && slot->waiting)
+        {
+            slot->waiting = false;
+            os_task_wake_tcb(tcb);
         }
 
-        os_critical_exit();
+        status = OS_STATUS_OK;
     }
+
+    os_critical_exit();
 
     return status;
 }
@@ -102,7 +123,6 @@ os_status os_notify_wait(uint32_t timeout_ms, uint32_t *value_out)
     os_status status = OS_STATUS_INVALID_ARG;
 
     /* Task-only, like os_mutex_lock: an ISR has no task identity to wait as. */
-    OS_ASSERT(!os_arch_in_isr());
 
     if (!os_arch_in_isr())
     {

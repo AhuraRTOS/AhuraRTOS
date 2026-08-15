@@ -11,6 +11,10 @@
  * prints a detailed PASS/FAIL log via printf, finishing with a pass/fail summary. Depends on
  * nothing but ahura.h - no board/HAL headers - so it runs on any arch/board the kernel supports;
  * printf's destination (typically a UART) is the linking application's concern.
+ *
+ * @copyright (c) 2026 Ahura Project Contributors
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
 
 #include "ahura.h"
@@ -102,6 +106,10 @@ static os_semaphore_t os_test_sched_lock_sem;  /* left empty: a take would have 
  * pipeline stall) only ever ADDS cycles, so the minimum converges on the true uninterrupted
  * cost. The two cycle-counter reads have their own cost, measured the same way and subtracted.
  */
+/* How many timers the suite exercises at once. The kernel caps nothing - timers are linked
+ * into a list rather than taking a slot - so this is the suite's own choice, not a limit. */
+#define TEST_TIMER_SET             4U
+
 #define TEST_BENCH_SAMPLES         2000U
 #define TEST_BENCH_HEAVY_SAMPLES   200U
 
@@ -147,6 +155,32 @@ static os_event_t os_test_bench_event;
  * static of this type is by definition. */
 static os_atomic_t os_test_bench_atomic = OS_ATOMIC_INIT(0);
 #endif
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+static void test_bench_timer_cb(void *context, uint32_t value);
+
+/* A minute long, so it can be armed and cancelled 2000 times over without ever expiring: the
+ * measurement sees the arm/cancel path alone, never a delivery. */
+OS_TIMER_ONESHOT_DEFINE(os_test_bench_timer, 60000U, test_bench_timer_cb);
+
+/* Filler for the second timer row: start and stop search the running list, so their cost depends
+ * on how many timers are RUNNING. These sit in that list doing nothing, to make the slope visible
+ * rather than leaving it to be reasoned about. */
+#define TEST_BENCH_TIMER_FILL  8U
+
+OS_TIMER_ONESHOT_DEFINE(os_test_bf0, 60000U, test_bench_timer_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_bf1, 60000U, test_bench_timer_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_bf2, 60000U, test_bench_timer_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_bf3, 60000U, test_bench_timer_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_bf4, 60000U, test_bench_timer_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_bf5, 60000U, test_bench_timer_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_bf6, 60000U, test_bench_timer_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_bf7, 60000U, test_bench_timer_cb);
+
+static os_timer_t *os_test_bench_fill[TEST_BENCH_TIMER_FILL] = {
+    &os_test_bf0, &os_test_bf1, &os_test_bf2, &os_test_bf3,
+    &os_test_bf4, &os_test_bf5, &os_test_bf6, &os_test_bf7,
+};
+#endif
 
 /* Shared between two equal-priority tasks in test_context_switch_timing(): each increments
  * this once per loop turn, then yields - so its total over a fixed window is (approximately)
@@ -158,11 +192,18 @@ static __IO bool     os_test_switch_should_run = true;
 static os_mutex_t os_test_mutex;
 #endif
 
-/* test_spawn_helper drives the mutex, semaphore, queue and event sections, so it has to exist
- * whenever any one of them is compiled in. Guarding it on a single feature left the other three
- * calling an undeclared function. */
-#define TEST_HELPER_NEEDED ((OS_CONFIG_SEMAPHORE_ENABLE == 1U) || (OS_CONFIG_MUTEX_ENABLE == 1U) || \
-                            (OS_CONFIG_QUEUE_ENABLE == 1U)     || (OS_CONFIG_EVENT_ENABLE == 1U))
+/* test_spawn_helper has to exist whenever a section that CALLS it is compiled in, and no more.
+ * Guarding it on a single feature left the others calling an undeclared function; listing a
+ * feature that does not actually call it leaves the helper defined and unused, which is what
+ * -Wunused-function reports (and -Werror fails on).
+ *
+ * OS_CONFIG_MUTEX_ENABLE is deliberately NOT here even though the mutex section contains a call:
+ * that call sits inside a nested OS_CONFIG_SEMAPHORE_ENABLE guard, since handing a mutex over
+ * needs a semaphore to do it with. Mutexes alone never reach the helper, so the semaphore term
+ * below already covers that case. */
+#define TEST_HELPER_NEEDED ((OS_CONFIG_SEMAPHORE_ENABLE == 1U) || \
+                            (OS_CONFIG_QUEUE_ENABLE == 1U)     || \
+                            (OS_CONFIG_EVENT_ENABLE == 1U))
 
 #if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
 static os_semaphore_t os_test_bin_sem;
@@ -189,16 +230,22 @@ static os_event_t os_test_event;
 #endif
 
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
-static os_timer_t        os_test_timer_oneshot;
-static os_timer_t        os_test_timer_periodic;
+static void timer_oneshot_cb(void *context, uint32_t value);
+static void timer_periodic_cb(void *context, uint32_t value);
+static void test_churn_timer_cb(void *context, uint32_t value);
+
+/* Set up where they are declared: the kernel has no init call, so period, mode and callback are
+ * settled here and only the period is ever retuned (os_timer_period_set) at run time. */
+OS_TIMER_ONESHOT_DEFINE(os_test_timer_oneshot, 50U, timer_oneshot_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_timer_periodic, 30U, timer_periodic_cb);
+
+/* The churn test hammers one object with its own callback, so it gets its own object rather than
+ * repointing a shared one. */
+OS_TIMER_ONESHOT_DEFINE(os_test_churn_timer, 1000U, test_churn_timer_cb);
 static __IO uint32_t os_test_oneshot_fired  = 0U;
 static __IO uint32_t os_test_periodic_fired = 0U;
 #endif
 
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-static __IO bool     os_test_work_ran       = false;
-static __IO uint32_t os_test_work_run_count = 0U;
-#endif
 
 #if (OS_CONFIG_LOG_ENABLE == 1U)
 /* Capture buffer for test_log(): this file supplies os_log_output_cb - the kernel declares it and
@@ -404,8 +451,10 @@ static void test_event_group(void);
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
 static void test_timer(void);
 #endif
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-static void test_work(void);
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+static void test_timer_isr(void);
+static void test_timer_pool(void);
+static void test_timer_real_world(void);
 #endif
 static void test_assert(void);
 static void test_log(void);
@@ -762,10 +811,10 @@ static void test_delay(void)
                       (unsigned long)delta);
 
     t0    = os_tick_get();
-    os_delay_s(1U);
+    os_delay_ms(1000U);
     t1    = os_tick_get();
     delta = t1 - t0;
-    AHURA_TEST_CHECK((delta >= 1000U) && (delta <= 1060U), "os_delay_s(1) elapsed %lu ticks (expected ~1000)",
+    AHURA_TEST_CHECK((delta >= 1000U) && (delta <= 1060U), "os_delay_ms(1000) elapsed %lu ticks (expected ~1000)",
                       (unsigned long)delta);
 }
 
@@ -1695,17 +1744,43 @@ static void test_event_group(void)
 
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
 /******************************************************************************************************/
-static void timer_oneshot_cb(void *context)
+static void timer_oneshot_cb(void *context, uint32_t value);
+
+/* This object must be startable straight from its definition - the kernel has no init call. */
+OS_TIMER_ONESHOT_DEFINE(os_test_defined_timer, 40U, timer_oneshot_cb);
+
+static void timer_args_cb(void *context, uint32_t value);
+
+OS_TIMER_PERIODIC_DEFINE(os_test_args_timer, 20U, timer_args_cb);
+
+static __IO uint32_t os_test_args_runs    = 0U;
+static __IO bool     os_test_args_ok      = false;
+static uint32_t      os_test_args_marker  = 0x5EED5EEDUL;
+
+/******************************************************************************************************/
+static void timer_oneshot_cb(void *context, uint32_t value)
 {
+    (void)value;
     (void)context;
     os_test_oneshot_fired++;
 }
 
 /******************************************************************************************************/
-static void timer_periodic_cb(void *context)
+static void timer_periodic_cb(void *context, uint32_t value)
 {
+    (void)value;
     (void)context;
     os_test_periodic_fired++;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Records whether both arguments arrived exactly as os_timer_start was given them.
+ */
+static void timer_args_cb(void *context, uint32_t value)
+{
+    os_test_args_ok = (context == &os_test_args_marker) && (value == 0xABCDU);
+    os_test_args_runs++;
 }
 
 /******************************************************************************************************/
@@ -1716,10 +1791,9 @@ static void test_timer(void)
     test_print_section("Software Timer");
 
     os_test_oneshot_fired = 0U;
-    AHURA_TEST_CHECK(os_timer_init(&os_test_timer_oneshot, OS_TICKS_FROM_MS(50U), OS_TIMER_MODE_ONE_SHOT, timer_oneshot_cb,
-                                    NULL) == OS_STATUS_OK,
-                      "os_timer_init() configures a one-shot timer (50 ms)");
-    AHURA_TEST_CHECK(os_timer_start(&os_test_timer_oneshot) == OS_STATUS_OK, "os_timer_start() arms the one-shot timer");
+    AHURA_TEST_CHECK(os_timer_period_set(&os_test_timer_oneshot, 50U) == OS_STATUS_OK,
+                      "the one-shot timer is defined at compile time and retuned to 50 ms");
+    AHURA_TEST_CHECK(os_timer_start(&os_test_timer_oneshot, NULL, 0U) == OS_STATUS_OK, "os_timer_start() arms the one-shot timer");
 
     os_delay_ms(30U);
     AHURA_TEST_CHECK(os_test_oneshot_fired == 0U, "one-shot timer has not fired before its period elapses");
@@ -1730,10 +1804,9 @@ static void test_timer(void)
     AHURA_TEST_CHECK(os_test_oneshot_fired == 1U, "one-shot timer does not fire again on its own");
 
     os_test_periodic_fired = 0U;
-    AHURA_TEST_CHECK(os_timer_init(&os_test_timer_periodic, OS_TICKS_FROM_MS(30U), OS_TIMER_MODE_PERIODIC,
-                                    timer_periodic_cb, NULL) == OS_STATUS_OK,
-                      "os_timer_init() configures a periodic timer (30 ms)");
-    AHURA_TEST_CHECK(os_timer_start(&os_test_timer_periodic) == OS_STATUS_OK, "os_timer_start() arms the periodic timer");
+    AHURA_TEST_CHECK(os_timer_period_set(&os_test_timer_periodic, 30U) == OS_STATUS_OK,
+                      "the periodic timer is defined at compile time and retuned to 30 ms");
+    AHURA_TEST_CHECK(os_timer_start(&os_test_timer_periodic, NULL, 0U) == OS_STATUS_OK, "os_timer_start() arms the periodic timer");
     os_delay_ms(160U);
     AHURA_TEST_CHECK((os_test_periodic_fired >= 4U) && (os_test_periodic_fired <= 7U),
                       "periodic timer fires repeatedly (~5x expected in 160 ms, fired=%lu)",
@@ -1749,16 +1822,15 @@ static void test_timer(void)
     /* A 100 ms one-shot paused 40 ms in has ~60 ms left. Resuming must fire ~60 ms later, not
      * ~100 ms, which is what separates os_timer_start's resume from os_timer_restart's reload. */
     os_test_oneshot_fired = 0U;
-    (void)os_timer_init(&os_test_timer_oneshot, OS_TICKS_FROM_MS(100U), OS_TIMER_MODE_ONE_SHOT,
-                        timer_oneshot_cb, NULL);
-    (void)os_timer_start(&os_test_timer_oneshot);
+    (void)os_timer_period_set(&os_test_timer_oneshot, 100U);
+    (void)os_timer_start(&os_test_timer_oneshot, NULL, 0U);
     os_delay_ms(40U);
 
     AHURA_TEST_CHECK(os_timer_pause(&os_test_timer_oneshot) == OS_STATUS_OK, "os_timer_pause() halts a running timer");
     os_delay_ms(150U);
     AHURA_TEST_CHECK(os_test_oneshot_fired == 0U, "a paused timer does not fire");
 
-    (void)os_timer_start(&os_test_timer_oneshot);
+    (void)os_timer_start(&os_test_timer_oneshot, NULL, 0U);
     os_delay_ms(40U);
     AHURA_TEST_CHECK(os_test_oneshot_fired == 0U, "start() resumes the time left, not a full period");
     os_delay_ms(50U);
@@ -1767,157 +1839,864 @@ static void test_timer(void)
 
     /* Restart 70 ms into a 100 ms period: the deadline moves out a whole period from now. */
     os_test_oneshot_fired = 0U;
-    (void)os_timer_init(&os_test_timer_oneshot, OS_TICKS_FROM_MS(100U), OS_TIMER_MODE_ONE_SHOT,
-                        timer_oneshot_cb, NULL);
-    (void)os_timer_start(&os_test_timer_oneshot);
+    (void)os_timer_period_set(&os_test_timer_oneshot, 100U);
+    (void)os_timer_start(&os_test_timer_oneshot, NULL, 0U);
     os_delay_ms(70U);
-    AHURA_TEST_CHECK(os_timer_restart(&os_test_timer_oneshot) == OS_STATUS_OK, "os_timer_restart() re-arms 70 ms in");
+    AHURA_TEST_CHECK(os_timer_restart(&os_test_timer_oneshot, NULL, 0U) == OS_STATUS_OK, "os_timer_restart() re-arms 70 ms in");
     os_delay_ms(50U);
     AHURA_TEST_CHECK(os_test_oneshot_fired == 0U, "restart moved the deadline");
     os_delay_ms(70U);
     AHURA_TEST_CHECK(os_test_oneshot_fired == 1U, "fires a full period after restart");
 
-    /* Delete leaves the object needing os_timer_init before it can run again. */
     os_test_periodic_fired = 0U;
-    (void)os_timer_init(&os_test_timer_periodic, OS_TICKS_FROM_MS(30U), OS_TIMER_MODE_PERIODIC,
-                        timer_periodic_cb, NULL);
-    (void)os_timer_start(&os_test_timer_periodic);
+    (void)os_timer_period_set(&os_test_timer_periodic, 30U);
+    (void)os_timer_start(&os_test_timer_periodic, NULL, 0U);
     os_delay_ms(50U);
 
-    AHURA_TEST_CHECK(os_timer_delete(&os_test_timer_periodic) == OS_STATUS_OK, "os_timer_delete() tears it down");
+    AHURA_TEST_CHECK(os_timer_stop(&os_test_timer_periodic) == OS_STATUS_OK, "os_timer_stop() tears it down");
     snapshot = os_test_periodic_fired;
     os_delay_ms(90U);
-    AHURA_TEST_CHECK(os_test_periodic_fired == snapshot, "no further fires after os_timer_delete()");
-    AHURA_TEST_CHECK(os_timer_start(&os_test_timer_periodic) == OS_STATUS_INVALID_ARG,
-                      "a deleted timer is refused until re-init");
-    (void)os_timer_init(&os_test_timer_periodic, OS_TICKS_FROM_MS(30U), OS_TIMER_MODE_PERIODIC,
-                        timer_periodic_cb, NULL);
+    AHURA_TEST_CHECK(os_test_periodic_fired == snapshot, "no further fires after os_timer_stop()");
+
+    /* A stopped timer keeps its configuration, so starting it again needs no re-init. */
+    AHURA_TEST_CHECK(os_timer_start(&os_test_timer_periodic, NULL, 0U) == OS_STATUS_OK,
+                      "a stopped timer starts again without being re-initialized");
     (void)os_timer_stop(&os_test_timer_periodic);
+
+    /* Retuning leaves the countdown alone, so the period only bites on the next reload. */
+    AHURA_TEST_CHECK(os_timer_period_set(&os_test_timer_periodic, 25U) == OS_STATUS_OK,
+                      "os_timer_period_set() accepts a new period");
+    AHURA_TEST_CHECK((os_timer_period_set(NULL, 25U) == OS_STATUS_INVALID_ARG) &&
+                     (os_timer_period_set(&os_test_timer_periodic, 0U) == OS_STATUS_INVALID_ARG) &&
+                     (os_timer_period_set(&os_test_timer_periodic, OS_WAIT_FOREVER) == OS_STATUS_INVALID_ARG),
+                      "and refuses NULL, 0 and OS_WAIT_FOREVER");
+    os_test_periodic_fired = 0U;
+    (void)os_timer_start(&os_test_timer_periodic, NULL, 0U);
+    os_delay_ms(120U);
+    (void)os_timer_stop(&os_test_timer_periodic);
+    AHURA_TEST_CHECK(os_test_periodic_fired >= 3U,
+                      "and the retuned 25 ms period is what runs (fired=%lu in 120 ms)",
+                      (unsigned long)os_test_periodic_fired);
+
+    /* Repointing a timer at a different callback is how one object serves more than one job now
+     * that there is no init call. */
+    AHURA_TEST_CHECK(os_timer_callback_set(&os_test_timer_periodic, timer_periodic_cb) == OS_STATUS_OK,
+                      "os_timer_callback_set() accepts a new callback");
+    AHURA_TEST_CHECK((os_timer_callback_set(NULL, timer_periodic_cb) == OS_STATUS_INVALID_ARG) &&
+                     (os_timer_callback_set(&os_test_timer_periodic, NULL) == OS_STATUS_INVALID_ARG),
+                      "and refuses a NULL timer or callback");
+
+    /* The DEFINE macro settles period, mode and callback at compile time, so the object is
+     * startable with no init call at all, and the state it produces has to be exactly what a
+     * timer starts life in, or it would never fire. */
+    os_test_oneshot_fired = 0U;
+    AHURA_TEST_CHECK(os_timer_start(&os_test_defined_timer, NULL, 0U) == OS_STATUS_OK,
+                      "a DEFINE macro gives a timer that is startable as declared");
+    os_delay_ms(90U);
+    AHURA_TEST_CHECK(os_test_oneshot_fired == 1U,
+                      "and it fires once, on its compile-time period (fired=%lu)",
+                      (unsigned long)os_test_oneshot_fired);
+    (void)os_timer_period_set(&os_test_timer_periodic, 30U);
+    (void)os_timer_stop(&os_test_timer_periodic);
+
+    /* ---- the run's arguments come from os_timer_start ---- */
+    /* A periodic timer, so the second expiry proves they PERSIST across reloads rather than being
+     * consumed by the first delivery. */
+    os_test_args_runs = 0U;
+    os_test_args_ok   = false;
+    AHURA_TEST_CHECK(os_timer_start(&os_test_args_timer, &os_test_args_marker, 0xABCDU) == OS_STATUS_OK,
+                      "os_timer_start() takes the context and value for this run");
+    os_delay_ms(70U);
+    (void)os_timer_stop(&os_test_args_timer);
+    AHURA_TEST_CHECK(os_test_args_runs >= 2U, "the periodic timer ran more than once (%lu)",
+                      (unsigned long)os_test_args_runs);
+    AHURA_TEST_CHECK(os_test_args_ok,
+                      "and both arguments reached the callback unchanged, on every expiry");
+
+    /* Restarting for a different job re-points both, which is what makes one object reusable. */
+    os_test_args_ok = false;
+    AHURA_TEST_CHECK(os_timer_restart(&os_test_args_timer, NULL, 0U) == OS_STATUS_OK,
+                      "os_timer_restart() re-points them for the next run");
+    os_delay_ms(40U);
+    (void)os_timer_stop(&os_test_args_timer);
+    AHURA_TEST_CHECK(!os_test_args_ok, "and the callback saw the new pair, not the old one");
+
+    /* ---- a timer that never came from a DEFINE macro is refused, not followed ---- */
+    /* This is the check the magic word exists for. Such an object's list nodes hold whatever the
+     * memory contained; a kernel that trusted them would run os_list_remove over a garbage
+     * neighbour pointer and write to an address nobody chose. Every entry point has to refuse it -
+     * os_timer_stop above all, since that is the one that unlinks. The object is deliberately
+     * filled with a non-zero pattern rather than left blank, because zeroed memory would pass a
+     * NULL check and hide the very failure this is about. */
+    {
+        os_timer_t undefined_timer;
+
+        memset(&undefined_timer, 0xA5, sizeof(undefined_timer));
+
+        AHURA_TEST_CHECK(os_timer_stop(&undefined_timer) == OS_STATUS_INVALID_ARG,
+                          "os_timer_stop() refuses a timer that never came from a DEFINE macro");
+        AHURA_TEST_CHECK(os_timer_start(&undefined_timer, NULL, 0U) == OS_STATUS_INVALID_ARG,
+                          "os_timer_start() refuses it too");
+        AHURA_TEST_CHECK(os_timer_restart(&undefined_timer, NULL, 0U) == OS_STATUS_INVALID_ARG,
+                          "and os_timer_restart()");
+        AHURA_TEST_CHECK(os_timer_pause(&undefined_timer) == OS_STATUS_INVALID_ARG,
+                          "and os_timer_pause()");
+        AHURA_TEST_CHECK(os_timer_period_set(&undefined_timer, 10U) == OS_STATUS_INVALID_ARG,
+                          "and os_timer_period_set()");
+        AHURA_TEST_CHECK(os_timer_callback_set(&undefined_timer, timer_oneshot_cb) == OS_STATUS_INVALID_ARG,
+                          "and os_timer_callback_set()");
+        AHURA_TEST_CHECK(os_timer_value_set(&undefined_timer, 1U) == OS_STATUS_INVALID_ARG,
+                          "and os_timer_value_set()");
+
+        /* A COPY of a perfectly valid timer, which is the case a fixed magic constant cannot see:
+         * every field including the signature would match, but the copy's list nodes still point
+         * into the ORIGINAL, so unlinking the copy would corrupt the original's neighbours. The
+         * self-pointer catches it because the copy no longer lives where its self field says. */
+        {
+            os_timer_t copy = os_test_defined_timer;
+
+            AHURA_TEST_CHECK(os_timer_stop(&copy) == OS_STATUS_INVALID_ARG,
+                              "a COPY of a valid timer is refused - its links belong to the original");
+            AHURA_TEST_CHECK(os_timer_start(&copy, NULL, 0U) == OS_STATUS_INVALID_ARG,
+                              "and starting the copy is refused too");
+        }
+
+        /* The residual case, and the one the membership walk exists for: an object whose marker
+         * is FORGED, so it passes every identity check the kernel can make, but whose list nodes
+         * are still garbage. This is what "the self-pointer happens to match by accident" would
+         * look like, constructed deliberately because it cannot be produced by chance.
+         *
+         * Without the walk, os_timer_stop reaches os_list_remove, reads prev = 0xA5A5A5A5 and
+         * executes a store to 0xA5A5A5A9. With it, the list is searched, the node is not a member,
+         * and nothing is written at all. */
+        {
+            os_timer_t rogue;
+
+            memset(&rogue, 0xA5, sizeof(rogue));
+            rogue.self         = &rogue;            /* forged: passes the identity check */
+            rogue.callback     = timer_oneshot_cb;
+            rogue.period_ticks = 5U;
+
+            AHURA_TEST_CHECK(os_timer_stop(&rogue) == OS_STATUS_OK,
+                              "a forged timer passes the identity check, as constructed");
+            AHURA_TEST_CHECK(os_timer_pause(&rogue) == OS_STATUS_ERROR,
+                              "and pausing it reports 'not running' rather than touching a list");
+        }
+
+        /* Still healthy afterwards: had any of those followed a garbage pointer, the damage would
+         * have landed in the running list, and this timer would not come back. */
+        os_test_oneshot_fired = 0U;
+        (void)os_timer_start(&os_test_defined_timer, NULL, 0U);
+        os_delay_ms(90U);
+        AHURA_TEST_CHECK(os_test_oneshot_fired == 1U,
+                          "and the kernel's own lists are intact after all seven refusals");
+    }
 }
 #endif /* OS_CONFIG_TIMER_ENABLE */
 
 /*
  * ***********************************************************************************************************
- * Work queue
+ * The timer API from an ISR
  * ***********************************************************************************************************
+ *
+ * Everything above calls the timer API from a task. This section calls it from a real exception
+ * handler, because "ISR-safe" is a claim worth executing rather than reasoning about.
+ *
+ * SVC is the vehicle. It exists on every Cortex-M, it is synchronous - so the test knows exactly
+ * when the handler ran, with no peripheral to configure and no vendor header to include - and the
+ * kernel deliberately claims no SVC_Handler of its own. An application that defines one cannot link
+ * this suite: a duplicate symbol, which is the loudest way for that clash to be noticed.
 */
 
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-/* Payload copy check, sized to whatever the build allows so it exercises the largest submission
- * the configuration accepts, whatever that is. Every byte differs from its neighbours, so a short
- * memcpy, an off-by-one or a byte-swapped copy all show up rather than cancelling out. */
-#define TEST_WORK_PAYLOAD_BYTES  ((OS_CONFIG_WORK_PAYLOAD_SIZE > 0U) ? OS_CONFIG_WORK_PAYLOAD_SIZE : 1U)
-#define TEST_WORK_PAYLOAD_BYTE(i)  ((uint8_t)(0xA5U ^ (uint8_t)(i)))
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
 
-static __IO bool os_test_work_payload_ok = false;
+#define TEST_ISR_ACTION_ARM   0U
+#define TEST_ISR_ACTION_STOP  1U
+
+static void test_isr_timer_cb(void *context, uint32_t value);
+static void test_isr_defer_cb(void *context, uint32_t value);
+
+/* One timer the ISR arms and later cancels, and one it uses as a deferred call - the "run this
+ * soon" case, which in this kernel is simply a one-shot with a one-tick period. */
+OS_TIMER_ONESHOT_DEFINE(os_test_isr_timer, 1000U, test_isr_timer_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_isr_defer, 1U, test_isr_defer_cb);
+
+static uint32_t       os_test_isr_marker        = 0xC0FFEEUL;
+
+static __IO uint32_t  os_test_isr_action        = TEST_ISR_ACTION_ARM;
+static __IO uint32_t  os_test_isr_entered       = 0U;
+static __IO bool      os_test_isr_was_isr       = false;
+static __IO os_status os_test_isr_period_status = OS_STATUS_ERROR;
+static __IO os_status os_test_isr_start_status  = OS_STATUS_ERROR;
+static __IO os_status os_test_isr_defer_status  = OS_STATUS_ERROR;
+static __IO os_status os_test_isr_stop_status   = OS_STATUS_ERROR;
+static __IO uint32_t  os_test_isr_timer_fired   = 0U;
+static __IO uint32_t  os_test_isr_defer_ran     = 0U;
+static __IO bool      os_test_isr_args_ok       = false;
 
 /******************************************************************************************************/
-static void test_work_payload_handler(void *data, size_t len)
+static void test_isr_timer_cb(void *context, uint32_t value)
 {
-    const uint8_t *received = (const uint8_t *)data;
-    bool          ok        = (data != NULL) && (len == OS_CONFIG_WORK_PAYLOAD_SIZE);
-    size_t        index;
+    (void)context;
+    (void)value;
+    os_test_isr_timer_fired++;
+}
 
-    for (index = 0U; ok && (index < len); index++)
+/******************************************************************************************************/
+/**
+ * @brief The deferred call the ISR scheduled. Both of its arguments came from the os_timer_start
+ *        the ISR made, which is the whole point of the check.
+ */
+static void test_isr_defer_cb(void *context, uint32_t value)
+{
+    os_test_isr_args_ok = (context == &os_test_isr_marker) && (value == 0x0DEFU);
+    os_test_isr_defer_ran++;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief The interrupt under test: it does nothing but call the timer API and record what came
+ *        back. Reached with "svc #0" from the test task below.
+ */
+void SVC_Handler(void)
+{
+    os_test_isr_entered++;
+    os_test_isr_was_isr = os_arch_in_isr();
+
+    if (os_test_isr_action == TEST_ISR_ACTION_ARM)
     {
-        if (received[index] != TEST_WORK_PAYLOAD_BYTE(index))
-        {
-            ok = false;
-        }
+        os_test_isr_period_status = os_timer_period_set(&os_test_isr_timer, 40U);
+        os_test_isr_start_status  = os_timer_start(&os_test_isr_timer, NULL, 0U);
+
+        /* Deferred work, scheduled from an interrupt, carrying its own data - one call, no pool. */
+        os_test_isr_defer_status  = os_timer_start(&os_test_isr_defer, &os_test_isr_marker, 0x0DEFU);
     }
-
-    os_test_work_payload_ok = ok;
+    else
+    {
+        os_test_isr_stop_status = os_timer_stop(&os_test_isr_timer);
+    }
 }
 
 /******************************************************************************************************/
-static void work_handler(void *data, size_t len)
+static void test_timer_isr(void)
 {
-    (void)data;
-    (void)len;
-    os_test_work_ran = true;
-    os_test_work_run_count++;
-}
+    /* SHPR2: SVCall's priority byte is the top one. Written as a WORD - byte access to this bank is
+     * not architecturally guaranteed on ARMv6-M - and 0xFF saturates to the lowest priority
+     * whatever the implemented bits are. SVCall resets to 0, which is above any
+     * OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY threshold, and the kernel traps a call from an interrupt
+     * its mask cannot reach. Lowering it is exactly what an application must do for an ISR of its
+     * own, so doing it here is part of what the section demonstrates. */
+    __IO uint32_t *shpr2 = (__IO uint32_t *)0xE000ED1CUL;
 
-/******************************************************************************************************/
-static void test_work(void)
-{
-    uint32_t snapshot;
+    test_print_section("Timer API from an ISR");
 
-    test_print_section("Work Queue");
+    *shpr2 = (*shpr2 & 0x00FFFFFFUL) | 0xFF000000UL;
 
-    os_test_work_ran = false;
-    AHURA_TEST_CHECK(os_work_submit(work_handler, NULL, 0U, 0U) == OS_STATUS_OK, "os_work_submit(delay=0) is accepted");
+    /* ---- start, retune and defer, all from the handler ---- */
+    os_test_isr_entered     = 0U;
+    os_test_isr_timer_fired = 0U;
+    os_test_isr_defer_ran   = 0U;
+    os_test_isr_args_ok     = false;
+    os_test_isr_action      = TEST_ISR_ACTION_ARM;
+
+    __asm volatile("svc #0" ::: "memory");
+
+    AHURA_TEST_CHECK(os_test_isr_entered == 1U, "the SVC handler ran once (%lu)",
+                      (unsigned long)os_test_isr_entered);
+    AHURA_TEST_CHECK(os_test_isr_was_isr, "and the kernel agrees that was ISR context");
+    AHURA_TEST_CHECK(os_test_isr_period_status == OS_STATUS_OK, "os_timer_period_set() from an ISR returns OK");
+    AHURA_TEST_CHECK(os_test_isr_start_status == OS_STATUS_OK, "os_timer_start() from an ISR returns OK");
+    AHURA_TEST_CHECK(os_test_isr_defer_status == OS_STATUS_OK,
+                      "and deferring work from an ISR is the same call, which cannot be refused");
+
     os_delay_ms(20U);
-    AHURA_TEST_CHECK(os_test_work_ran, "zero-delay work runs almost immediately");
+    AHURA_TEST_CHECK(os_test_isr_defer_ran == 1U, "the deferred call ran once (%lu)",
+                      (unsigned long)os_test_isr_defer_ran);
+    AHURA_TEST_CHECK(os_test_isr_args_ok,
+                      "with the context and value the ISR handed to os_timer_start");
 
-    os_test_work_run_count = 0U;
-    AHURA_TEST_CHECK(os_work_submit(work_handler, NULL, 0U, 80U) == OS_STATUS_OK, "os_work_submit(delay=80ms) is accepted");
-    os_delay_ms(30U);
-    AHURA_TEST_CHECK(os_test_work_run_count == 0U, "delayed work has not run yet (30/80 ms)");
+    os_delay_ms(60U);
+    AHURA_TEST_CHECK(os_test_isr_timer_fired == 1U,
+                      "and the timer the ISR started fired once, on the period the ISR set (%lu)",
+                      (unsigned long)os_test_isr_timer_fired);
+
+    /* ---- and cancelling from the handler, which is the other half of the claim ---- */
+    os_test_isr_timer_fired = 0U;
+    (void)os_timer_period_set(&os_test_isr_timer, 40U);
+    (void)os_timer_start(&os_test_isr_timer, NULL, 0U);
+
+    os_test_isr_action = TEST_ISR_ACTION_STOP;
+    __asm volatile("svc #0" ::: "memory");
+
+    AHURA_TEST_CHECK(os_test_isr_stop_status == OS_STATUS_OK, "os_timer_stop() from an ISR returns OK");
     os_delay_ms(80U);
-    AHURA_TEST_CHECK(os_test_work_run_count == 1U, "delayed work ran once its delay elapsed");
+    AHURA_TEST_CHECK(os_test_isr_timer_fired == 0U,
+                      "and the timer it cancelled never fired (%lu)",
+                      (unsigned long)os_test_isr_timer_fired);
+    AHURA_TEST_CHECK(os_test_isr_entered == 2U, "both handler entries accounted for (%lu)",
+                      (unsigned long)os_test_isr_entered);
+}
+#endif /* OS_CONFIG_TIMER_ENABLE */
 
-    /* No handle means no rescheduling: two submissions are two calls. */
-    os_test_work_run_count = 0U;
-    (void)os_work_submit(work_handler, NULL, 0U, 40U);
-    (void)os_work_submit(work_handler, NULL, 0U, 40U);
-    os_delay_ms(120U);
-    AHURA_TEST_CHECK(os_test_work_run_count == 2U, "the same handler submitted twice runs twice (ran=%lu)",
-                      (unsigned long)os_test_work_run_count);
 
-    AHURA_TEST_CHECK(os_work_submit(NULL, NULL, 0U, 0U) == OS_STATUS_INVALID_ARG, "a NULL handler is refused");
-    AHURA_TEST_CHECK(os_work_submit(work_handler, NULL, 0U, OS_WAIT_FOREVER) == OS_STATUS_INVALID_ARG,
-                      "OS_WAIT_FOREVER is refused as a delay");
-    AHURA_TEST_CHECK(os_work_submit(work_handler, NULL, 4U, 0U) == OS_STATUS_INVALID_ARG,
-                      "a nonzero len with NULL data is refused");
-    AHURA_TEST_CHECK(os_work_submit(work_handler, "x", OS_CONFIG_WORK_PAYLOAD_SIZE + 1U, 0U) == OS_STATUS_INVALID_ARG,
-                      "a payload past OS_CONFIG_WORK_PAYLOAD_SIZE is refused, not truncated");
+/*
+ * ***********************************************************************************************************
+ * Deferred calls - os_timer_submit and its pool
+ * ***********************************************************************************************************
+ *
+ * The property that separates a submission from a start, and the reason both exist: os_timer_start
+ * on a pending timer RESCHEDULES it, so an interrupt firing twice produces one callback carrying
+ * only the second event. os_timer_submit takes a fresh slot each time, so both events arrive.
+ *
+ * The tests below assert both halves - the coalescing AND the non-coalescing - because either one
+ * alone would leave the difference undocumented by anything executable.
+*/
 
-    /* The payload is copied, so a buffer that dies before the handler runs is still fine. Sized to
-     * the configured maximum, so this is also the widest copy the build can be asked for. */
-    os_test_work_payload_ok = false;
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+
+#define TEST_POOL_SIZE     4U
+#define TEST_POOL_LOG_MAX  8U
+
+static void test_pool_cb(void *context, uint32_t value);
+static void test_pool_other_cb(void *context, uint32_t value);
+static void test_coalesce_cb(void *context, uint32_t value);
+
+/* Three pools rather than three delays at the call site: the delay belongs to the definition now,
+ * so "same work, different timing" is a second pool. */
+OS_TIMER_SUBMIT_DEFINE(os_test_pool,      TEST_POOL_SIZE, 0U,  test_pool_cb);
+OS_TIMER_SUBMIT_DEFINE(os_test_pool_slow, TEST_POOL_SIZE, 60U, test_pool_cb);
+OS_TIMER_SUBMIT_DEFINE(os_test_pool_b,    2U,             0U,  test_pool_other_cb);
+
+/* The contrast case: one ordinary one-shot, started twice. */
+OS_TIMER_ONESHOT_DEFINE(os_test_coalesce, 30U, test_coalesce_cb);
+
+static uint32_t      os_test_pool_marker = 0xFEEDU;
+static __IO uint32_t os_test_pool_log[TEST_POOL_LOG_MAX];
+static __IO uint32_t os_test_pool_runs  = 0U;
+static __IO bool     os_test_pool_ctx_ok = true;
+static __IO uint32_t os_test_pool_b_runs = 0U;
+static __IO uint32_t os_test_coalesce_runs = 0U;
+static __IO uint32_t os_test_coalesce_last = 0U;
+
+/******************************************************************************************************/
+static void test_pool_cb(void *context, uint32_t value)
+{
+    if (context != &os_test_pool_marker) { os_test_pool_ctx_ok = false; }
+
+    if (os_test_pool_runs < TEST_POOL_LOG_MAX) { os_test_pool_log[os_test_pool_runs] = value; }
+
+    os_test_pool_runs++;
+}
+
+/******************************************************************************************************/
+static void test_pool_other_cb(void *context, uint32_t value)
+{
+    (void)context;
+    (void)value;
+    os_test_pool_b_runs++;
+}
+
+/******************************************************************************************************/
+static void test_coalesce_cb(void *context, uint32_t value)
+{
+    (void)context;
+    os_test_coalesce_last = value;
+    os_test_coalesce_runs++;
+}
+
+/******************************************************************************************************/
+static void test_timer_pool(void)
+{
+    uint32_t filled;
+    uint32_t index;
+    bool     ok;
+
+    test_print_section("Deferred Calls (os_timer_submit)");
+
+    /* ---- the whole point: two submissions before either is delivered ---- */
+    /* The kernel lock is what makes this an honest model of an interrupt firing twice: the timer
+     * task runs above this one, so without it the first call would be delivered before the second
+     * was even made, and nothing would be proved. */
+    os_test_pool_runs   = 0U;
+    os_test_pool_ctx_ok = true;
+
+    os_kernel_lock();
+    ok  = (os_timer_submit(&os_test_pool, &os_test_pool_marker, 11U) == OS_STATUS_OK);
+    ok &= (os_timer_submit(&os_test_pool, &os_test_pool_marker, 22U) == OS_STATUS_OK);
+    os_kernel_unlock();
+
+    AHURA_TEST_CHECK(ok, "two submissions made back to back are both accepted");
+    os_delay_ms(30U);
+    AHURA_TEST_CHECK(os_test_pool_runs == 2U,
+                      "and the callback runs TWICE, not once (%lu)", (unsigned long)os_test_pool_runs);
+    AHURA_TEST_CHECK((os_test_pool_log[0] == 11U) && (os_test_pool_log[1] == 22U),
+                      "each carrying its own value, in submission order (%lu, %lu)",
+                      (unsigned long)os_test_pool_log[0], (unsigned long)os_test_pool_log[1]);
+    AHURA_TEST_CHECK(os_test_pool_ctx_ok, "and its own context");
+
+    /* ---- the contrast, which is why both calls exist ---- */
+    os_test_coalesce_runs = 0U;
+    os_test_coalesce_last = 0U;
+
+    os_kernel_lock();
+    (void)os_timer_start(&os_test_coalesce, &os_test_pool_marker, 11U);
+    (void)os_timer_start(&os_test_coalesce, &os_test_pool_marker, 22U);
+    os_kernel_unlock();
+
+    os_delay_ms(70U);
+    AHURA_TEST_CHECK(os_test_coalesce_runs == 1U,
+                      "os_timer_start twice over RESCHEDULES: one callback, not two (%lu)",
+                      (unsigned long)os_test_coalesce_runs);
+    AHURA_TEST_CHECK(os_test_coalesce_last == 22U,
+                      "carrying only the later event - which is the loss os_timer_submit avoids");
+
+    /* ---- a pool runs out on its own, and only its own ---- */
+    os_test_pool_runs = 0U;
+    filled            = 0U;
+    while (os_timer_submit(&os_test_pool_slow, &os_test_pool_marker, filled) == OS_STATUS_OK)
     {
-        uint8_t local[TEST_WORK_PAYLOAD_BYTES];
-        size_t  index;
-
-        for (index = 0U; index < OS_CONFIG_WORK_PAYLOAD_SIZE; index++)
-        {
-            local[index] = TEST_WORK_PAYLOAD_BYTE(index);
-        }
-
-        (void)os_work_submit(test_work_payload_handler, local, OS_CONFIG_WORK_PAYLOAD_SIZE, 40U);
-
-        /* Clobbered after submit: the copy the kernel took must be unaffected. */
-        for (index = 0U; index < OS_CONFIG_WORK_PAYLOAD_SIZE; index++)
-        {
-            local[index] = 0xFFU;
-        }
+        filled++;
     }
-    os_delay_ms(100U);
-    AHURA_TEST_CHECK(os_test_work_payload_ok,
-                      "all %u payload bytes reached the handler intact from a buffer already out of scope",
-                      (unsigned)OS_CONFIG_WORK_PAYLOAD_SIZE);
+    AHURA_TEST_CHECK(filled == TEST_POOL_SIZE,
+                      "a pool accepts exactly its own entry count (%lu of %u)",
+                      (unsigned long)filled, (unsigned)TEST_POOL_SIZE);
 
-    /* Every slot filled, so the next submission has nowhere to go. Long delays keep them all
-     * occupied while the registry is probed, then the wait lets them drain. */
-    snapshot = os_test_work_run_count;
+    os_test_pool_b_runs = 0U;
+    AHURA_TEST_CHECK(os_timer_submit(&os_test_pool_b, NULL, 0U) == OS_STATUS_OK,
+                      "and a FULL pool does not affect another pool at all");
+    os_delay_ms(20U);
+    AHURA_TEST_CHECK(os_test_pool_b_runs == 1U, "whose own call really ran");
+
+    os_delay_ms(120U);
+    AHURA_TEST_CHECK(os_test_pool_runs == TEST_POOL_SIZE,
+                      "every queued submission ran once its delay elapsed (%lu of %u)",
+                      (unsigned long)os_test_pool_runs, (unsigned)TEST_POOL_SIZE);
+
+    ok = true;
+    for (index = 0U; index < TEST_POOL_SIZE; index++)
     {
-        uint32_t filled = 0U;
+        if (os_test_pool_log[index] != index) { ok = false; }
+    }
+    AHURA_TEST_CHECK(ok, "in the order they were submitted, each with its own value");
 
-        while (os_work_submit(work_handler, NULL, 0U, 60U) == OS_STATUS_OK)
+    /* ---- entries come back, cycle after cycle ---- */
+    ok = true;
+    for (index = 0U; index < 3U; index++)
+    {
+        filled = 0U;
+        while (os_timer_submit(&os_test_pool_slow, &os_test_pool_marker, 0U) == OS_STATUS_OK)
         {
             filled++;
         }
 
-        AHURA_TEST_CHECK(filled == OS_CONFIG_MAX_WORKS,
-                          "the registry accepts exactly OS_CONFIG_MAX_WORKS submissions (%lu)",
-                          (unsigned long)filled);
+        if (filled != TEST_POOL_SIZE) { ok = false; }
+
+        os_delay_ms(120U);
     }
-    os_delay_ms(150U);
-    AHURA_TEST_CHECK(os_test_work_run_count == (snapshot + OS_CONFIG_MAX_WORKS),
-                      "and every one of them runs, freeing its slot");
+    AHURA_TEST_CHECK(ok, "the pool refills to exactly %u entries after every drain (last %lu)",
+                      (unsigned)TEST_POOL_SIZE, (unsigned long)filled);
+
+    /* ---- a pool entry is not a timer the public API will touch ---- */
+    /* OS_TIMER_SUBMIT_DEFINE declares the entries array in this file's scope, so one can be named.
+     * Arming a FREE entry would link its running_node into the running list while its ready_node is
+     * still on the pool's free list, and the next expiry would push that same node onto the
+     * delivery queue - overwriting the links the free list holds it by. The pool has been used by
+     * now, so these entries are fully prepared and would otherwise pass every other check. */
+    ok  = (os_timer_start(&os_test_pool_entries[0].timer, NULL, 0U) == OS_STATUS_INVALID_ARG);
+    ok &= (os_timer_restart(&os_test_pool_entries[0].timer, NULL, 0U) == OS_STATUS_INVALID_ARG);
+    ok &= (os_timer_stop(&os_test_pool_entries[0].timer) == OS_STATUS_INVALID_ARG);
+    ok &= (os_timer_pause(&os_test_pool_entries[0].timer) == OS_STATUS_INVALID_ARG);
+    ok &= (os_timer_period_set(&os_test_pool_entries[0].timer, 10U) == OS_STATUS_INVALID_ARG);
+    ok &= (os_timer_callback_set(&os_test_pool_entries[0].timer, test_pool_cb) == OS_STATUS_INVALID_ARG);
+    ok &= (os_timer_value_set(&os_test_pool_entries[0].timer, 1U) == OS_STATUS_INVALID_ARG);
+    AHURA_TEST_CHECK(ok, "every os_timer_* call refuses a pool entry - it belongs to os_timer_submit");
+
+    /* Filling THIS pool needs the kernel lock: its delay is 0, so without it the timer task -
+     * which outranks this one - would deliver and free each entry before the loop asked for the
+     * next, the pool would never report FULL, and the loop would never end. */
+    os_test_pool_runs = 0U;
+    filled            = 0U;
+
+    os_kernel_lock();
+    while (os_timer_submit(&os_test_pool, &os_test_pool_marker, filled) == OS_STATUS_OK)
+    {
+        filled++;
+    }
+    os_kernel_unlock();
+
+    os_delay_ms(40U);
+    AHURA_TEST_CHECK((filled == TEST_POOL_SIZE) && (os_test_pool_runs == TEST_POOL_SIZE),
+                      "and the pool is intact afterwards (%lu accepted, %lu ran)",
+                      (unsigned long)filled, (unsigned long)os_test_pool_runs);
+
+    /* ---- refusals ---- */
+    AHURA_TEST_CHECK(os_timer_submit(NULL, NULL, 0U) == OS_STATUS_INVALID_ARG,
+                      "a NULL pool is refused");
+
+    {
+        os_timer_pool_t rogue;
+
+        memset(&rogue, 0xA5, sizeof(rogue));
+        AHURA_TEST_CHECK(os_timer_submit(&rogue, NULL, 0U) == OS_STATUS_INVALID_ARG,
+                          "and a pool that never came from OS_TIMER_SUBMIT_DEFINE is refused");
+    }
 }
-#endif /* OS_CONFIG_WORK_ENABLE */
+#endif /* OS_CONFIG_TIMER_ENABLE */
+
+
+/*
+ * ***********************************************************************************************************
+ * Timers under real-project conditions
+ * ***********************************************************************************************************
+ *
+ * The sections above check one property at a time. These are the situations an application actually
+ * produces: callbacks that re-arm or cancel themselves, a callback that blocks, work that outruns
+ * its own period, a cancel that races the expiry it is cancelling, and an interrupt burst deeper
+ * than the pool it feeds. Each is a place where a plausible implementation passes every test above
+ * and still fails in the field.
+*/
+
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+
+#define TEST_RW_CHAIN_TARGET   5U
+#define TEST_RW_SAME_PERIOD    4U
+
+static void test_rw_rearm_cb(void *context, uint32_t value);
+static void test_rw_selfstop_cb(void *context, uint32_t value);
+static void test_rw_slow_cb(void *context, uint32_t value);
+static void test_rw_owed_cb(void *context, uint32_t value);
+static void test_rw_same_cb(void *context, uint32_t value);
+static void test_rw_retune_cb(void *context, uint32_t value);
+static void test_rw_chain_cb(void *context, uint32_t value);
+static void test_rw_pool_cb(void *context, uint32_t value);
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+static void test_rw_block_cb(void *context, uint32_t value);
+#endif
+
+OS_TIMER_ONESHOT_DEFINE(os_test_rw_rearm,    20U, test_rw_rearm_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_rw_selfstop, 20U, test_rw_selfstop_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_rw_slow,     10U, test_rw_slow_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_rw_owed,     20U, test_rw_owed_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_rw_retune,   40U, test_rw_retune_cb);
+OS_TIMER_ONESHOT_DEFINE(os_test_rw_chain,    15U, test_rw_chain_cb);
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+OS_TIMER_ONESHOT_DEFINE(os_test_rw_block,    20U, test_rw_block_cb);
+#endif
+
+OS_TIMER_PERIODIC_DEFINE(os_test_rw_same0, 30U, test_rw_same_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_rw_same1, 30U, test_rw_same_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_rw_same2, 30U, test_rw_same_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_rw_same3, 30U, test_rw_same_cb);
+
+static os_timer_t *os_test_rw_same[TEST_RW_SAME_PERIOD] = {
+    &os_test_rw_same0, &os_test_rw_same1, &os_test_rw_same2, &os_test_rw_same3,
+};
+
+/* Two pools sharing ONE callback, to prove their values cannot cross. */
+OS_TIMER_SUBMIT_DEFINE(os_test_rw_pool_a, 3U, 0U, test_rw_pool_cb);
+OS_TIMER_SUBMIT_DEFINE(os_test_rw_pool_b, 3U, 0U, test_rw_pool_cb);
+
+/* ONE entry, deliberately: a callback that submits again can only succeed if the entry it is being
+ * delivered on is already back in the pool. Depth 1 makes that the only way the chain can run. */
+OS_TIMER_SUBMIT_DEFINE(os_test_rw_chain_pool, 1U, 0U, test_rw_chain_cb);
+
+static __IO uint32_t os_test_rw_rearm_runs   = 0U;
+static __IO uint32_t os_test_rw_selfstop_runs = 0U;
+static __IO uint32_t os_test_rw_slow_runs    = 0U;
+static __IO uint32_t os_test_rw_owed_runs    = 0U;
+static __IO uint32_t os_test_rw_same_seen[TEST_RW_SAME_PERIOD];
+static __IO uint32_t os_test_rw_retune_runs  = 0U;
+static __IO uint32_t os_test_rw_chain_runs   = 0U;
+static __IO uint32_t os_test_rw_chain_fails  = 0U;
+static __IO uint32_t os_test_rw_pool_a_sum   = 0U;
+static __IO uint32_t os_test_rw_pool_b_sum   = 0U;
+static uint32_t      os_test_rw_marker_a     = 0xAAU;
+static uint32_t      os_test_rw_marker_b     = 0xBBU;
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+static os_mutex_t    os_test_rw_mutex;
+static __IO bool     os_test_rw_block_done = false;
+#endif
+
+/******************************************************************************************************/
+/** A one-shot that re-arms itself: the classic self-chaining timer. */
+static void test_rw_rearm_cb(void *context, uint32_t value)
+{
+    os_test_rw_rearm_runs++;
+
+    if (value > 1U)
+    {
+        /* Legal precisely because a finished one-shot leaves the running list BEFORE its callback
+         * is invoked - so the object is free to be armed again from inside itself. */
+        (void)os_timer_start(&os_test_rw_rearm, context, value - 1U);
+    }
+}
+
+/******************************************************************************************************/
+/** A periodic timer that cancels itself once its job is done. */
+static void test_rw_selfstop_cb(void *context, uint32_t value)
+{
+    (void)context;
+    os_test_rw_selfstop_runs++;
+
+    if (os_test_rw_selfstop_runs >= value)
+    {
+        (void)os_timer_stop(&os_test_rw_selfstop);
+    }
+}
+
+/******************************************************************************************************/
+/** Work that takes far longer than the period that scheduled it. */
+static void test_rw_slow_cb(void *context, uint32_t value)
+{
+    (void)context;
+    (void)value;
+    os_test_rw_slow_runs++;
+    os_delay_ms(40U);          /* four periods' worth, on the timer task */
+}
+
+/******************************************************************************************************/
+static void test_rw_owed_cb(void *context, uint32_t value)
+{
+    (void)context;
+    (void)value;
+    os_test_rw_owed_runs++;
+}
+
+/******************************************************************************************************/
+static void test_rw_same_cb(void *context, uint32_t value)
+{
+    (void)context;
+    if (value < TEST_RW_SAME_PERIOD) { os_test_rw_same_seen[value]++; }
+}
+
+/******************************************************************************************************/
+/** Retunes its own period from inside itself. */
+static void test_rw_retune_cb(void *context, uint32_t value)
+{
+    (void)context;
+    (void)value;
+    os_test_rw_retune_runs++;
+
+    if (os_test_rw_retune_runs == 1U)
+    {
+        (void)os_timer_period_set(&os_test_rw_retune, 15U);
+    }
+}
+
+/******************************************************************************************************/
+/** Defers more work from inside a deferred call. */
+static void test_rw_chain_cb(void *context, uint32_t value)
+{
+    os_test_rw_chain_runs++;
+
+    if (value > 1U)
+    {
+        if (os_timer_submit(&os_test_rw_chain_pool, context, value - 1U) != OS_STATUS_OK)
+        {
+            os_test_rw_chain_fails++;
+        }
+    }
+}
+
+/******************************************************************************************************/
+static void test_rw_pool_cb(void *context, uint32_t value)
+{
+    if (context == &os_test_rw_marker_a)      { os_test_rw_pool_a_sum += value; }
+    else if (context == &os_test_rw_marker_b) { os_test_rw_pool_b_sum += value; }
+}
+
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+/******************************************************************************************************/
+/** Blocks on a mutex - legal only because the callback runs on a task, not in the tick ISR. */
+static void test_rw_block_cb(void *context, uint32_t value)
+{
+    (void)context;
+    (void)value;
+
+    if (os_mutex_lock(&os_test_rw_mutex, OS_WAIT_FOREVER) == OS_STATUS_OK)
+    {
+        os_test_rw_block_done = true;
+        (void)os_mutex_unlock(&os_test_rw_mutex);
+    }
+}
+#endif
+
+/******************************************************************************************************/
+static void test_timer_real_world(void)
+{
+    uint32_t index;
+    uint32_t start_tick;
+    uint32_t accepted;
+    uint32_t refused;
+    bool     ok;
+
+    test_print_section("Timers: real-project situations");
+
+    /* ---- a one-shot that re-arms itself from inside its own callback ---- */
+    os_test_rw_rearm_runs = 0U;
+    (void)os_timer_start(&os_test_rw_rearm, NULL, TEST_RW_CHAIN_TARGET);
+    os_delay_ms((TEST_RW_CHAIN_TARGET * 20U) + 80U);
+    AHURA_TEST_CHECK(os_test_rw_rearm_runs == TEST_RW_CHAIN_TARGET,
+                      "a one-shot re-armed from inside its own callback ran %u times (%lu)",
+                      (unsigned)TEST_RW_CHAIN_TARGET, (unsigned long)os_test_rw_rearm_runs);
+
+    /* ---- a periodic timer that stops itself ---- */
+    os_test_rw_selfstop_runs = 0U;
+    (void)os_timer_start(&os_test_rw_selfstop, NULL, 4U);
+    os_delay_ms(220U);
+    AHURA_TEST_CHECK(os_test_rw_selfstop_runs == 4U,
+                      "a periodic timer that stops itself ran exactly 4 times (%lu)",
+                      (unsigned long)os_test_rw_selfstop_runs);
+
+    /* ---- work that outruns its own period coalesces instead of piling up ---- */
+    /* A 10 ms period whose callback takes 40 ms. Over 240 ms a backlog would show as ~24 runs and
+     * would keep running long after the stop; coalescing gives roughly 240/40 and stops promptly.
+     * This is the overload case every periodic-timer bug report is really about. */
+    os_test_rw_slow_runs = 0U;
+    (void)os_timer_start(&os_test_rw_slow, NULL, 0U);
+    os_delay_ms(240U);
+    (void)os_timer_stop(&os_test_rw_slow);
+    index = os_test_rw_slow_runs;
+    os_delay_ms(120U);
+    AHURA_TEST_CHECK((os_test_rw_slow_runs <= (index + 1U)) && (os_test_rw_slow_runs <= 9U),
+                      "a callback slower than its period coalesces, no backlog (%lu runs, %lu after stop)",
+                      (unsigned long)index, (unsigned long)os_test_rw_slow_runs);
+
+    /* ---- stop discards an expiry the tick already queued; pause keeps it ---- */
+    /* The kernel lock keeps the timer TASK from delivering while the tick ISR - which the lock does
+     * not mask - goes on counting. That is the only way to hold an expiry in the queued state long
+     * enough to act on it, and it is exactly the race a real cancel hits. */
+    os_test_rw_owed_runs = 0U;
+    (void)os_timer_start(&os_test_rw_owed, NULL, 0U);
+    os_kernel_lock();
+    start_tick = os_tick_get();
+    while ((os_tick_get() - start_tick) < 40U) { }
+    (void)os_timer_stop(&os_test_rw_owed);
+    os_kernel_unlock();
+    os_delay_ms(40U);
+    AHURA_TEST_CHECK(os_test_rw_owed_runs == 0U,
+                      "os_timer_stop discards an expiry the tick had already queued (%lu ran)",
+                      (unsigned long)os_test_rw_owed_runs);
+
+    os_test_rw_owed_runs = 0U;
+    (void)os_timer_start(&os_test_rw_owed, NULL, 0U);
+    os_kernel_lock();
+    start_tick = os_tick_get();
+    while ((os_tick_get() - start_tick) < 40U) { }
+    (void)os_timer_pause(&os_test_rw_owed);
+    os_kernel_unlock();
+    os_delay_ms(40U);
+    AHURA_TEST_CHECK(os_test_rw_owed_runs == 1U,
+                      "but os_timer_pause still owes it, and it runs (%lu)",
+                      (unsigned long)os_test_rw_owed_runs);
+    (void)os_timer_stop(&os_test_rw_owed);
+
+    /* ---- several timers sharing one period all expire on the same tick ---- */
+    for (index = 0U; index < TEST_RW_SAME_PERIOD; index++)
+    {
+        os_test_rw_same_seen[index] = 0U;
+        (void)os_timer_start(os_test_rw_same[index], NULL, index);
+    }
+    os_delay_ms(100U);
+    for (index = 0U; index < TEST_RW_SAME_PERIOD; index++)
+    {
+        (void)os_timer_stop(os_test_rw_same[index]);
+    }
+    ok = true;
+    for (index = 0U; index < TEST_RW_SAME_PERIOD; index++)
+    {
+        if ((os_test_rw_same_seen[index] < 2U) || (os_test_rw_same_seen[index] > 4U)) { ok = false; }
+    }
+    AHURA_TEST_CHECK(ok, "%u timers on the same period all fired, none starved (%lu/%lu/%lu/%lu)",
+                      (unsigned)TEST_RW_SAME_PERIOD,
+                      (unsigned long)os_test_rw_same_seen[0], (unsigned long)os_test_rw_same_seen[1],
+                      (unsigned long)os_test_rw_same_seen[2], (unsigned long)os_test_rw_same_seen[3]);
+
+    /* ---- a timer that retunes its own period from inside its callback ---- */
+    os_test_rw_retune_runs = 0U;
+    (void)os_timer_period_set(&os_test_rw_retune, 40U);
+    (void)os_timer_start(&os_test_rw_retune, NULL, 0U);
+    os_delay_ms(160U);
+    (void)os_timer_stop(&os_test_rw_retune);
+    AHURA_TEST_CHECK(os_test_rw_retune_runs >= 5U,
+                      "a timer retuned from inside its own callback speeds up (%lu runs in 160 ms)",
+                      (unsigned long)os_test_rw_retune_runs);
+
+    /* ---- an interrupt burst deeper than the pool that feeds it ---- */
+    /* Everything the pool can take is accepted and runs; the excess is REFUSED rather than dropped
+     * silently, which is what lets an application count its own overruns. */
+    os_test_rw_pool_a_sum = 0U;
+    accepted              = 0U;
+    refused               = 0U;
+
+    os_kernel_lock();
+    for (index = 1U; index <= 6U; index++)
+    {
+        if (os_timer_submit(&os_test_rw_pool_a, &os_test_rw_marker_a, index) == OS_STATUS_OK)
+        {
+            accepted += index;
+        }
+        else
+        {
+            refused++;
+        }
+    }
+    os_kernel_unlock();
+    os_delay_ms(60U);
+    AHURA_TEST_CHECK((refused == 3U) && (os_test_rw_pool_a_sum == accepted),
+                      "a burst of 6 into a depth-3 pool: 3 refused, the rest all ran (sum %lu of %lu)",
+                      (unsigned long)os_test_rw_pool_a_sum, (unsigned long)accepted);
+
+    /* ---- and the pool is usable again immediately afterwards ---- */
+    os_test_rw_pool_a_sum = 0U;
+    AHURA_TEST_CHECK(os_timer_submit(&os_test_rw_pool_a, &os_test_rw_marker_a, 7U) == OS_STATUS_OK,
+                      "the overrun left the pool healthy");
+    os_delay_ms(30U);
+    AHURA_TEST_CHECK(os_test_rw_pool_a_sum == 7U, "and that call ran with its own value");
+
+    /* ---- two pools sharing one callback keep their values apart ---- */
+    os_test_rw_pool_a_sum = 0U;
+    os_test_rw_pool_b_sum = 0U;
+    os_kernel_lock();
+    (void)os_timer_submit(&os_test_rw_pool_a, &os_test_rw_marker_a, 10U);
+    (void)os_timer_submit(&os_test_rw_pool_b, &os_test_rw_marker_b, 20U);
+    (void)os_timer_submit(&os_test_rw_pool_a, &os_test_rw_marker_a, 30U);
+    os_kernel_unlock();
+    os_delay_ms(40U);
+    AHURA_TEST_CHECK((os_test_rw_pool_a_sum == 40U) && (os_test_rw_pool_b_sum == 20U),
+                      "two pools on one callback do not cross (a=%lu b=%lu)",
+                      (unsigned long)os_test_rw_pool_a_sum, (unsigned long)os_test_rw_pool_b_sum);
+
+    /* ---- deferring more work from inside a deferred call ---- */
+    os_test_rw_chain_runs  = 0U;
+    os_test_rw_chain_fails = 0U;
+    (void)os_timer_start(&os_test_rw_chain, &os_test_rw_marker_a, 3U);
+    os_delay_ms(120U);
+    AHURA_TEST_CHECK((os_test_rw_chain_runs == 3U) && (os_test_rw_chain_fails == 0U),
+                      "a callback re-submits on a depth-1 pool, so its entry was already free "
+                      "(%lu ran, %lu refused)",
+                      (unsigned long)os_test_rw_chain_runs, (unsigned long)os_test_rw_chain_fails);
+
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+    /* ---- a callback that BLOCKS, which is only legal because it runs on a task ---- */
+    /* Held by this task when the timer fires, so the callback must wait for it. If callbacks ran in
+     * the tick ISR this would deadlock the system instead of simply waiting. */
+    if (os_mutex_init(&os_test_rw_mutex) == OS_STATUS_OK)
+    {
+        os_test_rw_block_done = false;
+        (void)os_mutex_lock(&os_test_rw_mutex, OS_WAIT_FOREVER);
+        (void)os_timer_start(&os_test_rw_block, NULL, 0U);
+        os_delay_ms(60U);
+        AHURA_TEST_CHECK(!os_test_rw_block_done,
+                          "a timer callback blocks on a held mutex rather than spinning or failing");
+        (void)os_mutex_unlock(&os_test_rw_mutex);
+        os_delay_ms(40U);
+        AHURA_TEST_CHECK(os_test_rw_block_done,
+                          "and completes once the mutex is released - proof it runs on a task");
+    }
+#endif
+}
+#endif /* OS_CONFIG_TIMER_ENABLE */
 
 /*
  * ***********************************************************************************************************
@@ -1990,8 +2769,21 @@ static void test_task_notify(void)
 
     test_print_section("Task Notifications");
 
-    AHURA_TEST_CHECK(os_notify_give(NULL, 1U) == OS_STATUS_INVALID_ARG,
-                      "os_notify_give(NULL) is rejected");
+    /* NULL means the CALLING task, so this arms this task's own mailbox rather than being
+     * rejected. Consuming it again with os_notify_wait is what proves it went to the right
+     * task: any other target would leave this one empty. */
+    {
+        uint32_t self_value = 0U;
+
+        AHURA_TEST_CHECK(os_notify_give(NULL, 0xC0DEU) == OS_STATUS_OK,
+                          "os_notify_give(NULL) targets the calling task");
+        AHURA_TEST_CHECK(os_notify_wait(OS_WAIT_NOTHING, &self_value) == OS_STATUS_OK,
+                          "and the value is waiting in this task's own mailbox");
+        AHURA_TEST_CHECK(self_value == 0xC0DEU, "with the value intact (0x%lX)",
+                          (unsigned long)self_value);
+        AHURA_TEST_CHECK(os_notify_wait(OS_WAIT_NOTHING, NULL) == OS_STATUS_EMPTY,
+                          "and nothing left behind after it was consumed");
+    }
 
     stale_task.id = 0xFFFFFFF0U;
     AHURA_TEST_CHECK(os_notify_give(&stale_task, 1U) == OS_STATUS_INVALID_ARG,
@@ -3193,15 +3985,16 @@ static void test_stress_task_churn(void)
 static __IO uint32_t os_test_churn_timer_fired = 0U;
 
 /******************************************************************************************************/
-static void test_churn_timer_cb(void *context)
+static void test_churn_timer_cb(void *context, uint32_t value)
 {
+    (void)value;
     (void)context;
     os_test_churn_timer_fired++;
 }
 
 /******************************************************************************************************/
 /**
- * @brief Hammers os_timer_init()/os_timer_start()/os_timer_stop() on the same timer object back-
+ * @brief Hammers os_timer_start()/os_timer_stop() on the same timer object back-
  *        to-back, many times, always stopping it long before its (long) period could elapse -
  *        purely to shake out add/remove bugs in the timer list under rapid churn. Finishes with
  *        one real run to prove the timer list is still healthy afterward, not just that the API
@@ -3218,20 +4011,19 @@ static void test_stress_timer_churn(void)
 
     for (i = 0U; i < OS_TEST_TIMER_CHURN_ITERATIONS; i++)
     {
-        if (os_timer_init(&os_test_timer_oneshot, OS_TICKS_FROM_MS(1000U), OS_TIMER_MODE_ONE_SHOT, test_churn_timer_cb,
-                           NULL) != OS_STATUS_OK)
+        if (os_timer_period_set(&os_test_churn_timer, 1000U) != OS_STATUS_OK)
         {
             all_ok = false;
             break;
         }
 
-        if (os_timer_start(&os_test_timer_oneshot) != OS_STATUS_OK)
+        if (os_timer_start(&os_test_churn_timer, NULL, 0U) != OS_STATUS_OK)
         {
             all_ok = false;
             break;
         }
 
-        if (os_timer_stop(&os_test_timer_oneshot) != OS_STATUS_OK)
+        if (os_timer_stop(&os_test_churn_timer) != OS_STATUS_OK)
         {
             all_ok = false;
             break;
@@ -3243,10 +4035,9 @@ static void test_stress_timer_churn(void)
     AHURA_TEST_CHECK(os_test_churn_timer_fired == 0U, "none of the stopped-before-expiry timers fired (fired=%lu)",
                       (unsigned long)os_test_churn_timer_fired);
 
-    AHURA_TEST_CHECK(os_timer_init(&os_test_timer_oneshot, OS_TICKS_FROM_MS(30U), OS_TIMER_MODE_ONE_SHOT,
-                                    test_churn_timer_cb, NULL) == OS_STATUS_OK,
+    AHURA_TEST_CHECK(os_timer_period_set(&os_test_churn_timer, 30U) == OS_STATUS_OK,
                       "timer re-armed for a real run after the churn");
-    AHURA_TEST_CHECK(os_timer_start(&os_test_timer_oneshot) == OS_STATUS_OK, "timer starts normally after the churn");
+    AHURA_TEST_CHECK(os_timer_start(&os_test_churn_timer, NULL, 0U) == OS_STATUS_OK, "timer starts normally after the churn");
     os_delay_ms(60U);
     AHURA_TEST_CHECK(os_test_churn_timer_fired == 1U, "the post-churn timer still fires correctly (fired=%lu)",
                       (unsigned long)os_test_churn_timer_fired);
@@ -3288,8 +4079,21 @@ static void test_stress_timer_churn(void)
  * test_regressions() (which runs in every build) fill the registry with them. Declaring them
  * inside the block made the whole suite fail to compile at -O0 - precisely the build a board
  * bring-up uses. */
-static os_timer_t os_test_tflood[OS_CONFIG_MAX_TIMERS];
-static os_timer_t os_test_tflood_extra;
+static void test_tflood_cb(void *context, uint32_t value);
+
+OS_TIMER_PERIODIC_DEFINE(os_test_tf0, 10U, test_tflood_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_tf1, 15U, test_tflood_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_tf2, 20U, test_tflood_cb);
+OS_TIMER_PERIODIC_DEFINE(os_test_tf3, 25U, test_tflood_cb);
+
+static os_timer_t *os_test_tflood[TEST_TIMER_SET] = {
+    &os_test_tf0,
+    &os_test_tf1,
+    &os_test_tf2,
+    &os_test_tf3,
+};
+
+OS_TIMER_PERIODIC_DEFINE(os_test_tflood_extra, 10U, test_tflood_cb);
 #endif
 
 #if (OS_TEST_STRESS_EXTENDED == 1U)
@@ -3924,86 +4728,6 @@ static void test_stress_event_bit_storm(void)
 }
 #endif /* OS_CONFIG_EVENT_ENABLE */
 
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-
-#define OS_TEST_WFLOOD_ITEMS  (2U * OS_CONFIG_MAX_WORKS)
-#define OS_TEST_WFLOOD_ROUNDS 20U
-
-static __IO uint32_t os_test_wflood_ran = 0U;
-
-/******************************************************************************************************/
-static void test_wflood_handler(void *data, size_t len)
-{
-    (void)data;
-    (void)len;
-    os_test_wflood_ran++;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Oversubscribes the work registry with twice as many submissions as it has slots, so the
- *        FULL path is exercised for real rather than hypothesized, and reconciles both outcomes
- *        exactly: executed + refused. A registry that wrote past its array, or leaked a slot when a
- *        handler finished, cannot make these totals balance. Then it churns the registry 20 more
- *        times to prove slots are reused cleanly.
- */
-static void test_stress_work_flood(void)
-{
-    uint32_t accepted = 0U;
-    uint32_t refused  = 0U;
-    uint32_t round;
-    uint32_t i;
-
-    test_print_section("Stress: work registry oversubscribed and flooded");
-
-    os_test_wflood_ran = 0U;
-
-    /* The delay is long enough that nothing can run during the submit loop, which is what makes
-     * the accepted/refused split deterministic: exactly OS_CONFIG_MAX_WORKS slots exist. */
-    for (i = 0U; i < OS_TEST_WFLOOD_ITEMS; i++)
-    {
-        os_status status = os_work_submit(test_wflood_handler, NULL, 0U, 60U);
-
-        if (status == OS_STATUS_OK)        { accepted++; }
-        else if (status == OS_STATUS_FULL) { refused++; }
-    }
-
-    AHURA_TEST_CHECK(accepted == OS_CONFIG_MAX_WORKS,
-                      "the registry took exactly its %u slots and no more (%lu accepted)",
-                      (unsigned)OS_CONFIG_MAX_WORKS, (unsigned long)accepted);
-    AHURA_TEST_CHECK(refused == (OS_TEST_WFLOOD_ITEMS - OS_CONFIG_MAX_WORKS),
-                      "every submission past capacity was refused with FULL (%lu)", (unsigned long)refused);
-
-    os_delay_ms(120U);
-
-    AHURA_TEST_CHECK(os_test_wflood_ran == accepted,
-                      "every accepted submission ran exactly once (%lu of %lu)",
-                      (unsigned long)os_test_wflood_ran, (unsigned long)accepted);
-
-    /* Registry churn: fill it, let it drain, repeat. Each round has to release and reuse its slots
-     * cleanly or the total below cannot come out even. */
-    os_test_wflood_ran = 0U;
-    accepted     = 0U;
-
-    for (round = 0U; round < OS_TEST_WFLOOD_ROUNDS; round++)
-    {
-        for (i = 0U; i < OS_TEST_WFLOOD_ITEMS; i++)
-        {
-            if (os_work_submit(test_wflood_handler, NULL, 0U, 0U) == OS_STATUS_OK) { accepted++; }
-        }
-
-        for (i = 0U; (i < 50U) && (os_test_wflood_ran < accepted); i++)
-        {
-            os_delay_ms(1U);
-        }
-    }
-
-    AHURA_TEST_CHECK(os_test_wflood_ran == accepted,
-                      "every accepted item across %u churn rounds ran exactly once (%lu of %lu)",
-                      (unsigned)OS_TEST_WFLOOD_ROUNDS, (unsigned long)os_test_wflood_ran, (unsigned long)accepted);
-}
-#endif /* OS_CONFIG_WORK_ENABLE */
-
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
 
 #define OS_TEST_TFLOOD_WINDOW 200U
@@ -4011,14 +4735,16 @@ static void test_stress_work_flood(void)
 /* os_test_tflood[] and os_test_tflood_extra are declared further down, outside
  * this OS_TEST_STRESS_EXTENDED block: test_regressions() fills the timer
  * registry with them too, and that test always runs. */
-static __IO uint32_t os_test_tflood_fired[OS_CONFIG_MAX_TIMERS];
+static __IO uint32_t os_test_tflood_fired[TEST_TIMER_SET];
 
 /******************************************************************************************************/
-static void test_tflood_cb(void *context)
+static void test_tflood_cb(void *context, uint32_t value)
 {
-    uint32_t index = (uint32_t)(uintptr_t)context;
+    (void)context;
 
-    if (index < OS_CONFIG_MAX_TIMERS) { os_test_tflood_fired[index]++; }
+    /* value is what os_timer_start was given, so one shared definition still knows which of the
+     * array's timers fired. */
+    if (value < TEST_TIMER_SET) { os_test_tflood_fired[value]++; }
 }
 
 /******************************************************************************************************/
@@ -4036,7 +4762,7 @@ static void test_tflood_cb(void *context)
  */
 static void test_stress_timer_flood(void)
 {
-    uint32_t snapshot[OS_CONFIG_MAX_TIMERS];
+    uint32_t snapshot[TEST_TIMER_SET];
     uint32_t started      = 0U;
     bool     all_stopped  = true;
     bool     counts_ok    = true;
@@ -4045,39 +4771,39 @@ static void test_stress_timer_flood(void)
 
     test_print_section("Stress: every timer slot armed periodically at once");
 
-    for (i = 0U; i < OS_CONFIG_MAX_TIMERS; i++)
+    for (i = 0U; i < TEST_TIMER_SET; i++)
     {
         uint32_t period_ms = 10U + (i * 5U);
 
         os_test_tflood_fired[i] = 0U;
 
-        (void)os_timer_init(&os_test_tflood[i], OS_TICKS_FROM_MS(period_ms), OS_TIMER_MODE_PERIODIC,
-                             test_tflood_cb, (void *)(uintptr_t)i);
+        (void)os_timer_period_set(os_test_tflood[i], period_ms);
 
-        if (os_timer_start(&os_test_tflood[i]) == OS_STATUS_OK) { started++; }
+        /* The index IS the identity under the new API: it reaches test_tflood_cb as value,
+         * which is how the per-timer counts below stay separate. */
+        if (os_timer_start(os_test_tflood[i], NULL, i) == OS_STATUS_OK) { started++; }
     }
 
-    AHURA_TEST_CHECK(started == OS_CONFIG_MAX_TIMERS,
+    AHURA_TEST_CHECK(started == TEST_TIMER_SET,
                       "all %u timer slots armed periodically (%lu started)",
-                      (unsigned)OS_CONFIG_MAX_TIMERS, (unsigned long)started);
+                      (unsigned)TEST_TIMER_SET, (unsigned long)started);
 
-    (void)os_timer_init(&os_test_tflood_extra, OS_TICKS_FROM_MS(10U), OS_TIMER_MODE_PERIODIC,
-                         test_tflood_cb, (void *)(uintptr_t)OS_CONFIG_MAX_TIMERS);
-    AHURA_TEST_CHECK(os_timer_start(&os_test_tflood_extra) == OS_STATUS_FULL,
-                      "one timer past the registry's capacity is refused with FULL");
+    AHURA_TEST_CHECK(os_timer_start(&os_test_tflood_extra, NULL, TEST_TIMER_SET) == OS_STATUS_OK,
+                      "and one more on top is accepted - there is no capacity to exceed");
+    (void)os_timer_stop(&os_test_tflood_extra);
 
     os_delay_ms(OS_TEST_TFLOOD_WINDOW);
 
-    for (i = 0U; i < OS_CONFIG_MAX_TIMERS; i++)
+    for (i = 0U; i < TEST_TIMER_SET; i++)
     {
-        if (os_timer_stop(&os_test_tflood[i]) != OS_STATUS_OK) { all_stopped = false; }
+        if (os_timer_stop(os_test_tflood[i]) != OS_STATUS_OK) { all_stopped = false; }
 
         snapshot[i] = os_test_tflood_fired[i];
     }
 
     AHURA_TEST_CHECK(all_stopped, "every armed timer stopped cleanly");
 
-    for (i = 0U; i < OS_CONFIG_MAX_TIMERS; i++)
+    for (i = 0U; i < TEST_TIMER_SET; i++)
     {
         uint32_t period_ms = 10U + (i * 5U);
         uint32_t expected  = OS_TEST_TFLOOD_WINDOW / period_ms;
@@ -4096,7 +4822,7 @@ static void test_stress_timer_flood(void)
     /* Long enough for even the slowest of them to have expired again had the stop not taken. */
     os_delay_ms(80U);
 
-    for (i = 0U; i < OS_CONFIG_MAX_TIMERS; i++)
+    for (i = 0U; i < TEST_TIMER_SET; i++)
     {
         if (os_test_tflood_fired[i] != snapshot[i]) { still_firing = true; }
     }
@@ -4233,10 +4959,6 @@ static void test_task_footprint(void)
     printf("  [INFO] sizeof(os_task_t) = %lu bytes (the public task handle)\r\n",
            (unsigned long)sizeof(os_task_t));
     printf("  [INFO] OS_CONFIG_MIN_STACK_SIZE       = %lu bytes\r\n", (unsigned long)OS_CONFIG_MIN_STACK_SIZE);
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-    printf("  [INFO] OS_CONFIG_WORK_STACK_SIZE      = %lu bytes (tsk_work)\r\n",
-           (unsigned long)OS_CONFIG_WORK_STACK_SIZE);
-#endif
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     printf("  [INFO] OS_CONFIG_TIMER_STACK_SIZE     = %lu bytes (tsk_timer)\r\n",
            (unsigned long)OS_CONFIG_TIMER_STACK_SIZE);
@@ -4458,8 +5180,8 @@ static void test_tickless_sleep(void)
      * UART transmit and eat into the window we are about to measure. Check/report status once
      * the timing-critical section below is over instead. */
     os_test_oneshot_fired = 0U;
-    init_status  = os_timer_init(&os_test_timer_oneshot, horizon, OS_TIMER_MODE_ONE_SHOT, timer_oneshot_cb, NULL);
-    start_status = os_timer_start(&os_test_timer_oneshot);
+    init_status  = os_timer_period_set(&os_test_timer_oneshot, horizon);
+    start_status = os_timer_start(&os_test_timer_oneshot, NULL, 0U);
 
     mask_before = os_arch_kernel_mask_active();
 
@@ -4486,7 +5208,7 @@ static void test_tickless_sleep(void)
                       "(before=0x%08lX after=0x%08lX)",
                       (unsigned long)mask_before, (unsigned long)mask_after);
 
-    AHURA_TEST_CHECK(init_status == OS_STATUS_OK, "os_timer_init() arms a %lu-tick horizon for the sleep test",
+    AHURA_TEST_CHECK(init_status == OS_STATUS_OK, "the timer takes a %lu-tick horizon for the sleep test",
                       (unsigned long)horizon);
     AHURA_TEST_CHECK(start_status == OS_STATUS_OK, "one-shot timer started");
     AHURA_TEST_CHECK((delta >= tolerance_low) && (delta <= tolerance_high),
@@ -4498,7 +5220,7 @@ static void test_tickless_sleep(void)
     AHURA_TEST_CHECK(os_test_oneshot_fired == 1U, "the timer bounding the sleep fired exactly once (fired=%lu)",
                       (unsigned long)os_test_oneshot_fired);
 
-    (void)os_timer_stop(&os_test_timer_oneshot);
+    (void)os_timer_stop(&os_test_churn_timer);
 }
 #else
 /******************************************************************************************************/
@@ -4514,6 +5236,18 @@ static void test_tickless_sleep(void)
  * Benchmarks
  * ***********************************************************************************************************
 */
+
+/******************************************************************************************************/
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+/**
+ * @brief Never actually reached - the benchmark timer's period outlives the measurement.
+ */
+static void test_bench_timer_cb(void *context, uint32_t value)
+{
+    (void)context;
+    (void)value;
+}
+#endif
 
 /******************************************************************************************************/
 /**
@@ -4737,6 +5471,41 @@ static void test_benchmarks(void)
     }
 #endif
 
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+    /* The arming path, measured where nothing can interfere: the period outlives the run, so no
+     * expiry is ever queued and no task is ever woken. This is also what deferred work costs, since
+     * scheduling a deferred call IS starting a one-shot timer. Nothing here scales with a
+     * configured maximum - there is no longer one. */
+    TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_SAMPLES,
+                          (void)os_timer_start(&os_test_bench_timer, NULL, 0U);
+                          (void)os_timer_stop(&os_test_bench_timer));
+    test_bench_row("os_timer_start + stop (list empty)", TEST_BENCH_SUB(best, overhead), clock_hz);
+
+    /* The same pair with the running list already holding TEST_BENCH_TIMER_FILL timers. Both calls
+     * search that list to PROVE membership rather than trusting the timer's own link pointers, so
+     * the gap between these two rows is the cost of that guarantee - divide it by the fill count
+     * for the per-running-timer price. */
+    {
+        uint32_t fill;
+
+        for (fill = 0U; fill < TEST_BENCH_TIMER_FILL; fill++)
+        {
+            (void)os_timer_start(os_test_bench_fill[fill], NULL, 0U);
+        }
+
+        TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_SAMPLES,
+                              (void)os_timer_start(&os_test_bench_timer, NULL, 0U);
+                              (void)os_timer_stop(&os_test_bench_timer));
+        test_bench_row("  ^ same, with 8 other timers running", TEST_BENCH_SUB(best, overhead), clock_hz);
+
+        for (fill = 0U; fill < TEST_BENCH_TIMER_FILL; fill++)
+        {
+            (void)os_timer_stop(os_test_bench_fill[fill]);
+        }
+    }
+
+#endif
+
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
     {
         void *p;
@@ -4902,8 +5671,9 @@ static void test_reg_booster_entry(void *context)
 
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
 /******************************************************************************************************/
-static void test_reg_timer_cb(void *context)
+static void test_reg_timer_cb(void *context, uint32_t value)
 {
+    (void)value;
     (void)context;
 }
 #endif
@@ -4948,6 +5718,15 @@ static void test_priority_api(void)
                       (unsigned)priority);
 
     /* The suite's own task must still be able to read and restore its own priority. */
+    /* NULL means the calling task across the task API, so the one call that used to refuse it
+     * must now accept it too. */
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    AHURA_TEST_CHECK(os_task_core_affinity_set(NULL, 0U) == OS_STATUS_OK,
+                      "os_task_core_affinity_set(NULL) targets the calling task");
+#endif
+    AHURA_TEST_CHECK(os_task_state_get(NULL) == OS_TASK_STATE_RUNNING,
+                      "os_task_state_get(NULL) reports the calling task as RUNNING");
+
     AHURA_TEST_CHECK(os_task_priority_get(NULL, &priority) == OS_STATUS_OK,
                       "NULL means the calling task");
     AHURA_TEST_CHECK(priority == (os_task_priority_t)OS_CONFIG_TEST_PRIORITY,
@@ -5061,7 +5840,6 @@ static void test_regressions(void)
     /* A duration too large for the tick range must clamp, never wrap to a small plausible count
      * and never land on the "wait forever" sentinel by accident. */
     AHURA_TEST_CHECK(OS_TICKS_FROM_MS(0xFFFFFFFFU) == (OS_WAIT_FOREVER - 1U), "ms conversion saturates");
-    AHURA_TEST_CHECK(OS_TICKS_FROM_S(0xFFFFFFFFU) == (OS_WAIT_FOREVER - 1U), "s conversion saturates");
 
 #if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
     /* An unconsumed wake is handed on, not lost with the task that never used it. */
@@ -5136,48 +5914,50 @@ static void test_regressions(void)
     /* Restart must discard an expiry the tick noted but the timer task has not drained. */
     {
         os_test_oneshot_fired = 0U;
-        (void)os_timer_init(&os_test_timer_oneshot, OS_TICKS_FROM_MS(30U), OS_TIMER_MODE_ONE_SHOT,
-                            timer_oneshot_cb, NULL);
-        (void)os_timer_start(&os_test_timer_oneshot);
+        (void)os_timer_period_set(&os_test_timer_oneshot, 30U);
+        (void)os_timer_start(&os_test_timer_oneshot, NULL, 0U);
 
         /* The lock keeps the timer service task off the CPU while the tick keeps running, so the
          * expiry is flagged and left undrained - the state a restart used to inherit. */
         os_kernel_lock();
         os_delay_ms(45U);   /* busy-waits under the lock; ticks still arrive */
-        (void)os_timer_restart(&os_test_timer_oneshot);
+        (void)os_timer_restart(&os_test_timer_oneshot, NULL, 0U);
         os_kernel_unlock();
 
         os_delay_ms(15U);
         AHURA_TEST_CHECK(os_test_oneshot_fired == 0U, "restart dropped the undrained expiry");
         os_delay_ms(40U);
         AHURA_TEST_CHECK(os_test_oneshot_fired == 1U, "and fired a full period later");
-        (void)os_timer_stop(&os_test_timer_oneshot);
+        (void)os_timer_stop(&os_test_churn_timer);
     }
 
-    /* Re-initializing a started timer must return its registry slot. */
+    /* Stopping a started timer must return its registry slot for someone else to take. */
     {
         uint32_t index;
 
-        for (index = 0U; index < OS_CONFIG_MAX_TIMERS; index++)
+        for (index = 0U; index < TEST_TIMER_SET; index++)
         {
-            /* Far longer than this section runs, so none of them can fire and disturb it. */
-            (void)os_timer_init(&os_test_tflood[index], OS_TICKS_FROM_MS(60000U),
-                                OS_TIMER_MODE_PERIODIC, test_reg_timer_cb, NULL);
-            (void)os_timer_start(&os_test_tflood[index]);
+            /* Repointed at this section's own callback, which is what os_timer_callback_set is
+             * for now that a timer's job is otherwise fixed where it is defined. Far longer than
+             * this section runs, so none of them can fire and disturb it. */
+            (void)os_timer_callback_set(os_test_tflood[index], test_reg_timer_cb);
+            (void)os_timer_period_set(os_test_tflood[index], 60000U);
+            (void)os_timer_start(os_test_tflood[index], NULL, 0U);
         }
 
-        (void)os_timer_init(&os_test_tflood_extra, OS_TICKS_FROM_MS(60000U), OS_TIMER_MODE_PERIODIC,
-                            test_reg_timer_cb, NULL);
-        AHURA_TEST_CHECK(os_timer_start(&os_test_tflood_extra) == OS_STATUS_FULL, "registry full");
+        (void)os_timer_period_set(&os_test_tflood_extra, 60000U);
+        AHURA_TEST_CHECK(os_timer_start(&os_test_tflood_extra, NULL, 0U) == OS_STATUS_OK,
+                          "starting one more than the working set is fine");
 
-        (void)os_timer_init(&os_test_tflood[0], OS_TICKS_FROM_MS(60000U), OS_TIMER_MODE_PERIODIC,
-                            test_reg_timer_cb, NULL);
-        AHURA_TEST_CHECK(os_timer_start(&os_test_tflood_extra) == OS_STATUS_OK, "re-init freed its slot");
+        (void)os_timer_stop(os_test_tflood[0]);
+        AHURA_TEST_CHECK(os_timer_start(os_test_tflood[0], NULL, 0U) == OS_STATUS_OK,
+                          "and a stopped timer re-enters the running list cleanly");
 
         (void)os_timer_stop(&os_test_tflood_extra);
-        for (index = 0U; index < OS_CONFIG_MAX_TIMERS; index++)
+        for (index = 0U; index < TEST_TIMER_SET; index++)
         {
-            (void)os_timer_stop(&os_test_tflood[index]);
+            (void)os_timer_stop(os_test_tflood[index]);
+            (void)os_timer_callback_set(os_test_tflood[index], test_tflood_cb);
         }
     }
 #endif /* OS_CONFIG_TIMER_ENABLE */
@@ -5228,8 +6008,10 @@ void os_test(void)
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     test_timer();
 #endif
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-    test_work();
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+    test_timer_isr();
+    test_timer_pool();
+    test_timer_real_world();
 #endif
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
     test_task_notify();
@@ -5286,9 +6068,6 @@ void os_test(void)
 #endif
 #if (OS_CONFIG_EVENT_ENABLE == 1U)
     test_stress_event_bit_storm();
-#endif
-#if (OS_CONFIG_WORK_ENABLE == 1U)
-    test_stress_work_flood();
 #endif
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     test_stress_timer_flood();

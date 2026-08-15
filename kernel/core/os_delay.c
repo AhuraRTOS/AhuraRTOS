@@ -68,11 +68,12 @@ void os_delay_ms(uint32_t milliseconds)
             OS_DELAY_MS_PER_SECOND;
 
         /* Only reachable when OS_CONFIG_TICK_HZ pushes the tick count past 32 bits, which needs a
-         * duration of weeks. Clamping delays as long as the kernel can represent, rather than the
-         * old "report INVALID_ARG and return immediately" - of the two wrong answers, waiting far
-         * too long is the one a caller notices. */
-        OS_ASSERT(ticks_u64 <= (uint64_t)UINT32_MAX);
-
+         * duration of weeks. Clamped to as long as the kernel can represent, rather than the old
+         * "report INVALID_ARG and return immediately" - of the two wrong answers, waiting far too
+         * long is the one a caller notices.
+         *
+         * Deliberately NOT asserted: any uint32_t is a legal argument here, so a clamp is a
+         * supported outcome rather than a caller's mistake. */
         if (ticks_u64 > (uint64_t)UINT32_MAX)
         {
             ticks_u64 = (uint64_t)UINT32_MAX;
@@ -107,38 +108,6 @@ void os_delay_us(uint32_t microseconds)
             OS_DELAY_US_PER_SECOND;
 
         os_delay_cycle_wait(cycle_count);
-    }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Delay current execution for the requested seconds.
- *
- * OS_WAIT_FOREVER parks the calling task permanently (never returns).
- *
- * @param[in] seconds  Delay duration in seconds, or OS_WAIT_FOREVER.
- * @return None.
- */
-void os_delay_s(uint32_t seconds)
-{
-    if (seconds == OS_WAIT_FOREVER)
-    {
-        os_delay_forever();
-    }
-    else
-    {
-        uint64_t ticks_u64 = (uint64_t)seconds * (uint64_t)OS_CONFIG_TICK_HZ;
-
-        /* Clamped rather than refused, same reasoning as os_delay_ms. At 1 kHz this needs a
-         * request of about 50 days. */
-        OS_ASSERT(ticks_u64 <= (uint64_t)UINT32_MAX);
-
-        if (ticks_u64 > (uint64_t)UINT32_MAX)
-        {
-            ticks_u64 = (uint64_t)UINT32_MAX;
-        }
-
-        os_delay_ticks((uint32_t)ticks_u64);
     }
 }
 

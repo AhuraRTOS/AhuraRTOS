@@ -230,7 +230,6 @@
  * task-table slot the kernel reserves for itself - not one of
  * OS_CONFIG_MAX_USER_TASKS - and runs the callbacks on the stack sized here. */
 #define OS_CONFIG_TIMER_ENABLE              1U
-#define OS_CONFIG_MAX_TIMERS                8U
 #define OS_CONFIG_TIMER_STACK_SIZE          512U
 
 /* Priority of the timer service task, and so of every timer callback.
@@ -249,38 +248,6 @@
  * a core-affinity bitmask, 0 = any core. Only meaningful when
  * OS_CONFIG_CORE_COUNT (PART 3) > 1; keep 0 on single-core builds. */
 #define OS_CONFIG_TIMER_CORE_AFFINITY       0U
-
-/*
- * ***********************************************************************************************************
- * Work queue
- * ***********************************************************************************************************
-*/
-
-/* Work handlers run on the kernel work task (tsk_work), which occupies one
- * task-table slot the kernel reserves for itself - not one of
- * OS_CONFIG_MAX_USER_TASKS - and runs the handlers on the stack sized here. */
-#define OS_CONFIG_WORK_ENABLE               1U
-#define OS_CONFIG_MAX_WORKS                 8U
-#define OS_CONFIG_WORK_STACK_SIZE           512U
-
-/* Priority of the work service task, and so of every work handler. Same rule as
- * OS_CONFIG_TIMER_PRIORITY above: OS_TASK_PRIO_MAX by default so deferred work runs promptly,
- * lower it when a user task should outrank it, and it stays a kernel service task - protected
- * from os_task_pause and os_task_delete - at any setting. */
-#define OS_CONFIG_WORK_PRIORITY             OS_TASK_PRIO_MAX
-
-/* Largest payload os_work_submit may copy into a slot, in bytes. The submitted
- * data is copied, so nothing the caller owns has to outlive the deferred call;
- * the cost is OS_CONFIG_MAX_WORKS * this many bytes of RAM, plus this much again
- * on the work task's stack while a handler runs. A submission larger than this
- * is refused with OS_STATUS_INVALID_ARG. To hand over something bigger, submit a
- * POINTER to it (sizeof of the pointer) and keep the target alive yourself. */
-#define OS_CONFIG_WORK_PAYLOAD_SIZE         4U
-
-/* Which cores the work task (and so the work handlers) may run on: a
- * core-affinity bitmask, 0 = any core. Only meaningful when
- * OS_CONFIG_CORE_COUNT (PART 3) > 1; keep 0 on single-core builds. */
-#define OS_CONFIG_WORK_CORE_AFFINITY        0U
 
 /*
  * ***********************************************************************************************************
@@ -526,7 +493,7 @@
  *      word) must sit in a non-cacheable or coherent region - typically the whole kernel's shared
  *      statics placed in one non-cacheable MPU region by the linker script. No portable fallback.
  *
- * Service tasks are placed with OS_CONFIG_WORK_CORE_AFFINITY / OS_CONFIG_TIMER_CORE_AFFINITY.
+ * Service tasks are placed with OS_CONFIG_TIMER_CORE_AFFINITY / OS_CONFIG_LOG_CORE_AFFINITY.
  */
 
 #define OS_CONFIG_CORE_COUNT                1U

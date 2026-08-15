@@ -83,8 +83,6 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
 
     /* A mutex is an ownership object and an ISR has no identity of its own, so
      * locking from one could only borrow whichever task it interrupted. */
-    OS_ASSERT(!os_arch_in_isr());
-    OS_ASSERT(mutex != NULL);
 
     if ((mutex != NULL) && (!os_arch_in_isr()))
     {
@@ -218,9 +216,6 @@ os_status os_mutex_try_lock(os_mutex_t *mutex)
 os_status os_mutex_unlock(os_mutex_t *mutex)
 {
     os_status status = OS_STATUS_INVALID_ARG;
-
-    OS_ASSERT(!os_arch_in_isr());
-    OS_ASSERT(mutex != NULL);
 
     if ((mutex != NULL) && (!os_arch_in_isr()))
     {

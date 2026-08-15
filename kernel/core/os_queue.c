@@ -31,7 +31,6 @@ static os_status os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t it
 
 #endif /* OS_CONFIG_ALLOC_ENABLE */
 
-
 /*
  * ***********************************************************************************************************
  * Public function implementations
@@ -54,9 +53,6 @@ static os_status os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t it
 os_status os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
 {
     os_status status = OS_STATUS_INVALID_ARG;
-
-    OS_ASSERT(queue != NULL);
-    OS_ASSERT(item != NULL);
 
     if ((queue != NULL) && (item != NULL))
     {
@@ -146,9 +142,6 @@ os_status os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_m
 {
     os_status status = OS_STATUS_INVALID_ARG;
 
-    OS_ASSERT(queue != NULL);
-    OS_ASSERT(item_out != NULL);
-
     if ((queue != NULL) && (item_out != NULL))
     {
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
@@ -233,6 +226,8 @@ size_t os_queue_count_get(const os_queue_t *queue)
 {
     size_t count = 0U;
 
+    /* No status to return here: a NULL queue would read as an empty one, so the assert is the
+     * only way the caller ever hears about it. */
     OS_ASSERT(queue != NULL);
 
     if (queue != NULL)
@@ -262,6 +257,8 @@ size_t os_queue_free_get(const os_queue_t *queue)
 {
     size_t free_slots = 0U;
 
+    /* No status to return here: a NULL queue would read as an empty one, so the assert is the
+     * only way the caller ever hears about it. */
     OS_ASSERT(queue != NULL);
 
     if (queue != NULL)
@@ -297,8 +294,6 @@ size_t os_queue_free_get(const os_queue_t *queue)
 os_status os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capacity)
 {
     os_status status = OS_STATUS_INVALID_ARG;
-
-    OS_ASSERT(queue != NULL);
 
     /* The geometry check rejects a byte count that does not fit in size_t before anything is
      * allocated: the product would otherwise wrap to a small, successful allocation that every

@@ -31,8 +31,9 @@ thing: a periodic call to `os_tick_handler()`. It claims no `SVC_Handler`, no
 - **Full sync/IPC set.** Mutexes (always with single-level priority
   inheritance), counting semaphores, queues, events, and lightweight
   per-task notifications, all with millisecond timeouts.
-- **Software timers and a deferrable work queue.** One-shot and periodic timers
-  plus a work queue in the style of Zephyr, each on its own kernel service task.
+- **Software timers and deferred calls.** One-shot and periodic timers, plus
+  a one-shot timer for running a function later - both
+  on one kernel service task.
 - **A scheduler lock that masks no interrupts.** `os_kernel_lock()` defers
   preemption while every ISR keeps running - the barrier a critical section
   cannot be.
@@ -93,7 +94,7 @@ at compile time and visible in the map file.
 [Task notifications](#task-notifications) ·
 [Queues](#queues) ·
 [Atomics](#atomics) ·
-[Work queue](#work-queue) ·
+[Deferred calls](#deferred-calls) ·
 [Kernel heap](#kernel-heap) ·
 [Diagnostics](#diagnostics) ·
 [Debugging](#debugging)
@@ -207,7 +208,7 @@ core/os_atomic.c      core/os_list.c        core/os_semaphore.c
 core/os_critical.c    core/os_log.c         core/os_task.c
 core/os_delay.c       core/os_mem.c         core/os_tick.c
 core/os_event.c       core/os_mutex.c       core/os_timer.c
-core/os_kernel.c      core/os_notify.c      core/os_work.c
+core/os_kernel.c      core/os_notify.c
 core/os_queue.c
 
 arch/arm/<core>/os_arch_port.c    <- exactly ONE, matching the target
@@ -302,7 +303,6 @@ feature off shows exactly which values stop mattering. PART 3 is the platform.
 | `OS_CONFIG_QUEUE_ENABLE` | `1U` | Fixed-item-size queues |
 | `OS_CONFIG_EVENT_ENABLE` | `1U` | Event bit groups |
 | `OS_CONFIG_TIMER_ENABLE` + `MAX_TIMERS` `8U`, `TIMER_STACK_SIZE` `512U`, `TIMER_PRIORITY`, `TIMER_CORE_AFFINITY` | `1U` | Software timers and the `tsk_timer` service task |
-| `OS_CONFIG_WORK_ENABLE` + `MAX_WORKS` `8U`, `WORK_STACK_SIZE` `512U`, `WORK_PRIORITY`, `WORK_PAYLOAD_SIZE` `4U`, `WORK_CORE_AFFINITY` | `1U` | Work queue and the `tsk_work` service task |
 | `OS_CONFIG_NOTIFY_ENABLE` | `1U` | The per-task notification mailbox |
 | `OS_CONFIG_ALLOC_ENABLE` + `HEAP_SIZE` `4096U` | `1U` | The kernel heap |
 | `OS_CONFIG_ATOMIC_ENABLE` | `1U` | The atomic operation set |
@@ -437,7 +437,6 @@ to the first task and never comes back.
 | 1 | `os_arch_init()` | Verifies the vector table, primes the PSP sentinel, sets exception priorities, brings up the cycle counter |
 | 2 | `os_task_system_init()` | Clears the TCB table, empties the 32 ready lists, the bitmap and the delay list |
 | 3 | `os_task_idle_create()` | One idle task per scheduling core, at `OS_TASK_PRIO_IDLE`, outside the task table |
-| 4 | `os_work_system_init()` | `tsk_work`, if `OS_CONFIG_WORK_ENABLE` |
 | 5 | `os_timer_system_init()` | `tsk_timer`, if `OS_CONFIG_TIMER_ENABLE` |
 | 6 | `os_log_system_init()` | `tsk_log`, if `OS_CONFIG_LOG_ENABLE` - created before the application task, so anything logged at startup already has a consumer |
 | 7 | `os_main_system_init()` **or** `os_test_system_init()` | `tsk_main` running `os_main()`, or `tsk_test` running `os_test()` in a self-test build. Never both |
@@ -509,7 +508,7 @@ OS_TASK_TABLE_SIZE = OS_CONFIG_MAX_USER_TASKS
                    + 1 per enabled timer / work / log service
 ```
 
-So enabling the log or the work queue never quietly costs the application a
+So enabling the log or the timer task never quietly costs the application a
 task slot. The idle tasks live outside the table entirely, one per core.
 
 **States.** `os_task_state_get()` reports one of five:
@@ -657,7 +656,6 @@ One tick is deliberately short. `os_tick_handler()` does this and nothing else:
    core).
 2. Count the tick for CPU-usage sampling, and additionally as idle if it
    interrupted the idle task.
-3. `os_work_tick_process(1)` - advance delayed work items.
 4. `os_timer_tick_process(1)` - decrement active timers, mark expiries, wake
    `tsk_timer` if any fired.
 5. `os_task_tick_update(1)` - walk the delay list, decrement, and make ready
@@ -667,11 +665,11 @@ One tick is deliberately short. `os_tick_handler()` does this and nothing else:
    really happen.
 
 Step 5 costs O(sleeping tasks), not O(task table), because only finite-delay
-sleepers are in the delay list. Steps 3 and 4 are fixed-slot array scans bounded
-by `OS_CONFIG_MAX_WORKS` and `OS_CONFIG_MAX_TIMERS`.
+sleepers are in the delay list. Step 3 costs O(running timers) for the same
+reason: only started timers are linked into the list the tick walks.
 
 No callback of any kind runs in the tick. An expired timer marks its object and
-wakes `tsk_timer`; a ready work item wakes `tsk_work`. Both callbacks therefore
+wakes `tsk_timer`, and so does a deferred call becoming ready. Callbacks therefore
 execute in task context, where they may use kernel APIs, block, and be preempted
 like anything else.
 
@@ -800,22 +798,60 @@ would turn every later call into a silent no-op that still reported success.
 
 | Task | Default priority | Fed by | Runs |
 |---|---|---|---|
-| `tsk_timer` | `OS_TASK_PRIO_MAX` | The tick, which decrements `os_timer_registry[]` and marks expiries | One-shot and periodic timer callbacks |
-| `tsk_work` | `OS_TASK_PRIO_MAX` | The tick, which ages each slot's `delay_ticks` and flags it ready | Submitted work handlers |
+| `tsk_timer` | `OS_TASK_PRIO_MAX` | The tick, which walks the running-timer list and marks expiries | Timer callbacks, and so all deferred work |
 | `tsk_log` | `OS_CONFIG_LOG_TASK_PRIORITY` (low) | `OS_LOG_*` calls from any context | Drains the log ring into `os_log_output_cb` |
 
-**Timers** are a fixed registry of `OS_CONFIG_MAX_TIMERS` pointers. Each
-`os_timer_t` carries its own `period_ticks`, `remaining_ticks`, mode, and
-`active` / `paused` / `expired` flags; the tick decrements and sets `expired`,
-then wakes `tsk_timer` once for the whole batch. Arming past capacity returns
-`OS_STATUS_FULL` rather than dropping a timer silently.
+**Timers** are an intrusive list of started timers, not a fixed registry. Each
+`os_timer_t` carries its own `period_ticks`, `remaining_ticks`, mode, `active` /
+`paused` / `queued` flags and two list nodes; the tick decrements, pushes an
+expiry onto the FIFO delivery list, and wakes `tsk_timer` once for the whole
+batch.
 
-**Work items** are a fixed array of `OS_CONFIG_MAX_WORKS` slots, each holding
-the handler, a `delay_ticks` countdown, a `ready` flag, and the payload copied
-inline into a `uint64_t`-aligned union of `OS_CONFIG_WORK_PAYLOAD_SIZE` bytes.
-The slot is released as the handler starts, not when it finishes, so a handler
-may submit again. Because the payload is copied, the caller's buffer may go out
-of scope the moment `os_work_submit` returns.
+Two things follow from it being a list. **The tick walks only timers that are
+actually running**, so its cost follows what the application is doing rather than
+what it was compiled to allow - a build with 64 timers of which three are started
+costs three iterations, not 64. And there is no capacity to exhaust, so
+`os_timer_start` cannot fail and there is no `OS_CONFIG_MAX_TIMERS` to size. The
+price is two pointers per `os_timer_t`: cheaper per tick, dearer per timer.
+
+`os_timer_start` and `os_timer_stop` **search** that list rather than reading a
+timer's own link pointers, so they cost O(running timers) instead of O(1) -
+measured at about 11 cycles per running timer for the pair on a 250 MHz M33.
+That is deliberate: it is what lets the unlink promise never to write through a
+pointer an object supplied. The length walked is what is *running*, so an idle
+system pays almost nothing.
+
+A timer is also refused unless its `self` field points at the timer itself,
+which only `OS_TIMER_PERIODIC_DEFINE` / `OS_TIMER_ONESHOT_DEFINE` arranges.
+Because the link state lives inside the object, a hand-declared `os_timer_t`
+would hand the kernel two list nodes of garbage, and `os_timer_stop` would
+execute `node->prev->next = ...` - a write
+through a pointer nobody chose. Four bytes per timer and one comparison per call
+turn that into an `OS_STATUS_INVALID_ARG`.
+
+A self-pointer rather than a magic constant, at identical cost: a constant is
+passed by any stale memory that happens to contain it, whereas this is passed
+only by memory that happens to contain its own address. It also catches a timer
+**copied** to another address - whose list nodes still point into the original -
+which no fixed signature can detect.
+
+**Deferred calls** are the same machinery, but a different call, because there
+are two things people mean by "later". `os_timer_start` on a pending timer
+**reschedules** it - the second call overwrites the first's context and value and
+withdraws its expiry, so one callback runs carrying only the later event. That is
+a debounce. `os_timer_submit` **queues**: each call takes its own slot from a pool
+the caller declared, so an interrupt firing three times runs the callback three
+times, in order, each with its own value.
+
+Two pending calls with two different values need two pieces of storage, which no
+API shape avoids. What `OS_TIMER_SUBMIT_DEFINE` arranges is *whose*: the slots are
+the caller's, declared where the work is and sized by whoever knows the burst
+rate, so `OS_STATUS_FULL` is always local to one pool and there is no kernel-wide
+number. `OS_TIMER_MODE_SUBMIT` marks an entry so delivery knows to hand it back;
+an entry returns to its pool as delivery *starts*, so a callback may submit again.
+
+Nothing is copied either way: `context` is passed through as given, `value`
+travels by copy.
 
 **The log** is a byte ring buffer of `OS_CONFIG_LOG_BUFFER_SIZE` with a head, a
 tail and a dropped counter. `os_log_write` formats into an
@@ -862,8 +898,7 @@ Every kernel object is statically sized, so a build's RAM cost is a sum of
 | Ready lists + bitmap + delay list | 32 list heads + one word + one list head |
 | Application stacks | Whatever each `OS_TASK_DEFINE` asks for |
 | `tsk_main` / `tsk_test` | `OS_CONFIG_MAIN_TASK_STACK_SIZE` or `OS_CONFIG_TEST_STACK_SIZE` |
-| Timer service | `OS_CONFIG_TIMER_STACK_SIZE` + `OS_CONFIG_MAX_TIMERS` pointers |
-| Work service | `OS_CONFIG_WORK_STACK_SIZE` + `OS_CONFIG_MAX_WORKS` × (slot header + `OS_CONFIG_WORK_PAYLOAD_SIZE`) |
+| Timer service | `OS_CONFIG_TIMER_STACK_SIZE`, and nothing else. Timers cost only their own objects - the kernel keeps no table and no pool |
 | Log service | `OS_CONFIG_LOG_TASK_STACK_SIZE` + `OS_CONFIG_LOG_BUFFER_SIZE` (+ `OS_CONFIG_LOG_LINE_MAX` transiently, on the stack of whichever task logs) |
 | Heap | `OS_CONFIG_HEAP_SIZE` |
 
@@ -883,7 +918,7 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 |---|---|
 | **Lifecycle** | `os_init` · `os_start` · `os_kernel_is_running` · `os_core_start` |
 | **Tasks** | `os_task_create` · `os_task_start` · `os_task_pause` · `os_task_delete` · `os_task_yield` · `os_task_state_get` · `os_task_priority_get` · `os_task_priority_set` · `os_task_core_affinity_set` |
-| **Delays and time** | `os_delay_ms` · `os_delay_us` · `os_delay_s` · `os_tick_get` |
+| **Delays and time** | `os_delay_ms` · `os_delay_us` · `os_tick_get` |
 | **Critical sections** | `os_critical_enter` · `os_critical_exit` |
 | **Scheduler lock** | `os_kernel_lock` · `os_kernel_unlock` · `os_kernel_is_locked` |
 | **Atomics** | `os_atomic_get` · `os_atomic_set` · `os_atomic_add` · `os_atomic_sub` · `os_atomic_inc` · `os_atomic_dec` · `os_atomic_or` · `os_atomic_and` · `os_atomic_xor` · `os_atomic_nand` · `os_atomic_clear` · `os_atomic_cas` · `os_atomic_test_bit` · `os_atomic_set_bit` · `os_atomic_clear_bit` · `os_atomic_test_and_set_bit` · `os_atomic_test_and_clear_bit` · `os_atomic_set_bit_to` |
@@ -892,8 +927,8 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | **Queue** | `OS_QUEUE_DEFINE_STATIC` · `OS_QUEUE_DEFINE_BUFFER` · `OS_QUEUE_DEFINE_DYNAMIC` · `os_queue_init_dynamic` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
 | **Event** | `os_event_init` · `os_event_set_bits` · `os_event_clear_bits` · `os_event_wait_bits` |
 | **Task notifications** | `os_notify_give` · `os_notify_wait` |
-| **Software timers** | `os_timer_init` · `os_timer_start` · `os_timer_restart` · `os_timer_pause` · `os_timer_stop` · `os_timer_delete` |
-| **Work queue** | `os_work_submit` |
+| **Software timers** | `OS_TIMER_PERIODIC_DEFINE` / `OS_TIMER_ONESHOT_DEFINE` · `os_timer_start` · `os_timer_restart` · `os_timer_pause` · `os_timer_stop` · `os_timer_period_set` · `os_timer_callback_set` · `os_timer_value_set` |
+| **Deferred calls** | `OS_TIMER_SUBMIT_DEFINE` · `os_timer_submit` |
 | **Kernel heap** | `os_mem_alloc` · `os_mem_free` · `os_mem_free_get` · `os_mem_watermark_get` |
 | **Diagnostics** | `os_task_stack_watermark_get` · `os_cpu_usage_get` · `os_stack_overflow_cb` |
 | **Debugging** | `OS_ASSERT` · `os_assert_failed_cb` · `OS_LOG_ERROR` / `OS_LOG_WARN` / `OS_LOG_INFO` / `OS_LOG_DEBUG` · `os_log_write` · `os_log_dropped_get` · `os_log_output_cb` |
@@ -923,16 +958,23 @@ task *does* - entry, context, priority - so there is no name to repeat and no
 stack to match up. Giving one task another task's stack is not something the API
 can express.
 
-`OS_TASK_CONFIG` follows the core count. On a single-core build it takes
-`(entry, context, priority)`, because there is nothing to place a task on. On a
-multi-core build it takes a fourth `core_affinity` argument, required rather
-than defaulted, so every task states where it may run:
+`OS_TASK_CONFIG` takes `(entry, context, priority)` and the task runs on any
+core. Its signature does **not** change with `OS_CONFIG_CORE_COUNT`, so source
+written for one core still compiles when you turn multi-core on. Pinning is a
+second macro, available only where there is something to pin to:
 
 ```c
-/* OS_CONFIG_CORE_COUNT > 1 */
-os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_3,
-                                       OS_TASK_CORE(1) | OS_TASK_CORE(2)));
+/* runs anywhere - single-core and multi-core alike */
+os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_3));
+
+/* OS_CONFIG_CORE_COUNT > 1 only: pinned to cores 1 and 2 */
+os_task_create(&worker, OS_TASK_CONFIG_ON(worker_entry, NULL, OS_TASK_PRIO_3,
+                                          OS_TASK_CORE(1) | OS_TASK_CORE(2)));
 ```
+
+The split exists because a macro whose argument count follows a config option
+breaks every call site the day that option changes. `os_task_core_affinity_set`
+can also change the placement after creation.
 
 ### Default application task
 
@@ -990,7 +1032,7 @@ whole scheduler rather than only the part applications touch.
 |---|---|---|
 | `0` | `OS_TASK_PRIO_IDLE` | Kernel: the idle task, one per scheduling core |
 | `1` .. `30` | `OS_TASK_PRIO_1_LOWEST` .. `OS_TASK_PRIO_30_HIGHEST` (and `OS_TASK_PRIO_1` .. `OS_TASK_PRIO_30`) | The application |
-| `31` | `OS_TASK_PRIO_MAX` | Kernel: `tsk_work` and `tsk_timer` by default |
+| `31` | `OS_TASK_PRIO_MAX` | Kernel: `tsk_timer` by default |
 
 - **`OS_TASK_PRIO_1_LOWEST` through `OS_TASK_PRIO_30_HIGHEST` is the user
   range**, and those two names *are* the limits - there is no separate pair of
@@ -1001,10 +1043,10 @@ whole scheduler rather than only the part applications touch.
   be the only thing at that level, or the scheduler could pick a real task when
   it means to idle - so it is out of reach of `os_task_create`.
 - **`OS_TASK_PRIO_MAX` is kept out of reach too**, so the kernel's service tasks
-  `tsk_work` and `tsk_timer` - which `os_init()` creates automatically - have a
-  level nothing else can claim. That is where `OS_CONFIG_WORK_PRIORITY` and
-  `OS_CONFIG_TIMER_PRIORITY` put them by default; either may be lowered into the
-  user range when a user task should outrank deferred work or timer callbacks.
+  `tsk_timer` - which `os_init()` creates automatically - has a
+  level nothing else can claim. That is where `OS_CONFIG_TIMER_PRIORITY` puts it
+  by default; it may be lowered into the user range when a user task should
+  outrank timer callbacks and deferred calls.
   They stay system tasks at any priority, so `os_task_pause` and
   `os_task_delete` keep refusing them. They cost no `OS_CONFIG_MAX_USER_TASKS`
   slots: the kernel reserves its service tasks' slots on top of that number.
@@ -1022,10 +1064,10 @@ should not test one in `#if` either.
 
 The default application task (`tsk_main`) and the self-test task (`tsk_test`)
 live in the user range too, at `OS_CONFIG_MAIN_TASK_PRIORITY` and
-`OS_CONFIG_TEST_PRIORITY`. Unlike `tsk_work` and `tsk_timer` they are ordinary
+`OS_CONFIG_TEST_PRIORITY`. Unlike `tsk_timer` they are ordinary
 application tasks, so pick values that fit alongside your own.
 
-The kernel's own service tasks - `tsk_timer`, `tsk_work` and `tsk_log` - are
+The kernel's own service tasks - `tsk_timer` and `tsk_log` - are
 also protected: `os_task_pause` and `os_task_delete` refuse them with
 `OS_STATUS_BUSY`, because the timer, work and log APIs are all built on one
 running and suspending it would turn every later call into a silent no-op that
@@ -1196,6 +1238,7 @@ specific task without allocating a separate semaphore or queue object:
 
 ```c
 os_notify_give(&some_task, 42U);         /* ISR-safe; overwrite: last write wins */
+os_notify_give(NULL, 42U);               /* NULL = this task (not from an ISR)   */
 os_notify_wait(OS_WAIT_FOREVER, &value); /* called by that task about itself     */
 ```
 
@@ -1371,53 +1414,72 @@ operations and gets the full API, with no behaviour able to drift between cores.
 > as that core allows. Lifting it means rewriting the loops in the flag-setting
 > Thumb-1 forms, which would constrain register allocation on every other core.
 
-### Work queue
+### Deferred calls
 
-Defer a function to run later on the highest-priority kernel task. One call, and
-it is ISR-safe:
-
-```c
-static void my_handler(void *data, size_t len) { /* runs on tsk_work */ }
-
-my_payload_t payload = { ... };                                  /* an ordinary local */
-
-os_work_submit(my_handler, &payload, sizeof(payload), 100U);     /* 0 ms = as soon as possible */
-os_work_submit(my_handler, NULL, 0U, 0U);                        /* or carry no payload at all */
-```
-
-There is no work object to declare, initialize or keep alive, and **the payload
-is copied, not referenced**. The kernel takes the handler and the `len` bytes at
-`data` into one of its `OS_CONFIG_MAX_WORKS` slots, then releases the slot as the
-handler starts and hands it the copy. So the buffer above may go out of scope the
-moment `os_work_submit` returns - a submission is complete in itself.
-
-`OS_CONFIG_WORK_PAYLOAD_SIZE` (default 4 bytes) bounds it; anything larger is
-refused with `OS_STATUS_INVALID_ARG` rather than truncated. Raising it costs
-`OS_CONFIG_MAX_WORKS` × that many bytes of RAM, plus the same again on the work
-task's stack while a handler runs. To hand over something bigger, submit a
-**pointer** to it:
+Run a function later on the kernel timer task, off the hot path. There is no
+separate API for it: **a deferred call is a one-shot timer**, and `os_timer_start`
+carries the arguments.
 
 ```c
-os_work_submit(my_handler, &object_ptr, sizeof(object_ptr), 0U);
+static void my_callback(void *context, uint32_t value) { /* runs on tsk_timer */ }
+
+OS_TIMER_ONESHOT_DEFINE(defer_now,  1U, my_callback);
+OS_TIMER_ONESHOT_DEFINE(defer_late, 100U, my_callback);
+
+os_timer_start(&defer_now,  &my_device, sample);   /* as soon as possible */
+os_timer_start(&defer_late, NULL,       42U);      /* or after a delay    */
 ```
 
-which keeps the fact that the target's lifetime is now yours to manage visible at
-the call site, instead of being the silent default.
+**This is the work queue, and it is deliberately not a separate module** - nor
+even a separate call. It uses the same tick, the same delivery queue and the same
+task. What that costs is one shared priority for both; what it saves is an entire
+service task, its stack, and five configuration options.
 
-Two consequences of having no handle, both deliberate:
+**Use `os_timer_submit` when every event matters:**
 
-- **Each submission is its own call.** Submitting the same handler twice runs it
-  twice; there is no item for the second submission to reschedule.
-- **A submission cannot be cancelled or inspected.** If a handler needs to be
-  able to change its mind, give it a context it re-reads when it runs.
+```c
+OS_TIMER_SUBMIT_DEFINE(uart_defer, 8U, 0U, on_uart_event);
+/*                                 |   |
+ *                                 |   delay before each call (0 = as soon as possible)
+ *                                 how many may be in flight at once                    */
 
-`os_work_submit` returns `OS_STATUS_FULL` when every slot is occupied, so a burst
-larger than `OS_CONFIG_MAX_WORKS` is refused rather than silently dropped.
+os_timer_submit(&uart_defer, &dev, code1);   /* in the ISR   */
+os_timer_submit(&uart_defer, &dev, code2);   /* fires again  */
+/* the callback runs TWICE, code1 then code2 */
+```
 
-Handlers and timer callbacks run in task context, so they may use kernel APIs,
-but at the default `OS_CONFIG_WORK_PRIORITY` / `OS_CONFIG_TIMER_PRIORITY` they
-execute above every user task. Keep them short and do not block in them, or
-everything else starves - or lower those priorities so they cannot.
+The delay lives in the definition, so the milliseconds are converted to ticks at
+compile time and `os_timer_submit` does no arithmetic at all - which matters for
+a call an interrupt makes. Work needing a different delay is a different pool.
+
+`os_timer_start` in that position would have run the callback once, with `code2`
+only - `code1` silently lost. Reach for `start` when you want the latest event
+(a debounce, a watchdog kick, an inactivity timeout) and `submit` when you want
+every event.
+
+**Nothing is copied.** `context` is passed through exactly as given, so whatever
+it points at must still exist when the callback runs. `value` is there precisely
+so the common case needs no lifetime reasoning at all: a number travels by copy,
+which covers most of what an ISR wants to hand over.
+
+```c
+uint32_t sample = ADC->DR;
+os_timer_start(&defer_now, &my_device, sample);   /* device: yours. sample: copied. */
+```
+
+**Delivery is FIFO**, shared with every other timer expiry. Callbacks run in the
+order they *became ready*, one at a time, never overlapping. A long delay does not
+hold the queue: a 1 ms and a 100 ms deferral started together run in that order,
+each on its own schedule.
+
+`os_timer_submit` returns `OS_STATUS_FULL` when that pool's own entries are all
+in flight, so an overrun is reported rather than silently dropped - and it is
+always your pool that ran out, never someone else's.
+
+Deferred calls and timer callbacks run in task context, so they may use kernel
+APIs, but at the default `OS_CONFIG_TIMER_PRIORITY` they execute above every user
+task. Keep them short and do not block in them, or everything else starves - or
+lower that priority so they cannot.
 
 ### Kernel heap
 
@@ -1739,12 +1801,12 @@ task may run:
   PendSV and SysTick handlers, then calls `os_core_start()`. That configures the
   banked SHPR, SysTick, DWT, and MSPLIM for that core and enters the scheduler.
   It never returns.
-- Core 0 owns the time base. Delays, timers, work queues, and `os_tick_get`
+- Core 0 owns the time base. Delays, timers, deferred calls, and `os_tick_get`
   advance only from core 0's tick, while ticks on other cores drive that core's
   preemption and round-robin. CPU usage through `os_cpu_usage_get` samples core 0.
-- The kernel service tasks are placed with `OS_CONFIG_WORK_CORE_AFFINITY` and
-  `OS_CONFIG_TIMER_CORE_AFFINITY`, both core-affinity bitmasks where 0 means any
-  core, so work handlers and timer callbacks run where the config says.
+- The kernel service tasks are placed with `OS_CONFIG_TIMER_CORE_AFFINITY` and
+  `OS_CONFIG_LOG_CORE_AFFINITY`, core-affinity bitmasks where 0 means any core,
+  so timer callbacks and deferred calls run where the config says.
 - Critical sections are the local interrupt mask plus a global kernel spinlock
   with per-core nesting. The spinlock uses `LDREX/STREX` on ARMv7-M and ARMv8-M,
   while ARMv6-M multi-core SoCs such as the RP2040 must provide
@@ -1969,7 +2031,6 @@ The per-subsystem tier:
 | `test_stress_semaphore_pingpong` | 1000 round trips (2000 blocking handoffs) through two empty binary semaphores, so every take blocks and every give wakes a waiter - no token is ever already available to mask a lost wakeup |
 | `test_stress_notify_storm` | 1000 notifications to a higher-priority waiter that consumes each before the next is written, so exact 1:1 accounting is meaningful for a last-write-wins mailbox |
 | `test_stress_event_bit_storm` | 4 tasks x 250 iterations of set/wait/clear-on-exit on their own bit of one group; all bits must end clear |
-| `test_stress_work_flood` | Registry oversubscribed 2:1: exactly `OS_CONFIG_MAX_WORKS` submissions accepted, every one past capacity refused with `FULL`, and every accepted one runs exactly once - then 20 more churn rounds |
 | `test_stress_timer_flood` | Every timer slot armed periodically at once, each at its own period; one past capacity refused with `FULL`; a stopped timer never fires again |
 | `test_stress_mutex_convoy` | 4 tasks x 200 acquisitions on one mutex, yielding *inside* the section - exclusivity checked from within, exact total from without, and no task starved |
 
@@ -2001,7 +2062,7 @@ HAL headers.
 |---|---|
 | `os_main_hello.c` | The minimal application: `os_main()`, `os_delay_ms`, `printf` |
 | `os_main_task.c` | Task lifecycle: create, start, pause, resume, delete; `os_task_priority_get/set` |
-| `os_main_delay.c` | `os_delay_ms`, `os_delay_us`, `os_delay_s` |
+| `os_main_delay.c` | `os_delay_ms`, `os_delay_us` |
 | `os_main_critical.c` | Critical sections protecting a shared counter |
 | `os_main_kernel_lock.c` | Deferring preemption with `os_kernel_lock` while interrupts keep running |
 | `os_main_mutex.c` | Mutual exclusion with `os_mutex_*` |
@@ -2009,8 +2070,7 @@ HAL headers.
 | `os_main_queue.c` | Message queue, producer and consumer, both static (`OS_QUEUE_DEFINE_STATIC`) and dynamic (`os_queue_init_dynamic`) storage |
 | `os_main_event.c` | Event, waiting on multiple bits |
 | `os_main_notify.c` | Task notifications with `os_notify_*` |
-| `os_main_timer.c` | One-shot and periodic software timers |
-| `os_main_work.c` | Deferrable work queue |
+| `os_main_timer.c` | Periodic, one-shot and deferred calls, and the difference between `os_timer_start` and `os_timer_submit` |
 | `os_main_mem.c` | Kernel heap with `os_mem_alloc` and `os_mem_free` |
 | `os_main_stack_watermark.c` | Worst-case stack headroom |
 | `os_main_cpu_usage.c` | CPU load sampling |
@@ -2096,8 +2156,6 @@ All filenames are `os_`-prefixed:
 - `os_timer.c` holds the software timers. Expiry is detected by the tick and
   callbacks run on the kernel timer task `tsk_timer`, at
   `OS_CONFIG_TIMER_PRIORITY`.
-- `os_work.c` is the deferrable work queue in the style of Zephyr. Items run on
-  the kernel work task `tsk_work`, at `OS_CONFIG_WORK_PRIORITY`.
 - `os_log.c` is the buffered log: a static ring buffer drained by `tsk_log` into
   `os_log_output_cb`.
 - `os_atomic.c` is the argument-validating wrapper layer over the port's atomic
@@ -2195,13 +2253,18 @@ application routes to `os_tick_handler()`.
   section, a scheduler-locked region, or an ISR. Under a scheduler lock the
   kernel enforces it: blocking calls degrade to non-blocking rather than parking
   a task it cannot switch away from. See [Scheduler lock](#scheduler-lock).
-- The kernel's service tasks (`tsk_timer`, `tsk_work`, `tsk_log`) cannot be
+- The kernel's service tasks (`tsk_timer`, `tsk_log`) cannot be
   paused or deleted by the application; both calls return `OS_STATUS_BUSY`.
-- Work handlers and timer callbacks run on the highest-priority kernel tasks, so
-  keep them short and non-blocking or user tasks will starve.
-- Timers run in two modes, `OS_TIMER_MODE_ONE_SHOT` which fires once then stops,
-  and `OS_TIMER_MODE_PERIODIC` which reloads every period. Select the mode in
-  `os_timer_init`.
+- Timer callbacks run on the highest-priority kernel task by default, so keep
+  them short or user tasks will starve. They *may* block - they run in task
+  context, not in the tick ISR - but everything queued behind them waits.
+- A timer's kind is chosen by the macro that declares it:
+  `OS_TIMER_PERIODIC_DEFINE`, `OS_TIMER_ONESHOT_DEFINE`, or
+  `OS_TIMER_SUBMIT_DEFINE` for a pool of deferred calls. There is no mode
+  argument and no init call.
+- `os_timer_start` on a timer that is already pending **reschedules** it, so the
+  earlier context and value are replaced. Use `os_timer_submit` where every
+  event must arrive - see [Deferred calls](#deferred-calls).
 - Mutexes are task-only and non-recursive. See [Mutexes and priority
   inheritance](#mutexes-and-priority-inheritance).
 - Mutex priority inheritance is single-level: it does not propagate through a

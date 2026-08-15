@@ -62,9 +62,9 @@ make.
 
 **Every feature is a compile-time switch.** `OS_CONFIG_<FEATURE>_ENABLE` removes
 code, RAM *and* API surface - not just runtime behavior. And nothing in the
-kernel allocates dynamically: task blocks, ready lists, timer and work
-registries, the log ring and the optional heap are all static arrays, so what a
-build costs is decided at compile time and visible in the map file.
+kernel allocates dynamically: task blocks, ready lists, timer objects, the log
+ring and the optional heap are all static, so what a build costs is decided at
+compile time and visible in the map file.
 
 **The scheduler is O(1), and so is deciding not to run it.** One FIFO ready list
 per priority plus a 32-bit ready bitmap: the next task is a `CLZ` and a list
@@ -99,8 +99,8 @@ support on ARMv8-M. Nothing in the kernel names a vendor, a family, or a HAL.
 Preemptive priority scheduling with 31 levels and configurable round-robin ·
 mutexes with priority inheritance, counting semaphores, queues, events and
 per-task notifications, all with millisecond timeouts · one-shot and periodic
-software timers and a deferrable work queue, each on its own service task so
-callbacks run in task context · an optional first-fit kernel heap with
+software timers plus caller-owned deferred-call pools, all delivered on one
+service task so callbacks run in task context · an optional first-fit kernel heap with
 coalescing · stack watermarking, stack-overflow detection, mutex deadlock
 detection and CPU-load sampling · buffered logging that never stalls the caller ·
 experimental multi-core scheduling and tickless idle.

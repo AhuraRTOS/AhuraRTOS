@@ -84,7 +84,6 @@ add_library(ahura_kernel STATIC
 	core/os_task.c
 	core/os_tick.c
 	core/os_timer.c
-	core/os_work.c
 )
 
 target_include_directories(ahura_kernel PUBLIC
