@@ -100,7 +100,7 @@ a missing one is a link error rather than a silently empty hook. `os_main.c` is
 where your application code goes.
 
 Every option is documented in the
-[kernel reference → Configuration](kernel.md#configuration).
+[kernel reference → Configuration](integration.md#configuration).
 
 ## Step 3 - add the kernel to the build
 

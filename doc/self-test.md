@@ -136,7 +136,7 @@ decides.
 
 What the suite covers, including its three tiers of stress tests, is documented
 in the
-[kernel reference → Self-test suite](kernel.md#self-test-suite).
+[kernel reference → Self-test suite](testing.md#self-test-suite).
 
 ## Nothing on the terminal? Check the libc before the kernel
 

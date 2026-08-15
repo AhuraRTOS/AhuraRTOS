@@ -23,10 +23,16 @@
 The source is in this repository under [`kernel/`](../kernel/), and this is the
 authoritative reference for everything the kernel *does*:
 
-- **[Kernel reference](kernel.md)** -
-  what the kernel is, **how it works** (boot sequence, scheduler, context
-  switch, tick, blocking and waking, priority inheritance, the three barriers,
-  memory), every API, every `os_config.h` option, platform support, and
-  internals.
+Start at the **[Kernel reference](kernel.md)** - it says what the kernel is and
+points at the five pages below.
+
+| Page | What is in it |
+|---|---|
+| **[Getting the kernel into a project](integration.md)** | Quick start, adding it to a build, every `os_config.h` option, and the integration contract |
+| **[Using the kernel](api.md)** | Every API: tasks, priorities, mutexes, queues, notifications, atomics, timers, deferred calls, the heap, diagnostics and debugging |
+| **[How the kernel works](design.md)** | Boot, the scheduler, the context switch, the tick, blocking and waking, priority inheritance, where the RAM goes, and the source layout |
+| **[Platform support](porting.md)** | The callbacks a platform must supply, the clock, TrustZone, multi-core and tickless idle |
+| **[Testing and examples](testing.md)** | The self-test suite and the runnable examples |
+
 - **[Examples](../examples/README.md)** - one runnable
   `os_main.c` per kernel feature, with a README on how to run them.
