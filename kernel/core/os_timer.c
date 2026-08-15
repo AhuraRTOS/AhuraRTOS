@@ -4,7 +4,7 @@
  *        one kernel timer task at OS_CONFIG_TIMER_PRIORITY (the highest priority by default).
  *
  * There is no work queue and no deferred-call API, because a "run this soon" request IS a one-shot
- * timer. The caller declares one with OS_TIMER_ONESHOT_DEFINE and starts it with the context and value the
+ * timer. The caller declares one with OS_TIMER_DEFINE_ONESHOT and starts it with the context and value the
  * callback should receive - the same object, the same tick, the same delivery queue. Nothing is
  * owned by the kernel, so there is no pool to size and nothing that can be exhausted.
  *
@@ -78,7 +78,7 @@ _Static_assert((OS_CONFIG_TIMER_PRIORITY >= OS_TASK_PRIO_1_LOWEST) &&
      ((pool)->delay_ticks != OS_WAIT_FOREVER))
 
 /* A submit entry from the timer embedded in it. Licensed by OS_TIMER_MODE_SUBMIT and nothing else:
- * only OS_TIMER_SUBMIT_DEFINE's entries ever carry that mode, so only they are ever converted. */
+ * only OS_TIMER_DEFINE_SUBMIT's entries ever carry that mode, so only they are ever converted. */
 #define OS_TIMER_ENTRY_FROM_TIMER(t)                                                              \
     ((os_timer_entry_t *)(void *)((uint8_t *)(t) - offsetof(os_timer_entry_t, timer)))
 
@@ -363,10 +363,10 @@ os_status os_timer_value_set(os_timer_t *timer, uint32_t value)
  * Nothing is handed back, so a submission cannot be cancelled or altered afterwards - the
  * entry is the kernel's until it runs. Work that needs cancelling wants a named timer.
  *
- * @param[in,out] pool     Pool declared with OS_TIMER_SUBMIT_DEFINE.
+ * @param[in,out] pool     Pool declared with OS_TIMER_DEFINE_SUBMIT.
  * @param[in]     context  Pointer passed to the callback (not copied).
  * @param[in]     value    Number passed to the callback.
- * @return os_status  OK; INVALID_ARG for a pool that did not come from OS_TIMER_SUBMIT_DEFINE;
+ * @return os_status  OK; INVALID_ARG for a pool that did not come from OS_TIMER_DEFINE_SUBMIT;
  *                    FULL when every one of this pool's entries is in flight.
  */
 os_status os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value)

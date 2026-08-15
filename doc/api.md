@@ -24,8 +24,8 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | **Queue** | `OS_QUEUE_DEFINE_STATIC` · `OS_QUEUE_DEFINE_BUFFER` · `OS_QUEUE_DEFINE_DYNAMIC` · `os_queue_init_dynamic` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
 | **Event** | `os_event_init` · `os_event_set_bits` · `os_event_clear_bits` · `os_event_wait_bits` |
 | **Task notifications** | `os_notify_give` · `os_notify_wait` |
-| **Software timers** | `OS_TIMER_PERIODIC_DEFINE` / `OS_TIMER_ONESHOT_DEFINE` · `os_timer_start` · `os_timer_restart` · `os_timer_pause` · `os_timer_stop` · `os_timer_period_set` · `os_timer_callback_set` · `os_timer_value_set` |
-| **Deferred calls** | `OS_TIMER_SUBMIT_DEFINE` · `os_timer_submit` |
+| **Software timers** | `OS_TIMER_DEFINE_PERIODIC` / `OS_TIMER_DEFINE_ONESHOT` · `os_timer_start` · `os_timer_restart` · `os_timer_pause` · `os_timer_stop` · `os_timer_period_set` · `os_timer_callback_set` · `os_timer_value_set` |
+| **Deferred calls** | `OS_TIMER_DEFINE_SUBMIT` · `os_timer_submit` |
 | **Kernel heap** | `os_mem_alloc` · `os_mem_free` · `os_mem_free_get` · `os_mem_watermark_get` |
 | **Diagnostics** | `os_task_stack_watermark_get` · `os_cpu_usage_get` · `os_stack_overflow_cb` |
 | **Debugging** | `OS_ASSERT` · `os_assert_failed_cb` · `OS_LOG_ERROR` / `OS_LOG_WARN` / `OS_LOG_INFO` / `OS_LOG_DEBUG` · `os_log_write` · `os_log_dropped_get` · `os_log_output_cb` |
@@ -520,8 +520,8 @@ carries the arguments.
 ```c
 static void my_callback(void *context, uint32_t value) { /* runs on tsk_timer */ }
 
-OS_TIMER_ONESHOT_DEFINE(defer_now,  1U, my_callback);
-OS_TIMER_ONESHOT_DEFINE(defer_late, 100U, my_callback);
+OS_TIMER_DEFINE_ONESHOT(defer_now,  1U, my_callback);
+OS_TIMER_DEFINE_ONESHOT(defer_late, 100U, my_callback);
 
 os_timer_start(&defer_now,  &my_device, sample);   /* as soon as possible */
 os_timer_start(&defer_late, NULL,       42U);      /* or after a delay    */
@@ -535,7 +535,7 @@ service task, its stack, and five configuration options.
 **Use `os_timer_submit` when every event matters:**
 
 ```c
-OS_TIMER_SUBMIT_DEFINE(uart_defer, 8U, 0U, on_uart_event);
+OS_TIMER_DEFINE_SUBMIT(uart_defer, 8U, 0U, on_uart_event);
 /*                                 |   |
  *                                 |   delay before each call (0 = as soon as possible)
  *                                 how many may be in flight at once                    */

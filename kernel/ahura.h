@@ -1013,7 +1013,7 @@ typedef struct
 
 /******************************************************************************************************/
 /**
- * @brief A pool of deferred calls - see OS_TIMER_SUBMIT_DEFINE and os_timer_submit.
+ * @brief A pool of deferred calls - see OS_TIMER_DEFINE_SUBMIT and os_timer_submit.
  */
 typedef struct os_timer_pool_s os_timer_pool_t;
 
@@ -1033,7 +1033,7 @@ typedef struct
 /**
  * @brief A pool of deferred calls: the storage os_timer_submit hands out, one slot per call.
  *
- * Declared by OS_TIMER_SUBMIT_DEFINE and owned by the caller, which is what keeps OS_STATUS_FULL
+ * Declared by OS_TIMER_DEFINE_SUBMIT and owned by the caller, which is what keeps OS_STATUS_FULL
  * local to one pool. Everything here is settled at compile time except free_list and ready, which
  * the kernel fills in the first time the pool is used - so a pool needs no init call and the
  * kernel keeps no list of pools.
@@ -1041,9 +1041,9 @@ typedef struct
 struct os_timer_pool_s
 {
     void                *self;       /**< Points at this pool; the same validity check timers use.   */
-    os_timer_entry_t    *entries;    /**< The slots, from OS_TIMER_SUBMIT_DEFINE.                    */
+    os_timer_entry_t    *entries;    /**< The slots, from OS_TIMER_DEFINE_SUBMIT.                    */
     uint32_t            count;       /**< How many, so at most this many calls may be in flight.     */
-    uint32_t            delay_ticks; /**< From OS_TIMER_SUBMIT_DEFINE; 0 means deliver immediately.  */
+    uint32_t            delay_ticks; /**< From OS_TIMER_DEFINE_SUBMIT; 0 means deliver immediately.  */
     os_timer_callback_t callback;    /**< What every submission to this pool runs.                   */
     os_list_t           free_list;   /**< Slots nobody is using; they link through timer.ready_node. */
     bool                ready;       /**< Set on first use, when the slots are threaded onto free_list. */
@@ -1052,7 +1052,7 @@ struct os_timer_pool_s
 /*
  * A timer's life cycle, and what each call does to the countdown:
  *
- *   OS_TIMER_PERIODIC_DEFINE / OS_TIMER_ONESHOT_DEFINE   period and callback, at compile time
+ *   OS_TIMER_DEFINE_PERIODIC / OS_TIMER_DEFINE_ONESHOT   period and callback, at compile time
  *   os_timer_start     run - from the full period, or from where a pause left off
  *   os_timer_restart   run from the full period, whatever the timer was doing
  *                      both carry the context and value the callback will receive
@@ -1075,8 +1075,8 @@ struct os_timer_pool_s
 /** A timer is set up entirely at COMPILE time - no init call, and the macro's NAME is the mode,
  *  so there is none to pass and none to get wrong:
  *
- *    OS_TIMER_PERIODIC_DEFINE(blinker, 500U, on_blink);
- *    OS_TIMER_ONESHOT_DEFINE(timeout,  250U, on_timeout);
+ *    OS_TIMER_DEFINE_PERIODIC(blinker, 500U, on_blink);
+ *    OS_TIMER_DEFINE_ONESHOT(timeout,  250U, on_timeout);
  *
  *    os_timer_start(&blinker, &led2, 3U);
  *
@@ -1089,9 +1089,9 @@ struct os_timer_pool_s
  *  documents. */
 
 /** Reloads and fires every period_ms until stopped. */
-#define OS_TIMER_PERIODIC_DEFINE(timer_name, timer_period_ms, timer_callback)             \
+#define OS_TIMER_DEFINE_PERIODIC(timer_name, timer_period_ms, timer_callback)             \
     _Static_assert(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
-                   "OS_TIMER_PERIODIC_DEFINE: the period is in milliseconds and cannot "  \
+                   "OS_TIMER_DEFINE_PERIODIC: the period is in milliseconds and cannot "  \
                    "be 0 or OS_WAIT_FOREVER");                                            \
     static os_timer_t timer_name = {                                                      \
         .self         = &timer_name,                                                      \
@@ -1101,9 +1101,9 @@ struct os_timer_pool_s
     }
 
 /** Fires once, period_ms after it is started, then stops. */
-#define OS_TIMER_ONESHOT_DEFINE(timer_name, timer_period_ms, timer_callback)              \
+#define OS_TIMER_DEFINE_ONESHOT(timer_name, timer_period_ms, timer_callback)              \
     _Static_assert(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
-                   "OS_TIMER_ONESHOT_DEFINE: the period is in milliseconds and cannot "   \
+                   "OS_TIMER_DEFINE_ONESHOT: the period is in milliseconds and cannot "   \
                    "be 0 or OS_WAIT_FOREVER");                                            \
     static os_timer_t timer_name = {                                                      \
         .self         = &timer_name,                                                      \
@@ -1114,7 +1114,7 @@ struct os_timer_pool_s
 
 /** A pool of deferred calls, for the case os_timer_start deliberately does NOT serve.
  *
- *    OS_TIMER_SUBMIT_DEFINE(uart_defer, 8U, 0U, on_uart_event);
+ *    OS_TIMER_DEFINE_SUBMIT(uart_defer, 8U, 0U, on_uart_event);
  *                                       |    |
  *                                       |    delay before each call (0 = as soon as possible)
  *                                       how many may be in flight at once
@@ -1133,12 +1133,12 @@ struct os_timer_pool_s
  *
  *  pool_depth slots cost pool_depth * sizeof(os_timer_entry_t), threaded on first use.
  */
-#define OS_TIMER_SUBMIT_DEFINE(pool_name, pool_depth, pool_delay_ms, pool_callback)       \
+#define OS_TIMER_DEFINE_SUBMIT(pool_name, pool_depth, pool_delay_ms, pool_callback)       \
     _Static_assert((pool_depth) > 0U,                                                     \
-                   "OS_TIMER_SUBMIT_DEFINE: the depth is how many calls may be in "       \
+                   "OS_TIMER_DEFINE_SUBMIT: the depth is how many calls may be in "       \
                    "flight at once and cannot be 0");                                     \
     _Static_assert((pool_delay_ms) != OS_WAIT_FOREVER,                                    \
-                   "OS_TIMER_SUBMIT_DEFINE: the delay is in milliseconds; use 0 for "     \
+                   "OS_TIMER_DEFINE_SUBMIT: the delay is in milliseconds; use 0 for "     \
                    "as soon as possible");                                                \
     static os_timer_entry_t pool_name##_entries[(pool_depth)];                            \
     static os_timer_pool_t pool_name = {                                                  \

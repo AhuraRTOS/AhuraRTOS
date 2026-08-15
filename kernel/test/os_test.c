@@ -160,21 +160,21 @@ static void test_bench_timer_cb(void *context, uint32_t value);
 
 /* A minute long, so it can be armed and cancelled 2000 times over without ever expiring: the
  * measurement sees the arm/cancel path alone, never a delivery. */
-OS_TIMER_ONESHOT_DEFINE(os_test_bench_timer, 60000U, test_bench_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_bench_timer, 60000U, test_bench_timer_cb);
 
 /* Filler for the second timer row: start and stop search the running list, so their cost depends
  * on how many timers are RUNNING. These sit in that list doing nothing, to make the slope visible
  * rather than leaving it to be reasoned about. */
 #define TEST_BENCH_TIMER_FILL  8U
 
-OS_TIMER_ONESHOT_DEFINE(os_test_bf0, 60000U, test_bench_timer_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_bf1, 60000U, test_bench_timer_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_bf2, 60000U, test_bench_timer_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_bf3, 60000U, test_bench_timer_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_bf4, 60000U, test_bench_timer_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_bf5, 60000U, test_bench_timer_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_bf6, 60000U, test_bench_timer_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_bf7, 60000U, test_bench_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_bf0, 60000U, test_bench_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_bf1, 60000U, test_bench_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_bf2, 60000U, test_bench_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_bf3, 60000U, test_bench_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_bf4, 60000U, test_bench_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_bf5, 60000U, test_bench_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_bf6, 60000U, test_bench_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_bf7, 60000U, test_bench_timer_cb);
 
 static os_timer_t *os_test_bench_fill[TEST_BENCH_TIMER_FILL] = {
     &os_test_bf0, &os_test_bf1, &os_test_bf2, &os_test_bf3,
@@ -236,12 +236,12 @@ static void test_churn_timer_cb(void *context, uint32_t value);
 
 /* Set up where they are declared: the kernel has no init call, so period, mode and callback are
  * settled here and only the period is ever retuned (os_timer_period_set) at run time. */
-OS_TIMER_ONESHOT_DEFINE(os_test_timer_oneshot, 50U, timer_oneshot_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_timer_periodic, 30U, timer_periodic_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_timer_oneshot, 50U, timer_oneshot_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_timer_periodic, 30U, timer_periodic_cb);
 
 /* The churn test hammers one object with its own callback, so it gets its own object rather than
  * repointing a shared one. */
-OS_TIMER_ONESHOT_DEFINE(os_test_churn_timer, 1000U, test_churn_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_churn_timer, 1000U, test_churn_timer_cb);
 static __IO uint32_t os_test_oneshot_fired  = 0U;
 static __IO uint32_t os_test_periodic_fired = 0U;
 #endif
@@ -1747,11 +1747,11 @@ static void test_event_group(void)
 static void timer_oneshot_cb(void *context, uint32_t value);
 
 /* This object must be startable straight from its definition - the kernel has no init call. */
-OS_TIMER_ONESHOT_DEFINE(os_test_defined_timer, 40U, timer_oneshot_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_defined_timer, 40U, timer_oneshot_cb);
 
 static void timer_args_cb(void *context, uint32_t value);
 
-OS_TIMER_PERIODIC_DEFINE(os_test_args_timer, 20U, timer_args_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_args_timer, 20U, timer_args_cb);
 
 static __IO uint32_t os_test_args_runs    = 0U;
 static __IO bool     os_test_args_ok      = false;
@@ -2018,8 +2018,8 @@ static void test_isr_defer_cb(void *context, uint32_t value);
 
 /* One timer the ISR arms and later cancels, and one it uses as a deferred call - the "run this
  * soon" case, which in this kernel is simply a one-shot with a one-tick period. */
-OS_TIMER_ONESHOT_DEFINE(os_test_isr_timer, 1000U, test_isr_timer_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_isr_defer, 1U, test_isr_defer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_isr_timer, 1000U, test_isr_timer_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_isr_defer, 1U, test_isr_defer_cb);
 
 static uint32_t       os_test_isr_marker        = 0xC0FFEEUL;
 
@@ -2163,12 +2163,12 @@ static void test_coalesce_cb(void *context, uint32_t value);
 
 /* Three pools rather than three delays at the call site: the delay belongs to the definition now,
  * so "same work, different timing" is a second pool. */
-OS_TIMER_SUBMIT_DEFINE(os_test_pool,      TEST_POOL_SIZE, 0U,  test_pool_cb);
-OS_TIMER_SUBMIT_DEFINE(os_test_pool_slow, TEST_POOL_SIZE, 60U, test_pool_cb);
-OS_TIMER_SUBMIT_DEFINE(os_test_pool_b,    2U,             0U,  test_pool_other_cb);
+OS_TIMER_DEFINE_SUBMIT(os_test_pool,      TEST_POOL_SIZE, 0U,  test_pool_cb);
+OS_TIMER_DEFINE_SUBMIT(os_test_pool_slow, TEST_POOL_SIZE, 60U, test_pool_cb);
+OS_TIMER_DEFINE_SUBMIT(os_test_pool_b,    2U,             0U,  test_pool_other_cb);
 
 /* The contrast case: one ordinary one-shot, started twice. */
-OS_TIMER_ONESHOT_DEFINE(os_test_coalesce, 30U, test_coalesce_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_coalesce, 30U, test_coalesce_cb);
 
 static uint32_t      os_test_pool_marker = 0xFEEDU;
 static __IO uint32_t os_test_pool_log[TEST_POOL_LOG_MAX];
@@ -2297,7 +2297,7 @@ static void test_timer_pool(void)
                       (unsigned)TEST_POOL_SIZE, (unsigned long)filled);
 
     /* ---- a pool entry is not a timer the public API will touch ---- */
-    /* OS_TIMER_SUBMIT_DEFINE declares the entries array in this file's scope, so one can be named.
+    /* OS_TIMER_DEFINE_SUBMIT declares the entries array in this file's scope, so one can be named.
      * Arming a FREE entry would link its running_node into the running list while its ready_node is
      * still on the pool's free list, and the next expiry would push that same node onto the
      * delivery queue - overwriting the links the free list holds it by. The pool has been used by
@@ -2338,7 +2338,7 @@ static void test_timer_pool(void)
 
         memset(&rogue, 0xA5, sizeof(rogue));
         AHURA_TEST_CHECK(os_timer_submit(&rogue, NULL, 0U) == OS_STATUS_INVALID_ARG,
-                          "and a pool that never came from OS_TIMER_SUBMIT_DEFINE is refused");
+                          "and a pool that never came from OS_TIMER_DEFINE_SUBMIT is refused");
     }
 }
 #endif /* OS_CONFIG_TIMER_ENABLE */
@@ -2373,32 +2373,32 @@ static void test_rw_pool_cb(void *context, uint32_t value);
 static void test_rw_block_cb(void *context, uint32_t value);
 #endif
 
-OS_TIMER_ONESHOT_DEFINE(os_test_rw_rearm,    20U, test_rw_rearm_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_rw_selfstop, 20U, test_rw_selfstop_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_rw_slow,     10U, test_rw_slow_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_rw_owed,     20U, test_rw_owed_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_rw_retune,   40U, test_rw_retune_cb);
-OS_TIMER_ONESHOT_DEFINE(os_test_rw_chain,    15U, test_rw_chain_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_rw_rearm,    20U, test_rw_rearm_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_rw_selfstop, 20U, test_rw_selfstop_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_rw_slow,     10U, test_rw_slow_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_rw_owed,     20U, test_rw_owed_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_rw_retune,   40U, test_rw_retune_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_rw_chain,    15U, test_rw_chain_cb);
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
-OS_TIMER_ONESHOT_DEFINE(os_test_rw_block,    20U, test_rw_block_cb);
+OS_TIMER_DEFINE_ONESHOT(os_test_rw_block,    20U, test_rw_block_cb);
 #endif
 
-OS_TIMER_PERIODIC_DEFINE(os_test_rw_same0, 30U, test_rw_same_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_rw_same1, 30U, test_rw_same_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_rw_same2, 30U, test_rw_same_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_rw_same3, 30U, test_rw_same_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_rw_same0, 30U, test_rw_same_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_rw_same1, 30U, test_rw_same_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_rw_same2, 30U, test_rw_same_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_rw_same3, 30U, test_rw_same_cb);
 
 static os_timer_t *os_test_rw_same[TEST_RW_SAME_PERIOD] = {
     &os_test_rw_same0, &os_test_rw_same1, &os_test_rw_same2, &os_test_rw_same3,
 };
 
 /* Two pools sharing ONE callback, to prove their values cannot cross. */
-OS_TIMER_SUBMIT_DEFINE(os_test_rw_pool_a, 3U, 0U, test_rw_pool_cb);
-OS_TIMER_SUBMIT_DEFINE(os_test_rw_pool_b, 3U, 0U, test_rw_pool_cb);
+OS_TIMER_DEFINE_SUBMIT(os_test_rw_pool_a, 3U, 0U, test_rw_pool_cb);
+OS_TIMER_DEFINE_SUBMIT(os_test_rw_pool_b, 3U, 0U, test_rw_pool_cb);
 
 /* ONE entry, deliberately: a callback that submits again can only succeed if the entry it is being
  * delivered on is already back in the pool. Depth 1 makes that the only way the chain can run. */
-OS_TIMER_SUBMIT_DEFINE(os_test_rw_chain_pool, 1U, 0U, test_rw_chain_cb);
+OS_TIMER_DEFINE_SUBMIT(os_test_rw_chain_pool, 1U, 0U, test_rw_chain_cb);
 
 static __IO uint32_t os_test_rw_rearm_runs   = 0U;
 static __IO uint32_t os_test_rw_selfstop_runs = 0U;
@@ -4081,10 +4081,10 @@ static void test_stress_timer_churn(void)
  * bring-up uses. */
 static void test_tflood_cb(void *context, uint32_t value);
 
-OS_TIMER_PERIODIC_DEFINE(os_test_tf0, 10U, test_tflood_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_tf1, 15U, test_tflood_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_tf2, 20U, test_tflood_cb);
-OS_TIMER_PERIODIC_DEFINE(os_test_tf3, 25U, test_tflood_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_tf0, 10U, test_tflood_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_tf1, 15U, test_tflood_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_tf2, 20U, test_tflood_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_tf3, 25U, test_tflood_cb);
 
 static os_timer_t *os_test_tflood[TEST_TIMER_SET] = {
     &os_test_tf0,
@@ -4093,7 +4093,7 @@ static os_timer_t *os_test_tflood[TEST_TIMER_SET] = {
     &os_test_tf3,
 };
 
-OS_TIMER_PERIODIC_DEFINE(os_test_tflood_extra, 10U, test_tflood_cb);
+OS_TIMER_DEFINE_PERIODIC(os_test_tflood_extra, 10U, test_tflood_cb);
 #endif
 
 #if (OS_TEST_STRESS_EXTENDED == 1U)

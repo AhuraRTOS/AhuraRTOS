@@ -4,9 +4,9 @@
  *
  * Three macros, and the macro's name is the behaviour - there is no mode to pass and no init call:
  *
- *   OS_TIMER_PERIODIC_DEFINE   fires every period until stopped
- *   OS_TIMER_ONESHOT_DEFINE    fires once
- *   OS_TIMER_SUBMIT_DEFINE     a pool of deferred calls, for work coming off an interrupt
+ *   OS_TIMER_DEFINE_PERIODIC   fires every period until stopped
+ *   OS_TIMER_DEFINE_ONESHOT    fires once
+ *   OS_TIMER_DEFINE_SUBMIT     a pool of deferred calls, for work coming off an interrupt
  *
  * The one distinction worth learning is between the last two, because picking wrong is a bug
  * rather than a matter of taste:
@@ -54,12 +54,12 @@ static void on_blink(void *context, uint32_t value);
 static void on_timeout(void *context, uint32_t value);
 static void on_event(void *context, uint32_t value);
 
-OS_TIMER_PERIODIC_DEFINE(os_main_blinker, 250U, on_blink);
-OS_TIMER_ONESHOT_DEFINE(os_main_timeout,  500U, on_timeout);
+OS_TIMER_DEFINE_PERIODIC(os_main_blinker, 250U, on_blink);
+OS_TIMER_DEFINE_ONESHOT(os_main_timeout,  500U, on_timeout);
 
 /* Four calls may be in flight at once, each run as soon as possible. Both numbers are settled here,
  * so os_timer_submit itself does no arithmetic - which is what an interrupt path wants. */
-OS_TIMER_SUBMIT_DEFINE(os_main_events, 4U, 0U, on_event);
+OS_TIMER_DEFINE_SUBMIT(os_main_events, 4U, 0U, on_event);
 
 /*
  * ***********************************************************************************************************

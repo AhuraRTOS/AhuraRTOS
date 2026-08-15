@@ -407,7 +407,7 @@ pointer an object supplied. The length walked is what is *running*, so an idle
 system pays almost nothing.
 
 A timer is also refused unless its `self` field points at the timer itself,
-which only `OS_TIMER_PERIODIC_DEFINE` / `OS_TIMER_ONESHOT_DEFINE` arranges.
+which only `OS_TIMER_DEFINE_PERIODIC` / `OS_TIMER_DEFINE_ONESHOT` arranges.
 Because the link state lives inside the object, a hand-declared `os_timer_t`
 would hand the kernel two list nodes of garbage, and `os_timer_stop` would
 execute `node->prev->next = ...` - a write
@@ -429,7 +429,7 @@ the caller declared, so an interrupt firing three times runs the callback three
 times, in order, each with its own value.
 
 Two pending calls with two different values need two pieces of storage, which no
-API shape avoids. What `OS_TIMER_SUBMIT_DEFINE` arranges is *whose*: the slots are
+API shape avoids. What `OS_TIMER_DEFINE_SUBMIT` arranges is *whose*: the slots are
 the caller's, declared where the work is and sized by whoever knows the burst
 rate, so `OS_STATUS_FULL` is always local to one pool and there is no kernel-wide
 number. `OS_TIMER_MODE_SUBMIT` marks an entry so delivery knows to hand it back;
@@ -668,8 +668,8 @@ application routes to `os_tick_handler()`.
   them short or user tasks will starve. They *may* block - they run in task
   context, not in the tick ISR - but everything queued behind them waits.
 - A timer's kind is chosen by the macro that declares it:
-  `OS_TIMER_PERIODIC_DEFINE`, `OS_TIMER_ONESHOT_DEFINE`, or
-  `OS_TIMER_SUBMIT_DEFINE` for a pool of deferred calls. There is no mode
+  `OS_TIMER_DEFINE_PERIODIC`, `OS_TIMER_DEFINE_ONESHOT`, or
+  `OS_TIMER_DEFINE_SUBMIT` for a pool of deferred calls. There is no mode
   argument and no init call.
 - `os_timer_start` on a timer that is already pending **reschedules** it, so the
   earlier context and value are replaced. Use `os_timer_submit` where every
