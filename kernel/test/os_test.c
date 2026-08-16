@@ -4074,12 +4074,28 @@ static void test_stress_timer_churn(void)
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
 /* Enough timers to fill the registry, plus one more that must therefore be refused.
  *
- * Declared out here, ahead of the OS_TEST_STRESS_EXTENDED block below, because BOTH the extended
+ * Defined out here, ahead of the OS_TEST_STRESS_EXTENDED block below, because BOTH the extended
  * timer-flood stress test (inside that block, so compiled out in unoptimized builds) and
  * test_regressions() (which runs in every build) fill the registry with them. Declaring them
  * inside the block made the whole suite fail to compile at -O0 - precisely the build a board
- * bring-up uses. */
-static void test_tflood_cb(void *context, uint32_t value);
+ * bring-up uses.
+ *
+ * The CALLBACK has to come out with them, not just a forward declaration of it. An
+ * OS_TIMER_DEFINE_PERIODIC stores the function pointer in the timer object itself, so every one of
+ * these definitions is a use: leaving the body inside the block satisfied the compiler and then
+ * failed at link with "undefined reference to test_tflood_cb" in exactly the -O0 build this comment
+ * was written to protect. The counter it writes moves with it for the same reason. */
+static __IO uint32_t os_test_tflood_fired[TEST_TIMER_SET];
+
+/******************************************************************************************************/
+static void test_tflood_cb(void *context, uint32_t value)
+{
+    (void)context;
+
+    /* value is what os_timer_start was given, so one shared definition still knows which of the
+     * array's timers fired. */
+    if (value < TEST_TIMER_SET) { os_test_tflood_fired[value]++; }
+}
 
 OS_TIMER_DEFINE_PERIODIC(os_test_tf0, 10U, test_tflood_cb);
 OS_TIMER_DEFINE_PERIODIC(os_test_tf1, 15U, test_tflood_cb);
@@ -4732,20 +4748,9 @@ static void test_stress_event_bit_storm(void)
 
 #define OS_TEST_TFLOOD_WINDOW 200U
 
-/* os_test_tflood[] and os_test_tflood_extra are declared further down, outside
- * this OS_TEST_STRESS_EXTENDED block: test_regressions() fills the timer
+/* os_test_tflood[], os_test_tflood_extra, test_tflood_cb and os_test_tflood_fired all live
+ * further up, outside this OS_TEST_STRESS_EXTENDED block: test_regressions() fills the timer
  * registry with them too, and that test always runs. */
-static __IO uint32_t os_test_tflood_fired[TEST_TIMER_SET];
-
-/******************************************************************************************************/
-static void test_tflood_cb(void *context, uint32_t value)
-{
-    (void)context;
-
-    /* value is what os_timer_start was given, so one shared definition still knows which of the
-     * array's timers fired. */
-    if (value < TEST_TIMER_SET) { os_test_tflood_fired[value]++; }
-}
 
 /******************************************************************************************************/
 /**
