@@ -42,32 +42,27 @@
 /* Reject incomplete configurations: a missing option would otherwise read
  * as 0 in #if directives and silently disable or misconfigure features.
  * Start from template/os_config.h, which lists every required option. */
-#if !defined(OS_CONFIG_MUTEX_ENABLE) || !defined(OS_CONFIG_SEMAPHORE_ENABLE) ||                        \
-    !defined(OS_CONFIG_QUEUE_ENABLE) || !defined(OS_CONFIG_EVENT_ENABLE) ||                            \
-    !defined(OS_CONFIG_TIMER_ENABLE) ||                             \
-    !defined(OS_CONFIG_ALLOC_ENABLE) ||                                                                \
-    !defined(OS_CONFIG_STACK_WATERMARK_ENABLE) ||                                                      \
-    !defined(OS_CONFIG_STACK_CHECK_ENABLE) ||                                                          \
-    !defined(OS_CONFIG_CPU_USAGE_ENABLE) ||                                                            \
-    !defined(OS_CONFIG_ASSERT_ENABLE) || !defined(OS_CONFIG_LOG_ENABLE) ||                             \
-    !defined(OS_CONFIG_ATOMIC_ENABLE) || !defined(OS_CONFIG_NOTIFY_ENABLE) ||                          \
-    !defined(OS_CONFIG_LOG_LEVEL) || !defined(OS_CONFIG_LOG_BUFFER_SIZE) ||                            \
-    !defined(OS_CONFIG_LOG_LINE_MAX) || !defined(OS_CONFIG_LOG_TASK_STACK_SIZE) ||                     \
-    !defined(OS_CONFIG_LOG_TASK_PRIORITY) ||                                                           \
-    !defined(OS_CONFIG_TEST_ENABLE) ||                                                                 \
-    !defined(OS_CONFIG_TICK_HZ) || !defined(OS_CONFIG_TIME_SLICE_TICKS) ||                             \
-    !defined(OS_CONFIG_HEAP_SIZE) ||                                                                   \
-    !defined(OS_CONFIG_MAX_USER_TASKS) ||                                                              \
-                                    \
-    !defined(OS_CONFIG_MIN_STACK_SIZE) ||                           !defined(OS_CONFIG_TIMER_PRIORITY) ||                         \
-    !defined(OS_CONFIG_TIMER_STACK_SIZE) ||                  \
-    !defined(OS_CONFIG_TIMER_CORE_AFFINITY) ||                                                         \
-    !defined(OS_CONFIG_MAIN_TASK_STACK_SIZE) || !defined(OS_CONFIG_MAIN_TASK_PRIORITY) ||               \
-    !defined(OS_CONFIG_TEST_STACK_SIZE) || !defined(OS_CONFIG_TEST_PRIORITY) ||                        \
-    !defined(OS_CONFIG_TRUSTZONE) || !defined(OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY) ||             \
-    !defined(OS_CONFIG_CORE_COUNT) || !defined(OS_CONFIG_SPINLOCK_SOC_BACKEND) ||            \
-    !defined(OS_CONFIG_TICKLESS_ENABLE) ||                                                             \
-    !defined(OS_CONFIG_TICKLESS_MIN_IDLE) || !defined(OS_CONFIG_LPTIM_CLOCK_HZ) ||                     \
+#if !defined(OS_CONFIG_MUTEX_ENABLE) || !defined(OS_CONFIG_SEMAPHORE_ENABLE) ||                       \
+    !defined(OS_CONFIG_QUEUE_ENABLE) || !defined(OS_CONFIG_EVENT_ENABLE) ||                           \
+    !defined(OS_CONFIG_TIMER_ENABLE) || !defined(OS_CONFIG_ALLOC_ENABLE) ||                           \
+    !defined(OS_CONFIG_ATOMIC_ENABLE) || !defined(OS_CONFIG_NOTIFY_ENABLE) ||                         \
+    !defined(OS_CONFIG_LOG_ENABLE) || !defined(OS_CONFIG_ASSERT_ENABLE) ||                            \
+    !defined(OS_CONFIG_STACK_WATERMARK_ENABLE) || !defined(OS_CONFIG_STACK_CHECK_ENABLE) ||           \
+    !defined(OS_CONFIG_CPU_USAGE_ENABLE) || !defined(OS_CONFIG_TEST_ENABLE) ||                        \
+    !defined(OS_CONFIG_TICKLESS_ENABLE) ||                                                            \
+    !defined(OS_CONFIG_LOG_LEVEL) || !defined(OS_CONFIG_LOG_BUFFER_SIZE) ||                           \
+    !defined(OS_CONFIG_LOG_LINE_MAX) || !defined(OS_CONFIG_LOG_TASK_STACK_SIZE) ||                    \
+    !defined(OS_CONFIG_LOG_TASK_PRIORITY) ||                                                          \
+    !defined(OS_CONFIG_TICK_HZ) || !defined(OS_CONFIG_TIME_SLICE_TICKS) ||                            \
+    !defined(OS_CONFIG_MAX_USER_TASKS) || !defined(OS_CONFIG_MIN_STACK_SIZE) ||                       \
+    !defined(OS_CONFIG_HEAP_SIZE) ||                                                                  \
+    !defined(OS_CONFIG_TIMER_PRIORITY) || !defined(OS_CONFIG_TIMER_STACK_SIZE) ||                     \
+    !defined(OS_CONFIG_TIMER_CORE_AFFINITY) ||                                                        \
+    !defined(OS_CONFIG_MAIN_TASK_STACK_SIZE) || !defined(OS_CONFIG_MAIN_TASK_PRIORITY) ||             \
+    !defined(OS_CONFIG_TEST_STACK_SIZE) || !defined(OS_CONFIG_TEST_PRIORITY) ||                       \
+    !defined(OS_CONFIG_TRUSTZONE) || !defined(OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY) ||                  \
+    !defined(OS_CONFIG_CORE_COUNT) || !defined(OS_CONFIG_SPINLOCK_SOC_BACKEND) ||                     \
+    !defined(OS_CONFIG_TICKLESS_MIN_IDLE) || !defined(OS_CONFIG_LPTIM_CLOCK_HZ) ||                    \
     !defined(OS_CONFIG_MAX_SUPPRESSED_TICKS)
 #error "os_config.h is incomplete: it must define every option listed in kernel/template/os_config.h."
 #endif
@@ -78,6 +73,26 @@
 
 #if (OS_CONFIG_CORE_COUNT > 31U)
 #error "OS_CONFIG_CORE_COUNT must be at most 31 (core affinity masks are 32 bits wide)."
+#endif
+
+/* A stack has to hold the initial exception frame before it holds anything else.
+ * os_arch_task_stack_initialize writes 17 words on ARMv7-M, 18 on ARMv8-M, and more again with the
+ * FPU context - all of it BELOW the stack top - and the only size check anywhere is
+ * "stack_bytes >= OS_CONFIG_MIN_STACK_SIZE". So a project that lowers this constant far enough does
+ * not get a rejected task: it gets out-of-bounds writes underneath every task stack, at creation,
+ * with no diagnostic and nothing to catch them at runtime.
+ *
+ * 128 bytes is 32 words - clear of the largest frame the ports write, with room to be entered. The
+ * alignment term is the same one os_task_create_any enforces on the buffer itself; a misaligned
+ * minimum would let a stack pass the size check and fail the alignment check for reasons the
+ * message never explains. Checked here rather than in os_task.c because it is a property of the
+ * PORT's frame layout, which is what this header is for. */
+#if (OS_CONFIG_MIN_STACK_SIZE < 128U)
+#error "OS_CONFIG_MIN_STACK_SIZE must be at least 128 bytes: the initial exception frame the port writes does not fit below that, and a smaller value corrupts memory beneath every task stack."
+#endif
+
+#if ((OS_CONFIG_MIN_STACK_SIZE % 8U) != 0U)
+#error "OS_CONFIG_MIN_STACK_SIZE must be a multiple of 8 (AAPCS stack alignment)."
 #endif
 
 /*

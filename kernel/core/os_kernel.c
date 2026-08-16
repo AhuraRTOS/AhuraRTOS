@@ -80,7 +80,7 @@ void os_init(void)
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     (void)os_timer_system_init();
 #endif
-    /* The log task sits at the opposite end from work/timer: lowest priority,
+    /* The log task sits at the opposite end from the timer task: lowest priority,
      * so draining the log never preempts application work. Created before the
      * main/test task so anything they log at startup already has a consumer. */
 #if (OS_CONFIG_LOG_ENABLE == 1U)

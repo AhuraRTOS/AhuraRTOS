@@ -14,6 +14,8 @@ source and include lists it needs.
 
 > **On STM32CubeMX?** There is a one-command installer that does all six for
 > you - see **[STM32CubeMX → Automatic](stm32cubemx.md#automatic---one-command)**.
+> No internet on the build machine? The same installation runs from a local
+> copy - see **[Offline](stm32cubemx.md#offline---no-internet-on-the-machine)**.
 > This page is still worth reading as the reference for what it did.
 
 Two companion pages go with this one:

@@ -569,11 +569,19 @@ def repo_source(source: str, ref: str):
 
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
-            # A GitHub tarball has no absolute or parent paths, but this is
-            # archive extraction: check rather than trust.
+            # A GitHub tarball has no absolute or parent paths, no symlinks and
+            # no hardlinks, but this is archive extraction: check rather than
+            # trust. The link check matters specifically for the fallback
+            # below - filter="data" rejects escaping links itself, but on
+            # Python < 3.12 there is no filter, and a link member whose
+            # linkname points outside the directory is the one way a member
+            # with a perfectly innocent name still writes outside tmp.
             for member in tar.getmembers():
                 if member.name.startswith("/") or ".." in Path(member.name).parts:
                     raise Fatal("refusing to extract unsafe path from tarball: " + member.name)
+                if member.issym() or member.islnk():
+                    raise Fatal("refusing to extract link member from tarball: {} -> {}"
+                                .format(member.name, member.linkname))
             try:
                 tar.extractall(tmp, filter="data")   # filter= is 3.12+
             except TypeError:

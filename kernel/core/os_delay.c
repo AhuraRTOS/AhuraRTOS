@@ -168,7 +168,7 @@ static void os_delay_ticks(uint32_t ticks)
 
         /* Preferred path: yield the CPU to other tasks until the delay expires.
          * The sleep is re-armed until the duration has really elapsed: a forced
-         * os_task_wake aimed at a kernel service task (new work/timer expiry
+         * os_task_wake aimed at a kernel service task (a new timer expiry
          * while its handler delays) must not cut the delay short. */
         if (os_internal_can_block())
         {

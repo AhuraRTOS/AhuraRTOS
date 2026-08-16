@@ -27,13 +27,25 @@
 /**
  * @brief Initialize a mutex object.
  *
- * Re-initializing a mutex that still has queued waiters is refused: resetting
- * the waiter list would strand the queued tasks on dangling intrusive nodes
- * and corrupt the list. (The check reads the object's current memory, so
- * first-time init must run on zero-initialized storage - static objects are.)
+ * Re-initializing a mutex that is still in use is refused, for two distinct reasons:
+ *
+ *   queued waiters   resetting the waiter list would strand the queued tasks on dangling
+ *                    intrusive nodes and corrupt the list.
+ *   still locked     a locked mutex has its owner_node linked into the OWNER's owned_mutexes
+ *                    list (os_task_mutex_owner_link). Clearing owner_node below while the
+ *                    owner's head/tail and the neighbouring nodes still point at it breaks that
+ *                    list from the outside: the recompute walk in
+ *                    os_task_mutex_owner_unlink_and_reprioritize stops early at the cleared node
+ *                    and derives a wrong effective priority, os_list_remove takes its
+ *                    "already detached" early-out so head/tail are never repaired, and the
+ *                    owner's eventual unlock sees locked == false and returns OS_STATUS_ERROR -
+ *                    leaving the inherited priority boost in place permanently.
+ *
+ * (The check reads the object's current memory, so first-time init must run on zero-initialized
+ * storage - static objects are.)
  *
  * @param[in,out] mutex  Mutex object.
- * @return os_status  OK, or BUSY while tasks are waiting on it.
+ * @return os_status  OK, or BUSY while tasks are waiting on it or it is still held.
  */
 os_status os_mutex_init(os_mutex_t *mutex)
 {
@@ -43,7 +55,7 @@ os_status os_mutex_init(os_mutex_t *mutex)
     {
         os_critical_enter();
 
-        if (mutex->waiters.head != NULL)
+        if ((mutex->waiters.head != NULL) || mutex->locked)
         {
             status = OS_STATUS_BUSY;
         }
@@ -116,6 +128,10 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                 /* Recursive lock attempt would deadlock forever: fail fast. */
                 if (held_by_self || (timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
                 {
+                    /* Giving up without the mutex: hand back any boost owed to the owner. Reached
+                     * on a first pass that never blocked (nothing to release, and the call is a
+                     * no-op), but also after one or more blocked retries that did boost. */
+                    os_task_mutex_waiter_depart();
                     os_task_wait_end();
                     os_critical_exit();
 
@@ -124,6 +140,8 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                 }
                 else if (remaining_ticks == 0U)
                 {
+                    /* The budget ran out across the retries; same debt to settle. */
+                    os_task_mutex_waiter_depart();
                     os_task_wait_end();
                     os_critical_exit();
 
@@ -180,6 +198,15 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                     }
                     else
                     {
+                        /* Timed out, and the tick already unlinked this task from the waiter list -
+                         * so the recompute below sees only the waiters that are genuinely still
+                         * queued. Takes its own critical section: unlike the two exits above, this
+                         * one is reached with interrupts unmasked, because the wait ended here
+                         * rather than in the block that started it. */
+                        os_critical_enter();
+                        os_task_mutex_waiter_depart();
+                        os_critical_exit();
+
                         os_task_wait_end();
 
                         status  = OS_STATUS_TIMEOUT;

@@ -54,7 +54,7 @@
 OS_TASK_DEFINE(tsk_log, OS_CONFIG_LOG_TASK_STACK_SIZE);
 
 /* Resolved once in os_log_system_init: the log task is never deleted, so every
- * later wake skips the id lookup (same trick os_work.c and os_timer.c use). */
+ * later wake skips the id lookup (the same trick os_timer.c uses). */
 static void      *os_log_task_tcb = NULL;
 
 /* Byte ring. head is the next write position, tail the next read position, so
@@ -87,7 +87,28 @@ static size_t os_log_append_u32(char *dst, size_t offset, uint32_t value, size_t
 
 /******************************************************************************************************/
 /**
- * @brief Format a log line and queue it for transmission (ISR-safe, never blocks).
+ * @brief Format a log line and queue it for transmission (never blocks).
+ *
+ * Queueing is ISR-safe - the ring buffer is written under a critical section and a full buffer
+ * drops rather than waits. FORMATTING is where the caveats are, and both come from this function
+ * calling into the C library's printf engine rather than owning one:
+ *
+ *   Stack.       The scratch line below is OS_CONFIG_LOG_LINE_MAX bytes, but the real requirement
+ *                is that PLUS whatever vsnprintf needs underneath it - several hundred bytes with
+ *                newlib, and substantially more once a float conversion is reachable. Any task or
+ *                ISR that logs has to be sized for both. Sizing only for LOG_LINE_MAX is the
+ *                mistake this note exists to prevent.
+ *
+ *   Reentrancy.  Stock newlib stdio reaches through _impure_ptr, which is shared unless the project
+ *                retargets it (__getreent, or a reentrant libc configuration). An OS_LOG_* from an
+ *                ISR that lands mid-vsnprintf in a task then shares that state. "%f" can also reach
+ *                malloc - the TOOLCHAIN's heap, not os_mem, and not protected by anything here.
+ *
+ * So: logging from an ISR is supported, but on a single-threaded libc it is only safe if no task
+ * can be inside vsnprintf at the time - which in practice means either retargeting the libc or
+ * keeping OS_LOG_* out of interrupt context. A float-free printf configuration removes the malloc
+ * path and most of the stack cost. The alternative, and the better long-term answer for a kernel,
+ * is an in-tree formatter: os_log_append_text/os_log_append_u32 below are most of one already.
  *
  * @param[in] level  OS_LOG_LEVEL_ERROR..DEBUG; only used to pick the severity letter, since the
  *                   OS_LOG_* macros already dropped anything above OS_CONFIG_LOG_LEVEL.
@@ -97,9 +118,8 @@ static size_t os_log_append_u32(char *dst, size_t offset, uint32_t value, size_t
 void os_log_write(uint32_t level, const char *fmt, ...)
 {
     /* Scratch lives on the CALLER's stack: every task that logs needs
-     * OS_CONFIG_LOG_LINE_MAX bytes of headroom for it. */
-    /* Scratch lives on the CALLER's stack: every task that logs needs
-     * OS_CONFIG_LOG_LINE_MAX bytes of headroom for it. */
+     * OS_CONFIG_LOG_LINE_MAX bytes of headroom for it, PLUS the formatter's
+     * own frame - see the stack note in this function's doc comment. */
     char line[OS_CONFIG_LOG_LINE_MAX];
     char severity;
     int  prefix_len = -1;

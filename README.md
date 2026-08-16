@@ -137,6 +137,7 @@ AhuraRTOS/
 ├── kernel/     <- the kernel: core, arch ports, templates, self-test suite
 ├── examples/   <- one runnable main per feature
 ├── tools/      <- install_stm32.py, the one-command CubeMX installer
+│               (install_stm32_offline.py for machines with no internet)
 ├── LICENSE
 └── README.md   <- this file
 ```

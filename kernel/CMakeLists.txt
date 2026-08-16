@@ -121,8 +121,9 @@ endif()
 #   os_main.c and add it to the APPLICATION build; it defines os_main() -
 #   the default application task's body (not a "_cb" function: this is
 #   where the application's own code runs). Task creation itself is
-#   unconditional in os_kernel.c's os_init(), gated by
-#   OS_CONFIG_MAIN_TASK_ENABLE; see README "Default application task".
+#   unconditional in os_kernel.c's os_init(): tsk_main is always created,
+#   except in a test build (OS_CONFIG_TEST_ENABLE 1), where the self-test
+#   task takes its place. See README "Default application task".
 #
 # The self-test suite (ahura_kernel/test/) is different: it IS a build
 # target (its own CMakeLists.txt), not a template - see

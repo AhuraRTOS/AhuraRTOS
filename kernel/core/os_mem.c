@@ -73,6 +73,7 @@ static size_t          os_mem_min_free_bytes  = 0U;
 
 static void os_mem_init(void);
 static void os_mem_block_insert(os_mem_block_t *block);
+static bool os_mem_block_plausible(const os_mem_block_t *block);
 
 /*
  * ***********************************************************************************************************
@@ -195,7 +196,8 @@ void os_mem_free(void *memory)
          * callers complete the free and the block gets linked into the free
          * list twice (self-loop, or a live allocation freed out from under its
          * owner). */
-        if (((block->size & OS_MEM_ALLOCATED_MSK) != 0U) && (block->next == NULL))
+        if (((block->size & OS_MEM_ALLOCATED_MSK) != 0U) && (block->next == NULL) &&
+            os_mem_block_plausible(block))
         {
             block->size &= ~OS_MEM_ALLOCATED_MSK;
             os_mem_free_bytes += block->size;
@@ -288,6 +290,45 @@ static void os_mem_init(void)
 
     os_mem_free_bytes     = first->size;
     os_mem_min_free_bytes = first->size;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Whether a header found at a caller-supplied address could actually be one of ours.
+ *
+ * os_mem_free's range check proves the pointer is inside the heap, and the allocated flag plus the
+ * cleared link prove the eight bytes below it LOOK like a live header. Neither proves they ARE one:
+ * a pointer into the middle of a live allocation lands on payload bytes, and payload bytes can hold
+ * any value - including a pattern that passes both tests. The size is then taken entirely on faith,
+ * added to os_mem_free_bytes and used to merge neighbours, which is how one bad pointer turns into
+ * a corrupted free list rather than a rejected call.
+ *
+ * These are the properties every real block has by construction, and they cost three comparisons:
+ *
+ *   aligned         os_mem_alloc only ever returns headers on an OS_MEM_ALIGNMENT boundary.
+ *   at least        a block covers its own header plus a non-empty payload.
+ *   inside the heap block + size never passes os_mem_end - the block was carved out below it.
+ *
+ * Cheap enough to leave on unconditionally: this runs once per free, on a path that is already
+ * walking a list. It narrows the window rather than closing it - a sufficiently unlucky payload
+ * still passes - which is why the real answer for a hostile caller is not to hand it os_mem_free.
+ *
+ * @param[in] block  Candidate header, already known to lie inside the heap.
+ * @return bool  True when it is shaped like a block this allocator produced.
+ */
+static bool os_mem_block_plausible(const os_mem_block_t *block)
+{
+    size_t    size    = block->size & ~OS_MEM_ALLOCATED_MSK;
+    uintptr_t address = (uintptr_t)block;
+
+    /* The last term is written as a subtraction rather than "address + size <= end" on purpose:
+     * size comes from memory the caller may have scribbled on, and the addition could wrap on a
+     * 32-bit target and pass a check it should fail. The address bound above it is what makes the
+     * subtraction safe from underflowing in turn. */
+    return (((address % OS_MEM_ALIGNMENT) == 0U) &&
+            (size >= OS_MEM_MIN_BLOCK_SIZE) &&
+            (address <= (uintptr_t)os_mem_end) &&
+            (size <= ((uintptr_t)os_mem_end - address)));
 }
 
 /******************************************************************************************************/

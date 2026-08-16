@@ -114,7 +114,7 @@
 
 /* How many tasks the APPLICATION may have. The kernel's own service tasks are
  * NOT counted here: it reserves their slots on top of this number, so enabling
- * the log or the work queue never costs the application a task, and this value
+ * the log or the timer service never costs the application a task, and this value
  * is exactly what os_task_create() will accept before returning
  * OS_STATUS_FULL. */
 #define OS_CONFIG_MAX_USER_TASKS            6U
@@ -151,7 +151,7 @@
  * application task" section. Not created when OS_CONFIG_TEST_ENABLE (PART 2) is 1: the
  * self-test task runs alone instead, and no os_main.c is needed at all.
  *
- * os_init() discards the creation status for this task (void, matching the work/timer
+ * os_init() discards the creation status for this task (void, matching the timer
  * system-init calls) - an out-of-range priority (must be
  * OS_TASK_PRIO_1_LOWEST..OS_TASK_PRIO_30_HIGHEST) or a too-small stack (must be at least
  * OS_CONFIG_MIN_STACK_SIZE above) fails SILENTLY: the firmware still builds, boots and
@@ -192,7 +192,7 @@
  * PART 2 - OPTIONAL FEATURES (1 = compiled in, 0 = compiled out)
  * ***********************************************************************************************************
  *
- * Disabling a feature removes its code, its API, and - for timer/work/log -
+ * Disabling a feature removes its code, its API, and - for timer/log -
  * its kernel service task and stack. Each section below carries its own
  * sizing, which is dead weight to reason about once the switch is 0.
 */

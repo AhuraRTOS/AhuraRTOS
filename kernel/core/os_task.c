@@ -48,6 +48,19 @@
  * sane nesting depth - a design needing more than a couple of held mutexes at once has a
  * lock-ordering problem this check cannot fix anyway. */
 
+/* A floor under OS_CONFIG_MIN_STACK_SIZE, because every other check in the kernel measures against
+ * it and so cannot catch it being wrong itself: os_task_create only tests
+ * stack_bytes >= OS_CONFIG_MIN_STACK_SIZE, and the idle stacks below are SIZED from it. Set it too
+ * low and os_arch_task_stack_initialize writes its initial frame - 17 words on v6m/v7m, 18 on v8m,
+ * so 72 bytes at the top - straight past the bottom of every task stack in the system, at creation
+ * time, silently. 128 leaves that frame plus room for a task to make a call; it is a sanity floor,
+ * not a recommendation (the template ships 256, and most real tasks need considerably more).
+ *
+ * A _Static_assert rather than #if because a compile-time constant expression is exactly what this
+ * is, and the message names the option - see os_timer.c for the same pattern on priorities. */
+_Static_assert((OS_CONFIG_MIN_STACK_SIZE >= 128U) && ((OS_CONFIG_MIN_STACK_SIZE % 8U) == 0U),
+               "OS_CONFIG_MIN_STACK_SIZE must be at least 128 and a multiple of 8");
+
 /*
  * ***********************************************************************************************************
  * Types
@@ -72,7 +85,7 @@ typedef struct
     os_list_node_t  wait_node;     /* links into one object's waiter list          */
     os_list_t       *wait_list;    /* joined waiter list, NULL when waiting on none */
     bool            wait_signaled; /* wakeup reason: object signal vs timeout      */
-    /* Kernel service task (timer/work/log): not the application's to pause or delete. Placed
+    /* Kernel service task (timer/log): not the application's to pause or delete. Placed
      * against the bool above so both share one alignment hole - it costs no RAM at all. */
     bool            system_task;
     uint32_t        wait_data[2];  /* per-wait condition data read by match wakers */
@@ -81,6 +94,13 @@ typedef struct
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
     uint32_t        base_priority; /* configured priority, restored once no held mutex needs a boost */
     os_list_t       owned_mutexes; /* mutexes currently locked by this task (priority inheritance) */
+    /* Owner of the mutex this task is queued on, 0 when it is queued on none. The boost handed to
+     * that owner by os_task_mutex_priority_inherit has to come back off when this task leaves the
+     * queue by ANY route - timeout, pause or delete - and not only when the owner finally unlocks.
+     * Recorded as an id rather than a pointer for the same reason os_mutex_unlock captures one: the
+     * owner may be gone by the time it is read, and an id resolves to NULL where a pointer would
+     * dangle. */
+    uint32_t        pi_owner_id;
 #endif
 #if (OS_MUTEX_DEADLOCK_CHECK == 1)
     /* Mutex this task is blocked on, NULL otherwise: the forward edge a deadlock walk follows
@@ -108,7 +128,7 @@ typedef struct
  *
  * This is what lets OS_CONFIG_MAX_USER_TASKS mean what an application would expect it to mean - how
  * many of ITS tasks may exist - instead of a budget it has to share with whichever kernel services
- * happen to be enabled. Turning on the log or the work queue no longer quietly costs the
+ * happen to be enabled. Turning on the log or the timer service no longer quietly costs the
  * application a task.
  *
  * Exactly one of tsk_main and tsk_test always exists (os_kernel.c compiles in one or the other,
@@ -181,6 +201,10 @@ static uint32_t       os_task_running_core(const os_task_tcb_t *tcb);
 static void           os_task_wake_compensate(os_task_tcb_t *tcb);
 static void           os_task_wake_locked(os_task_tcb_t *tcb);
 static void           os_task_effective_priority_set(os_task_tcb_t *tcb, uint32_t new_priority);
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+static void           os_task_mutex_effective_recompute(os_task_tcb_t *owner);
+static void           os_task_mutex_waiter_depart_tcb(os_task_tcb_t *tcb);
+#endif
 
 /*
  * ***********************************************************************************************************
@@ -222,7 +246,7 @@ os_status os_task_create(os_task_t *task, const os_task_config_t *config)
  * @brief Create a task without the user priority restriction; kernel use only.
  *
  * Tasks created here are marked as the kernel's own: os_task_pause and os_task_delete refuse them
- * (OS_STATUS_BUSY), so an application cannot stop the timer, work or log service out from under the
+ * (OS_STATUS_BUSY), so an application cannot stop the timer or log service out from under the
  * kernel APIs that depend on it. tsk_main and tsk_test do NOT come through here - they are ordinary
  * application tasks and stay under the application's control.
  *
@@ -349,7 +373,7 @@ os_status os_task_pause(os_task_t *task)
             status = OS_STATUS_INVALID_ARG;
         }
         /* The kernel's own service tasks are off limits, for the same reason the idle task is:
-         * the timer, work and log APIs are all built on one running, and suspending it turns
+         * the timer and log APIs are both built on one running, and suspending it turns
          * every call into a silent no-op that reports success. Kernel code that needs one parked
          * blocks it from the inside instead. */
         else if (tcb->system_task)
@@ -392,6 +416,14 @@ os_status os_task_pause(os_task_t *task)
                 }
 
                 os_task_unlink(tcb);
+
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+                /* Off the waiter list now, so a mutex owner this task was boosting drops back to
+                 * whatever the tasks STILL queued justify. Without this the owner would keep the
+                 * departed waiter's priority until its next unlock, starving anything in between. */
+                os_task_mutex_waiter_depart_tcb(tcb);
+#endif
+
                 tcb->delay_ticks = 0U;
                 tcb->state       = OS_TASK_STATE_SUSPENDED;
 
@@ -464,7 +496,7 @@ os_status os_task_delete(os_task_t *task)
     }
 
     /* See os_task_pause: a kernel service task is not the application's to tear down. Deleting one
-     * would also release its TCB slot and leave the timer/work/log registries pointing at a task
+     * would also release its TCB slot and leave the timer/log registries pointing at a task
      * that no longer exists. */
     if (tcb->system_task)
     {
@@ -496,6 +528,14 @@ os_status os_task_delete(os_task_t *task)
     os_task_wake_compensate(tcb);
 
     os_task_unlink(tcb);
+
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+    /* Before the TCB is cleared, while pi_owner_id still says whose boost this task was holding
+     * up. See os_task_pause for why departure has to trigger the recompute; os_task_tcb_clear
+     * below handles the mutexes this task OWNED, which is the opposite direction. */
+    os_task_mutex_waiter_depart_tcb(tcb);
+#endif
+
     os_task_tcb_clear(tcb);
 
     if (task != NULL)
@@ -727,12 +767,20 @@ os_status os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_by
         os_critical_exit();
     }
 
-    /* The scan runs outside the critical section, and only once the lookup above
-     * succeeded: bytes below the deepest stack excursion are never rewritten, so
-     * nothing here needs the lock. */
+    /* The scan runs outside the critical section, and only once the lookup above succeeded: for a
+     * task that stays alive, bytes below the deepest stack excursion are never rewritten, so the
+     * walk needs no lock.
+     *
+     * What it is NOT safe against is the task ceasing to exist underneath it. Between the
+     * os_critical_exit() above and the scan below, the TCB can be deleted and the handle re-created
+     * - which re-fills that same array with the fill byte - and on SMP a peer core can run exactly
+     * that concurrently. The number would then describe a task that no longer exists, reported as
+     * though it were current. So the slot is re-resolved afterwards and the result is only
+     * published if the id still names the same live task. */
     if (status == OS_STATUS_OK)
     {
-        size_t index;
+        size_t               index;
+        const os_task_tcb_t *recheck;
 
         for (index = 0U; index < stack_bytes; index++)
         {
@@ -742,7 +790,25 @@ os_status os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_by
             }
         }
 
-        *min_free_bytes = index;
+        os_critical_enter();
+
+        recheck = (task == NULL) ? os_task_self_tcb() : os_task_find_by_id(task->id);
+
+        /* Same slot, same identity, same buffer: anything else means the task was torn down
+         * mid-scan and the count belongs to nothing. Reported as INVALID_ARG, the status this call
+         * already uses for a handle that resolves to no live task - a caller retrying gets a real
+         * answer, where a stale number would never announce itself as wrong. */
+        if ((recheck != NULL) && (recheck->stack_base == stack_base) &&
+            (recheck->stack_bytes == stack_bytes))
+        {
+            *min_free_bytes = index;
+        }
+        else
+        {
+            status = OS_STATUS_INVALID_ARG;
+        }
+
+        os_critical_exit();
     }
 
     return status;
@@ -970,7 +1036,7 @@ void os_task_wake(uint32_t task_id)
  * @brief Resolve a task id to an opaque handle once, for os_task_wake_tcb (ISR-safe).
  *
  * The handle is a raw TCB pointer; it stays valid for the task's lifetime, so callers that
- * never delete the target (e.g. the kernel's own work/timer service tasks) may resolve it
+ * never delete the target (e.g. the kernel's own timer service task) may resolve it
  * once at init and cache it, skipping the O(OS_TASK_TABLE_SIZE) id scan on every later wake.
  *
  * @param[in] task_id  Id to resolve.
@@ -986,7 +1052,7 @@ void* os_task_tcb_resolve(uint32_t task_id)
  * @brief Wake a BLOCKED task by its os_task_tcb_resolve handle (ISR-safe), skipping both the
  *        id lookup and the nested critical section os_task_wake pays: the caller must
  *        already hold the kernel mask and, on multi-core builds, the cross-core spinlock
- *        (os_critical_multicore_lock) - exactly what the tick-time work/timer wake path
+ *        (os_critical_multicore_lock) - exactly what the tick-time timer wake path
  *        already holds around its registry walk. No-op for a NULL handle or a task not
  *        currently BLOCKED, same as os_task_wake.
  *
@@ -1073,6 +1139,12 @@ void os_task_wait_end(void)
     {
         current->wait_signaled = false;
         current->woken_from    = NULL;
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+        /* Backstop only. Every path that leaves a mutex wait without acquiring calls
+         * os_task_mutex_waiter_depart first, which is what actually releases the boost; this makes
+         * sure no exit route can leave a stale id behind to be spent on the wrong owner later. */
+        current->pi_owner_id   = 0U;
+#endif
 #if (OS_MUTEX_DEADLOCK_CHECK == 1)
         /* Cleared here rather than in os_mutex.c because every way out of a wait passes through
          * this call, so no exit path can leave a stale edge behind for a later walk to follow. */
@@ -1282,9 +1354,103 @@ void os_task_mutex_priority_inherit(uint32_t owner_task_id)
     os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
     os_task_tcb_t *owner    = os_task_find_by_id(owner_task_id);
 
-    if ((current != NULL) && (owner != NULL) && (current->priority > owner->priority))
+    if ((current != NULL) && (owner != NULL))
     {
-        os_task_effective_priority_set(owner, current->priority);
+        /* Record whose boost this is BEFORE deciding whether to apply one, and record it even when
+         * no boost is applied here. The owner's effective priority can be raised by a LATER, higher
+         * waiter on the same mutex, and that boost still has to be recomputed when THIS task
+         * departs - the recompute is a max() over everyone still queued, so every departure has to
+         * trigger it, not only the departures that raised it. */
+        current->pi_owner_id = owner_task_id;
+
+        if (current->priority > owner->priority)
+        {
+            os_task_effective_priority_set(owner, current->priority);
+        }
+    }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Recompute owner's effective priority as max(base_priority, highest waiter still queued on
+ *        any mutex it still holds). Caller must hold a critical section.
+ *
+ * The single definition of what a task's inherited priority IS, so that every event which can change
+ * the answer - an unlock, a waiter timing out, a waiter being paused or deleted - arrives at it the
+ * same way instead of each path carrying its own idea.
+ *
+ * @param[in,out] owner  Task whose effective priority is recomputed.
+ * @return None.
+ */
+static void os_task_mutex_effective_recompute(os_task_tcb_t *owner)
+{
+    os_list_node_t *node;
+    uint32_t        new_priority = owner->base_priority;
+
+    for (node = owner->owned_mutexes.head; node != NULL; node = node->next)
+    {
+        const os_mutex_t *held       = OS_MUTEX_FROM_OWNER_NODE(node);
+        os_list_node_t   *top_waiter = held->waiters.head;
+
+        if (top_waiter != NULL)
+        {
+            uint32_t waiter_priority = OS_TASK_TCB_FROM_WAIT_NODE(top_waiter)->priority;
+
+            if (waiter_priority > new_priority)
+            {
+                new_priority = waiter_priority;
+            }
+        }
+    }
+
+    os_task_effective_priority_set(owner, new_priority);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Release the priority boost tcb handed a mutex owner, now that it has left the waiter queue.
+ *
+ * Call AFTER the task has been unlinked from the waiter list: the recompute is a max() over the
+ * tasks still queued, so running it while this one is still linked would just re-derive the boost
+ * being dropped. Caller must hold a critical section.
+ *
+ * @param[in,out] tcb  Departing waiter.
+ * @return None.
+ */
+static void os_task_mutex_waiter_depart_tcb(os_task_tcb_t *tcb)
+{
+    uint32_t owner_id = tcb->pi_owner_id;
+
+    if (owner_id != 0U)
+    {
+        os_task_tcb_t *owner;
+
+        /* Cleared first: this task owes the owner nothing from here on, and clearing before the
+         * lookup means an owner that has since been deleted still ends the debt. */
+        tcb->pi_owner_id = 0U;
+
+        owner = os_task_find_by_id(owner_id);
+        if (owner != NULL)
+        {
+            os_task_mutex_effective_recompute(owner);
+        }
+    }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Release the boost the CALLING task handed a mutex owner (os_mutex.c, on every path that
+ *        leaves the wait without acquiring). Caller must hold a critical section.
+ *
+ * @return None.
+ */
+void os_task_mutex_waiter_depart(void)
+{
+    os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
+
+    if (current != NULL)
+    {
+        os_task_mutex_waiter_depart_tcb(current);
     }
 }
 
@@ -1306,9 +1472,7 @@ void os_task_mutex_priority_inherit(uint32_t owner_task_id)
  */
 void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node_t *owner_node)
 {
-    os_task_tcb_t  *owner = os_task_find_by_id(owner_id);
-    os_list_node_t *node;
-    uint32_t       new_priority;
+    os_task_tcb_t *owner = os_task_find_by_id(owner_id);
 
     if (owner == NULL)
     {
@@ -1316,26 +1480,7 @@ void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node
     }
 
     os_list_remove(&owner->owned_mutexes, owner_node);
-
-    new_priority = owner->base_priority;
-
-    for (node = owner->owned_mutexes.head; node != NULL; node = node->next)
-    {
-        const os_mutex_t *held       = OS_MUTEX_FROM_OWNER_NODE(node);
-        os_list_node_t   *top_waiter = held->waiters.head;
-
-        if (top_waiter != NULL)
-        {
-            uint32_t waiter_priority = OS_TASK_TCB_FROM_WAIT_NODE(top_waiter)->priority;
-
-            if (waiter_priority > new_priority)
-            {
-                new_priority = waiter_priority;
-            }
-        }
-    }
-
-    os_task_effective_priority_set(owner, new_priority);
+    os_task_mutex_effective_recompute(owner);
 }
 #endif /* OS_CONFIG_MUTEX_ENABLE */
 
@@ -1964,6 +2109,28 @@ static os_status os_task_create_any(os_task_t *task, const os_task_config_t *con
         return OS_STATUS_INVALID_ARG;
     }
 
+    /* Refuse a handle that is already live, BEFORE anything writes to its stack.
+     *
+     * Placement is the whole point of this check. The pre-fill, the guard word and the initial
+     * exception frame below all land in task->storage->stack_memory, and OS_TASK_DEFINE gives one
+     * array per handle - so creating twice through the same handle would paint the stack of the
+     * task still RUNNING on it with the fill byte and lay a fresh frame over its live context. A
+     * guard sharing the slot-scan critical section further down would reject the call only after
+     * that damage was done.
+     *
+     * Every other object in the kernel refuses re-initialisation the same way (os_mutex_init,
+     * os_semaphore_init, os_event_init, os_queue_bind_buffer, all with OS_STATUS_BUSY); a task is
+     * simply the one that cannot afford to find out late. Re-checked inside the slot-scan critical
+     * section, which is what makes the test and the claim atomic against a peer core creating
+     * through this same handle. */
+    os_critical_enter();
+    if ((task->id != 0U) && (os_task_find_by_id(task->id) != NULL))
+    {
+        os_critical_exit();
+        return OS_STATUS_BUSY;
+    }
+    os_critical_exit();
+
 #if (OS_CONFIG_STACK_WATERMARK_ENABLE == 1U)
     /* Pre-fill so os_task_stack_watermark_get can measure peak usage. */
     os_task_stack_fill((uint8_t *)task->storage->stack_memory, task->storage->stack_bytes);
@@ -1984,6 +2151,16 @@ static os_status os_task_create_any(os_task_t *task, const os_task_config_t *con
     }
 
     os_critical_enter();
+
+    /* The atomic half of the guard above: on SMP a peer core could have created through this same
+     * handle since that check ran. The stack writes between the two are then wasted work on a
+     * handle the caller had already made live, which is the caller's mistake to have made - but
+     * the TCB slot and the id are still claimed exactly once. */
+    if ((task->id != 0U) && (os_task_find_by_id(task->id) != NULL))
+    {
+        os_critical_exit();
+        return OS_STATUS_BUSY;
+    }
 
     for (index = 0U; index < OS_TASK_TABLE_SIZE; index++)
     {
@@ -2006,6 +2183,7 @@ static os_status os_task_create_any(os_task_t *task, const os_task_config_t *con
             tcb->priority         = config->priority;
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
             tcb->base_priority    = config->priority;
+            tcb->pi_owner_id      = 0U;
 #endif
             tcb->id               = os_task_next_id;
             tcb->delay_ticks      = 0U;
@@ -2148,6 +2326,7 @@ static void os_task_tcb_clear(os_task_tcb_t *tcb)
     tcb->woken_from    = NULL;
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
     tcb->base_priority = 0U;
+    tcb->pi_owner_id   = 0U;
 
     /* Detach every mutex this task still owned before the slot is recycled:
      * otherwise the next task placed here would inherit dangling links into

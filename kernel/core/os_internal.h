@@ -421,6 +421,20 @@ void os_task_mutex_priority_inherit(uint32_t owner_task_id);
  *        (os_task.c, call inside a critical section, right after releasing).
  */
 void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node_t *owner_node);
+
+/******************************************************************************************************/
+/**
+ * @brief Release the priority boost the CALLING task handed a mutex owner, now that it is leaving
+ *        the waiter queue without having acquired (os_task.c, call inside a critical section, once
+ *        the task is off the waiter list).
+ *
+ * The counterpart to os_task_mutex_priority_inherit. A boost is a debt owed for as long as the
+ * waiter is queued; os_mutex_unlock is only the most common way that ends, and the others - the
+ * wait timing out, the waiter being paused or deleted - would otherwise leave the owner running at
+ * a priority nothing is waiting on until it happened to unlock. Pause and delete are handled inside
+ * os_task.c; this is the entry point for the timeout paths in os_mutex.c.
+ */
+void os_task_mutex_waiter_depart(void);
 #endif /* OS_CONFIG_MUTEX_ENABLE */
 
 /*

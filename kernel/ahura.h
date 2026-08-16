@@ -149,9 +149,9 @@ typedef struct
  *                             the empty-ready-bitmap fallback and must be the only thing at this
  *                             level, or the scheduler could pick a real task when it means to idle.
  *    OS_TASK_PRIO_MAX   (31)  Above every user task, so the kernel's service tasks have a level
- *                             nothing else can claim. Where OS_CONFIG_TIMER_PRIORITY and
- *                             OS_CONFIG_WORK_PRIORITY put them by default, though either may be
- *                             lowered into the user range.
+ *                             nothing else can claim. Where OS_CONFIG_TIMER_PRIORITY puts the
+ *                             timer service by default, though it may be lowered into the user
+ *                             range.
  *
  *  os_task_create() and os_task_priority_set() reject both, returning OS_STATUS_INVALID_ARG.
  *
@@ -202,7 +202,7 @@ typedef enum
     OS_TASK_PRIO_30_HIGHEST = 30U,  /**< Highest a user task may request. */
 
     /* Kernel-owned, above every user task: os_task_create rejects it, and it is what
-     * OS_CONFIG_TIMER_PRIORITY / OS_CONFIG_WORK_PRIORITY default to. */
+     * OS_CONFIG_TIMER_PRIORITY defaults to. */
     OS_TASK_PRIO_MAX        = 31U
 
 } os_task_priority_t;
@@ -425,14 +425,14 @@ os_status os_task_start(os_task_t *task);
 /******************************************************************************************************/
 /**
  * @brief Pause a task (NULL means current running task). OS_STATUS_BUSY for the idle task and for
- *        the kernel's own service tasks (timer, work, log).
+ *        the kernel's own service tasks (timer, log).
  */
 os_status os_task_pause(os_task_t *task);
 
 /******************************************************************************************************/
 /**
  * @brief Delete a task and release its TCB slot (NULL means current running task). OS_STATUS_BUSY
- *        for the idle task and for the kernel's own service tasks (timer, work, log).
+ *        for the idle task and for the kernel's own service tasks (timer, log).
  */
 os_status os_task_delete(os_task_t *task);
 
@@ -1715,7 +1715,7 @@ void os_tickless_idle_process(void);
 /******************************************************************************************************/
 /**
  * @brief Ticks the kernel would plan to suppress right now, bounded by the earliest kernel
- *        time source (timer expiry, ready work item, finite-delay sleeper).
+ *        time source (timer expiry, finite-delay sleeper).
  */
 uint32_t os_tickless_expected_idle_ticks_get(void);
 

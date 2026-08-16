@@ -4,12 +4,13 @@
 [Vendor notes](vendor-notes.md)
 
 The [six general installation steps](installation.md) carried out on real ST
-hardware. **Two ways to do it - pick one:**
+hardware. **Three ways to do it - pick one:**
 
 | | Route | Good for |
 |---|---|---|
 | **A** | **[Automatic](#automatic---one-command)** - one command | A CubeMX project generated with the **CMake** toolchain. Seconds, shows the diff first, safe to re-run |
-| **B** | **[Manual](#manual---step-by-step)** - eight steps by hand | CubeIDE projects, non-CMake builds, or when you want to make every edit yourself |
+| **B** | **[Offline](#offline---no-internet-on-the-machine)** - one command, no network | The same project on a machine with no route out: an air-gapped lab, a locked-down corporate network, a CI agent |
+| **C** | **[Manual](#manual---step-by-step)** - eight steps by hand | CubeIDE projects, non-CMake builds, or when you want to make every edit yourself |
 
 Both end in the same place. Verified end to end on a **NUCLEO-H503RB**
 (Cortex-M33) built with `arm-none-eabi-gcc` 14.3.1 from the STM32Cube toolchain;
@@ -114,6 +115,105 @@ SysTick or if FreeRTOS is already in the project. The fix is a CubeMX checkbox
 in both cases, and the message names it.
 
 Installed? Go straight to **[Build and flash](#8-build-and-flash)**.
+
+---
+
+## Offline - no internet on the machine
+
+Same installation, same six steps, same result - the only difference is where
+the kernel comes from. `install_stm32_offline.py` never touches the network: it
+uses a copy of the repository already on the machine, and it does not import
+`urllib`, `tarfile` or `socket` to do it.
+
+Use it on an air-gapped lab machine, behind a corporate proxy that blocks
+GitHub, or on a build agent with no route out.
+
+### 1. Get the repository, on a machine that has a connection
+
+Either a clone or the green **Code → Download ZIP** button:
+
+```bash
+git clone https://github.com/AhuraRTOS/AhuraRTOS.git
+```
+
+### 2. Copy it into your project and run it
+
+```text
+MyProject/
+├── CMakeLists.txt        <- the top-level one CubeMX generated
+├── MyProject.ioc
+├── Core/
+└── AhuraRTOS/            <- the repository you copied in
+    ├── kernel/
+    └── tools/install_stm32_offline.py
+```
+
+```bash
+cd MyProject
+python3 AhuraRTOS/tools/install_stm32_offline.py
+```
+
+That is the whole procedure. It finds the kernel beside itself, reads the
+project, prints the same diff and waits for a `y` - exactly like the online
+installer, because it *is* the online installer: everything that reads the
+project, computes the edits and writes them with rollback is imported from
+`install_stm32.py`. Only the "where does the kernel come from" step differs, so
+the two cannot drift apart.
+
+A ZIP download unpacks as `AhuraRTOS-main/` rather than `AhuraRTOS/`. That works
+too - it is found under either name, and installed to `AhuraRTOS/` so the CMake
+block matches what the online installer would have written.
+
+### Where it looks for the kernel
+
+In this order, most explicit first, stopping at the first real checkout:
+
+| | Location |
+|---|---|
+| 1 | `--source PATH`, if given. A path that is not a checkout is an **error**, never a reason to keep looking - silently installing some other copy is how the wrong kernel version ends up in a build |
+| 2 | The checkout this script is running from |
+| 3 | `<project>/AhuraRTOS` |
+| 4 | `<project>/AhuraRTOS*` - a ZIP still under its branch name |
+| 5 | Next to the project, one level up, under either name - for when several projects share one downloaded copy |
+
+If none of them holds a kernel it says so and stops. It will not download one;
+that is the entire point of this script.
+
+### Already in the right place
+
+Offline, the source and the destination are routinely the **same directory**:
+the repository is at `<project>/AhuraRTOS`, which is exactly where the installer
+would otherwise copy it. Copying a directory onto itself is not a copy - the
+destination is cleared first, so it would destroy the source.
+
+So "already in place" is treated as nothing to copy, and any copy whose source
+and destination resolve to one path is refused. Symlinks, junctions and
+Windows paths differing only in case are all resolved before that comparison, so
+none of them slips past as a different directory.
+
+```text
+  note: the kernel is already at AhuraRTOS/ - installed in place, nothing copied
+```
+
+### Offline options
+
+The same as the online installer, minus `--ref` - there is nothing to fetch:
+
+| Option | Effect |
+|---|---|
+| `--dry-run` | Print the diff and stop. Writes nothing |
+| `--yes` | Skip the confirmation |
+| `--source PATH` | Use this checkout, wherever it is |
+| `--project DIR` | Project root (default: the current directory) |
+| `--app-dir DIR` | Which source tree to install into, on a dual-core part |
+| `--tick external` | Drive `os_tick_handler()` from your own timer instead of SysTick |
+| `--update` | Refresh `AhuraRTOS/` in the project from `--source` |
+| `--force-templates` | Overwrite an existing `os_config.h` / `os_cb.c` / `os_main.c` |
+| `--uninstall` | Take the whole integration back out |
+
+`--uninstall` needs no kernel at all - it only removes managed blocks and the
+installed directory - so it keeps working on a machine where the original
+download has since been deleted.
 
 ---
 

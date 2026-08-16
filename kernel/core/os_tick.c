@@ -69,7 +69,7 @@ uint32_t os_tick_get(void)
  */
 void os_tick_handler(void)
 {
-    /* Core 0 owns the kernel time base (delays, timers, work): a tick on any other core only
+    /* Core 0 owns the kernel time base (delays, timers): a tick on any other core only
      * drives that core's preemption and round-robin, or elapsed time would be counted once per
      * core. Always true on a single-core build, where the whole question compiles away.
      *
@@ -105,7 +105,7 @@ void os_tick_handler(void)
     os_task_slice_tick(1U);
 
     /* Pend PendSV only when it would actually do something: a wake this tick
-     * (work/timer/delay expiry) or an equal-priority peer whose turn has come
+     * (timer/delay expiry) or an equal-priority peer whose turn has come
      * both show up in os_task_reschedule_possible, which also answers false
      * while the scheduler is locked or the running task still has time slice
      * left - so a tick that would not switch costs one bitmap check instead
@@ -201,17 +201,17 @@ uint32_t os_cpu_usage_get(void)
 /**
  * @brief Get expected idle ticks for tickless decision.
  *
- * The minimum of the next software-timer expiry, the next ready work item, the next
- * finite-delay task sleeper, and OS_CONFIG_MAX_SUPPRESSED_TICKS - the suppressed window
- * must not overrun any of them. Also public (ahura.h) for diagnostics and tests.
+ * The minimum of the next software-timer expiry, the next finite-delay task sleeper, and
+ * OS_CONFIG_MAX_SUPPRESSED_TICKS - the suppressed window must not overrun any of them.
+ * Also public (ahura.h) for diagnostics and tests.
  *
  * @return uint32_t  Expected idle duration in ticks.
  */
 uint32_t os_tickless_expected_idle_ticks_get(void)
 {
     /* The suppressed-tick window must not overrun ANY kernel time source:
-     * the earliest software timer expiry, the earliest delayed work item,
-     * and the earliest finite-delay task sleeper all bound it. */
+     * the earliest software timer expiry and the earliest finite-delay task
+     * sleeper both bound it. */
     uint32_t idle_ticks = OS_CONFIG_MAX_SUPPRESSED_TICKS;
     uint32_t candidate;
 
@@ -284,13 +284,13 @@ void os_tickless_idle_process(void)
         /* Interrupts off BEFORE deciding how long to sleep, and kept off until the sleep has been
          * accounted for.
          *
-         * Every input to that decision - the next timer expiry, the next ready work item, the earliest
-         * sleeping task - is something an ISR can change. Reading them with interrupts live leaves a
+         * Every input to that decision - the next timer expiry, the earliest sleeping task - is
+         * something an ISR can change. Reading them with interrupts live leaves a
          * window in which an ISR registers a nearer deadline than the one just computed, and the sleep
          * then runs straight past it. Waking a task in that window is harmless, because that pends
-         * PendSV and a pending exception cuts the WFI short, but starting a timer or submitting
-         * delayed work pends nothing at all: there would be no wake-up event, and the timer would fire
-         * late by the whole remaining window.
+         * PendSV and a pending exception cuts the WFI short, but starting a timer pends nothing at
+         * all: there would be no wake-up event, and the timer would fire late by the whole
+         * remaining window.
          *
          * Masking first closes it. A WFI still wakes on a pending interrupt while masked, so anything
          * arriving from here on shortens the sleep rather than being missed. */
