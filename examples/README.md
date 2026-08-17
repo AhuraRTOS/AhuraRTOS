@@ -107,7 +107,7 @@ default application task.
 | [`os_main_critical.c`](kernel/os_main_critical.c) | Two tasks hammering one non-atomic counter from inside a critical section; the total is exact because no update can tear | - | 1 |
 | [`os_main_kernel_lock.c`](kernel/os_main_kernel_lock.c) | A higher-priority task started under `os_kernel_lock()` that does not run until the unlock - while the rising tick count proves interrupts never stopped | - | 1 |
 | [`os_main_atomic.c`](kernel/os_main_atomic.c) | The lost-update race run deliberately: two equal-priority writers increment one counter atomically and one plainly. The atomic total is always exact; the plain one usually is not | `ATOMIC` | 2 |
-| [`os_main_mutex.c`](kernel/os_main_mutex.c) | Two tasks running a read-delay-write sequence under the same mutex, so the halves of an update can never interleave; also `os_mutex_try_lock` | `MUTEX` | 1 |
+| [`os_main_mutex.c`](kernel/os_main_mutex.c) | Two tasks running a read-delay-write sequence under the same mutex, so the halves of an update can never interleave; also the non-blocking `os_mutex_lock(..., OS_WAIT_NOTHING)` | `MUTEX` | 1 |
 | [`os_main_semaphore.c`](kernel/os_main_semaphore.c) | Producer/consumer over a counting semaphore: the consumer blocks in `os_semaphore_take` and wakes the moment a token appears | `SEMAPHORE` | 1 |
 | [`os_main_queue.c`](kernel/os_main_queue.c) | The same items through two queues - one `OS_QUEUE_DEFINE_STATIC`, one heap-backed via `os_queue_init_dynamic` - to show that only the storage differs, never the calls | `QUEUE` (+ `ALLOC` for the dynamic half) | 1 |
 | [`os_main_event.c`](kernel/os_main_event.c) | Two tasks setting their own bit while `os_main` waits for both at once, consuming them atomically on match | `EVENT` | 2 |
@@ -203,4 +203,4 @@ request or for your own tree:
 
 ## License
 
-GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+GNU General Public License v3.0 or later. See [LICENSE](../LICENSE) in the project root.

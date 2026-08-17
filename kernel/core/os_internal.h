@@ -56,7 +56,7 @@ extern __IO bool     os_kernel_switch_pending[OS_CONFIG_CORE_COUNT];
 /**
  * @brief Create the mandatory idle task (os_task.c).
  */
-os_status os_task_idle_create(void);
+os_err_t os_task_idle_create(void);
 
 /******************************************************************************************************/
 /**
@@ -74,7 +74,7 @@ void os_task_tick_update(uint32_t elapsed_ticks);
 /**
  * @brief Create a task without the user priority restriction; kernel use only (os_task.c).
  */
-os_status os_task_create_system(os_task_t *task, const os_task_config_t *config);
+os_err_t os_task_create_system(os_task_t *task, const os_task_config_t *config);
 
 /******************************************************************************************************/
 /**
@@ -525,7 +525,7 @@ bool os_task_mutex_deadlock_check(const os_mutex_t *mutex);
 /**
  * @brief Create and start the kernel timer service task (os_timer.c).
  */
-os_status os_timer_system_init(void);
+os_err_t os_timer_system_init(void);
 
 /******************************************************************************************************/
 /**
@@ -551,7 +551,7 @@ uint32_t os_timer_next_expiry_ticks_get(void);
 /**
  * @brief Create and start the kernel log service task (os_log.c).
  */
-os_status os_log_system_init(void);
+os_err_t os_log_system_init(void);
 #endif /* OS_CONFIG_LOG_ENABLE */
 
 #ifdef __cplusplus

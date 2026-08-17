@@ -38,18 +38,18 @@
  *                    os_task_mutex_owner_unlink_and_reprioritize stops early at the cleared node
  *                    and derives a wrong effective priority, os_list_remove takes its
  *                    "already detached" early-out so head/tail are never repaired, and the
- *                    owner's eventual unlock sees locked == false and returns OS_STATUS_ERROR -
+ *                    owner's eventual unlock sees locked == false and returns OS_ERR_ERROR -
  *                    leaving the inherited priority boost in place permanently.
  *
  * (The check reads the object's current memory, so first-time init must run on zero-initialized
  * storage - static objects are.)
  *
  * @param[in,out] mutex  Mutex object.
- * @return os_status  OK, or BUSY while tasks are waiting on it or it is still held.
+ * @return os_err_t  OK, or BUSY while tasks are waiting on it or it is still held.
  */
-os_status os_mutex_init(os_mutex_t *mutex)
+os_err_t os_mutex_init(os_mutex_t *mutex)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (mutex != NULL)
     {
@@ -57,7 +57,7 @@ os_status os_mutex_init(os_mutex_t *mutex)
 
         if ((mutex->waiters.head != NULL) || mutex->locked)
         {
-            status = OS_STATUS_BUSY;
+            status = OS_ERR_BUSY;
         }
         else
         {
@@ -67,7 +67,7 @@ os_status os_mutex_init(os_mutex_t *mutex)
             mutex->owner_node.next = NULL;
             mutex->owner_node.prev = NULL;
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();
@@ -81,22 +81,31 @@ os_status os_mutex_init(os_mutex_t *mutex)
  * @brief Acquire a mutex, waiting up to timeout_ms when contended.
  *
  * Task-only: an ISR has no identity of its own and would silently borrow the interrupted task's.
- * Not recursive either - relocking one the caller already holds fails with OS_STATUS_BUSY rather
+ * Not recursive either - relocking one the caller already holds fails with OS_ERR_BUSY rather
  * than deadlocking.
  *
  * @param[in,out] mutex       Mutex object.
  * @param[in]     timeout_ms  OS_WAIT_NOTHING, a duration in ms, or OS_WAIT_FOREVER.
- * @return os_status  OK on acquisition, BUSY when unavailable without waiting,
- *                    TIMEOUT when the wait elapsed, INVALID_ARG from an ISR.
+ * @return os_err_t  OK on acquisition, BUSY when unavailable without waiting,
+ *                   TIMEOUT when the wait elapsed, ISR when called from interrupt
+ *                   context, INVALID_ARG for a NULL mutex.
  */
-os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
+os_err_t os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     /* A mutex is an ownership object and an ISR has no identity of its own, so
-     * locking from one could only borrow whichever task it interrupted. */
-
-    if ((mutex != NULL) && (!os_arch_in_isr()))
+     * locking from one could only borrow whichever task it interrupted.
+     *
+     * Reported as OS_ERR_ISR, not INVALID_ARG: nothing is wrong with the arguments, and a caller
+     * told otherwise goes looking at the mutex pointer for a fault that is really "this call is
+     * task-only". Checked before the NULL test so the context error wins - it is the one the
+     * caller has to fix first, and it stays the same answer whatever is passed. */
+    if (os_arch_in_isr())
+    {
+        status = OS_ERR_ISR;
+    }
+    else if (mutex != NULL)
     {
         uint32_t self_id         = os_task_current_id_get();
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
@@ -118,7 +127,7 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_OK;
+                status  = OS_ERR_NONE;
                 waiting = false;
             }
             else
@@ -135,7 +144,7 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                     os_task_wait_end();
                     os_critical_exit();
 
-                    status  = OS_STATUS_BUSY;
+                    status  = OS_ERR_BUSY;
                     waiting = false;
                 }
                 else if (remaining_ticks == 0U)
@@ -145,7 +154,7 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                     os_task_wait_end();
                     os_critical_exit();
 
-                    status  = OS_STATUS_TIMEOUT;
+                    status  = OS_ERR_TIMEOUT;
                     waiting = false;
                 }
                 else
@@ -160,7 +169,7 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                      *
                      * ONLY for an unbounded wait, and the && short-circuit means a timed lock does
                      * not even run the walk. A caller that will give up after timeout_ms is not
-                     * deadlocked - it is about to get OS_STATUS_TIMEOUT and carry on - so treating
+                     * deadlocked - it is about to get OS_ERR_TIMEOUT and carry on - so treating
                      * it as one would be a false alarm, and a detector that raises those gets
                      * switched off. The same rule applies to every OTHER task in the chain, which
                      * is why the edge below is published under the same condition rather than
@@ -209,7 +218,7 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
 
                         os_task_wait_end();
 
-                        status  = OS_STATUS_TIMEOUT;
+                        status  = OS_ERR_TIMEOUT;
                         waiting = false;
                     }
                 }
@@ -222,29 +231,23 @@ os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
 
 /******************************************************************************************************/
 /**
- * @brief Attempt to acquire a mutex without blocking.
- *
- * @param[in,out] mutex  Mutex object.
- * @return os_status Status code.
- */
-os_status os_mutex_try_lock(os_mutex_t *mutex)
-{
-    return os_mutex_lock(mutex, OS_WAIT_NOTHING);
-}
-
-/******************************************************************************************************/
-/**
  * @brief Release a mutex object (only the owner may unlock; task-only, like os_mutex_lock).
  *
  * @param[in,out] mutex  Mutex object.
- * @return os_status  OK on release, ERROR when not locked,
- *                    NOT_OWNER when held by another task, INVALID_ARG from an ISR.
+ * @return os_err_t  OK on release, ERROR when not locked, NOT_OWNER when held by another task,
+ *                   ISR when called from interrupt context, INVALID_ARG for a NULL mutex.
  */
-os_status os_mutex_unlock(os_mutex_t *mutex)
+os_err_t os_mutex_unlock(os_mutex_t *mutex)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
-    if ((mutex != NULL) && (!os_arch_in_isr()))
+    /* Task-only for the same reason os_mutex_lock is: see the note there on why interrupt
+     * context is its own status rather than an argument complaint. */
+    if (os_arch_in_isr())
+    {
+        status = OS_ERR_ISR;
+    }
+    else if (mutex != NULL)
     {
         uint32_t self_id = os_task_current_id_get();
 
@@ -252,17 +255,17 @@ os_status os_mutex_unlock(os_mutex_t *mutex)
 
         if (!mutex->locked)
         {
-            status = OS_STATUS_ERROR;
+            status = OS_ERR_ERROR;
         }
         /* Enforce ownership when both sides are identifiable tasks.
          *
-         * Deliberately NOT an OS_ASSERT: OS_STATUS_NOT_OWNER is a documented return
+         * Deliberately NOT an OS_ASSERT: OS_ERR_NOT_OWNER is a documented return
          * value, so callers are entitled to attempt the unlock and handle it. It
          * also depends on runtime scheduling rather than on a static mistake in the
          * code, which is the line assertions are meant to sit on. */
         else if ((mutex->owner_id != 0U) && (self_id != 0U) && (mutex->owner_id != self_id))
         {
-            status = OS_STATUS_NOT_OWNER;
+            status = OS_ERR_NOT_OWNER;
         }
         else
         {
@@ -283,7 +286,7 @@ os_status os_mutex_unlock(os_mutex_t *mutex)
              * own context; no ownership transfer inside the unlock). */
             (void)os_task_waiters_wake_one(&mutex->waiters);
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();

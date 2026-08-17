@@ -19,7 +19,7 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | **Critical sections** | `os_critical_enter` · `os_critical_exit` |
 | **Scheduler lock** | `os_kernel_lock` · `os_kernel_unlock` · `os_kernel_is_locked` |
 | **Atomics** | `os_atomic_get` · `os_atomic_set` · `os_atomic_add` · `os_atomic_sub` · `os_atomic_inc` · `os_atomic_dec` · `os_atomic_or` · `os_atomic_and` · `os_atomic_xor` · `os_atomic_nand` · `os_atomic_clear` · `os_atomic_cas` · `os_atomic_test_bit` · `os_atomic_set_bit` · `os_atomic_clear_bit` · `os_atomic_test_and_set_bit` · `os_atomic_test_and_clear_bit` · `os_atomic_set_bit_to` |
-| **Mutex** | `os_mutex_init` · `os_mutex_lock` · `os_mutex_try_lock` · `os_mutex_unlock` |
+| **Mutex** | `os_mutex_init` · `os_mutex_lock` · `os_mutex_unlock` |
 | **Semaphore** | `os_semaphore_init` · `os_semaphore_give` · `os_semaphore_take` |
 | **Queue** | `OS_QUEUE_DEFINE_STATIC` · `OS_QUEUE_DEFINE_BUFFER` · `OS_QUEUE_DEFINE_DYNAMIC` · `os_queue_init_dynamic` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
 | **Event** | `os_event_init` · `os_event_set_bits` · `os_event_clear_bits` · `os_event_wait_bits` |
@@ -36,8 +36,8 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 Helper macros: `OS_TASK_DEFINE` (name, stack and handle), `OS_TASK_CONFIG` (what
 the task does), `OS_TICKS_FROM_MS`, `OS_WAIT_NOTHING`, and `OS_WAIT_FOREVER`.
 
-Every call that can fail returns an `os_status`: `OK`, `ERROR`, `INVALID_ARG`,
-`EMPTY`, `FULL`, `BUSY`, `TIMEOUT`, `NOT_OWNER`, `NO_MEMORY`.
+Every call that can fail returns an `os_err_t`: `OK`, `ERROR`, `INVALID_ARG`,
+`EMPTY`, `FULL`, `BUSY`, `TIMEOUT`, `NOT_OWNER`, `NO_MEMORY`, `ISR`.
 
 A task is declared once and created once, and its name appears only in the
 declaration:
@@ -55,23 +55,29 @@ task *does* - entry, context, priority - so there is no name to repeat and no
 stack to match up. Giving one task another task's stack is not something the API
 can express.
 
-`OS_TASK_CONFIG` takes `(entry, context, priority)` and the task runs on any
-core. Its signature does **not** change with `OS_CONFIG_CORE_COUNT`, so source
-written for one core still compiles when you turn multi-core on. Pinning is a
-second macro, available only where there is something to pin to:
+`OS_TASK_CONFIG` is one macro whose parameter list follows
+`OS_CONFIG_CORE_COUNT`. On a single core there is nothing to place, so affinity
+does not appear; above one, every task states where it runs:
 
 ```c
-/* runs anywhere - single-core and multi-core alike */
+/* OS_CONFIG_CORE_COUNT == 1 */
 os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_3));
 
-/* OS_CONFIG_CORE_COUNT > 1 only: pinned to cores 1 and 2 */
-os_task_create(&worker, OS_TASK_CONFIG_ON(worker_entry, NULL, OS_TASK_PRIO_3,
-                                          OS_TASK_CORE(1) | OS_TASK_CORE(2)));
+/* OS_CONFIG_CORE_COUNT > 1 - pinned to cores 1 and 2 */
+os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_3,
+                                       OS_TASK_CORE(1) | OS_TASK_CORE(2)));
+
+/* OS_CONFIG_CORE_COUNT > 1 - free to run on any core, said explicitly */
+os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_3,
+                                       OS_TASK_CORE_ANY));
 ```
 
-The split exists because a macro whose argument count follows a config option
-breaks every call site the day that option changes. `os_task_core_affinity_set`
-can also change the placement after creation.
+Raising `OS_CONFIG_CORE_COUNT` above 1 therefore stops every `OS_TASK_CONFIG`
+call from compiling until it is given an affinity. That is deliberate: placement
+is the design question on SMP, and a compile error at each creation site forces
+it to be answered once and on purpose, rather than defaulting to "anywhere"
+everywhere and turning up later as a performance problem with nothing pointing
+at its cause. `os_task_core_affinity_set` can still change placement at runtime.
 
 ### Default application task
 
@@ -135,7 +141,7 @@ whole scheduler rather than only the part applications touch.
   range**, and those two names *are* the limits - there is no separate pair of
   range constants to keep in sync with them. `os_task_create` and
   `os_task_priority_set` reject anything outside it with
-  `OS_STATUS_INVALID_ARG`.
+  `OS_ERR_INVALID_ARG`.
 - **`OS_TASK_PRIO_IDLE` is the empty-ready-bitmap fallback.** The idle task must
   be the only thing at that level, or the scheduler could pick a real task when
   it means to idle - so it is out of reach of `os_task_create`.
@@ -166,7 +172,7 @@ application tasks, so pick values that fit alongside your own.
 
 The kernel's own service tasks - `tsk_timer` and `tsk_log` - are
 also protected: `os_task_pause` and `os_task_delete` refuse them with
-`OS_STATUS_BUSY`, because the timer, work and log APIs are all built on one
+`OS_ERR_BUSY`, because the timer, work and log APIs are all built on one
 running and suspending it would turn every later call into a silent no-op that
 still reports success. `tsk_main` and `tsk_test` are ordinary application tasks
 and stay fully under the application's control. Note that the log task is *not*
@@ -219,7 +225,7 @@ While the lock is held the calling task cannot block, because blocking means
 switching away. Every blocking primitive behaves as if it had been called with
 `OS_WAIT_NOTHING`, `os_delay_ms` busy-waits instead of sleeping, and
 `os_task_pause`/`os_task_delete` aimed at the *calling* task return
-`OS_STATUS_BUSY`. Keep locked regions short and free of blocking calls, exactly
+`OS_ERR_BUSY`. Keep locked regions short and free of blocking calls, exactly
 as with a critical section.
 
 ### Timeout semantics
@@ -231,7 +237,7 @@ Blocking APIs (`os_mutex_lock`, `os_semaphore_take`, `os_queue_send`,
 | Value | Behavior |
 |---|---|
 | `OS_WAIT_NOTHING` | Try once, return `BUSY`, `EMPTY`, or `FULL` immediately. |
-| `1..N` ms | Wait up to that long, then return `OS_STATUS_TIMEOUT`. |
+| `1..N` ms | Wait up to that long, then return `OS_ERR_TIMEOUT`. |
 | `OS_WAIT_FOREVER` | Wait until available. |
 
 Nonzero timeouts are honored only from task context after `os_start`. From
@@ -271,7 +277,7 @@ Two limitations are accepted rather than implemented:
 
 A mutex is also an ownership object, which makes it task-only: calls from an ISR
 are rejected, because an ISR has no identity of its own. It is not recursive
-either, so locking a mutex the caller already holds fails with `OS_STATUS_BUSY`
+either, so locking a mutex the caller already holds fails with `OS_ERR_BUSY`
 rather than deadlocking.
 
 #### Deadlock detection
@@ -291,7 +297,7 @@ tasks blocked and nothing recording how they got there.
 
 **Waits with a timeout are never reported, and never appear inside a reported
 cycle.** A task that will give up after `timeout_ms` is not deadlocked — it is
-about to get `OS_STATUS_TIMEOUT` and carry on — and it breaks any cycle it is
+about to get `OS_ERR_TIMEOUT` and carry on — and it breaks any cycle it is
 part of by doing so. So a timed `os_mutex_lock` skips the walk entirely, and
 publishes no edge for anyone else's walk to follow. What is left only fires when
 **every** task in the cycle is waiting forever, which is a deadlock that can
@@ -397,15 +403,15 @@ the kernel heap and initializes the queue over it:
 ```c
 OS_QUEUE_DEFINE_DYNAMIC(rx_q);   /* the object is still yours; only the buffer is allocated */
 
-os_status status = os_queue_init_dynamic(&rx_q, item_size, capacity);
+os_err_t status = os_queue_init_dynamic(&rx_q, item_size, capacity);
 ...
 os_queue_cleanup(&rx_q);         /* returns the buffer to the heap */
 ```
 
 Keeping the queue object out of the allocation means its lifetime stays obvious
 and a failed call leaves nothing to clean up. `os_queue_init_dynamic` returns
-`OS_STATUS_NO_MEMORY` when the heap cannot satisfy the request, and
-`OS_STATUS_INVALID_ARG` for a zero or overflowing geometry rather than wrapping
+`OS_ERR_NO_MEMORY` when the heap cannot satisfy the request, and
+`OS_ERR_INVALID_ARG` for a zero or overflowing geometry rather than wrapping
 it into a small allocation that later sends would index past.
 
 **Storage you lay out yourself.** For a buffer `OS_QUEUE_DEFINE_STATIC` cannot
@@ -438,7 +444,7 @@ down a mixed set of queues does not need to track which kind each one is:
   immediately usable - a statically defined queue needs no init call after
   cleanup either, exactly as it needed none before.
 
-It is not compiled out with the heap, and returns `OS_STATUS_BUSY` while any
+It is not compiled out with the heap, and returns `OS_ERR_BUSY` while any
 task is still blocked on the queue, because freeing underneath waiters would
 leave them parked on list nodes inside memory the heap can hand out again. Drain
 the queue and let the waiters time out first.
@@ -569,7 +575,7 @@ order they *became ready*, one at a time, never overlapping. A long delay does n
 hold the queue: a 1 ms and a 100 ms deferral started together run in that order,
 each on its own schedule.
 
-`os_timer_submit` returns `OS_STATUS_FULL` when that pool's own entries are all
+`os_timer_submit` returns `OS_ERR_FULL` when that pool's own entries are all
 in flight, so an overrun is reported rather than silently dropped - and it is
 always your pool that ran out, never someone else's.
 
@@ -681,7 +687,7 @@ call made from an ISR, an `os_critical_exit()` with no matching enter (which
 returns `void`, so it has no other way to report at all).
 
 It does **not** assert on anything with a documented status, even when that
-status usually means someone made a mistake. `OS_STATUS_NOT_OWNER` from
+status usually means someone made a mistake. `OS_ERR_NOT_OWNER` from
 `os_mutex_unlock`, `BUSY`, `FULL`, `EMPTY`, and `TIMEOUT` all depend on runtime
 scheduling, and callers are entitled to attempt the operation and handle the
 result. Asserting there would halt correct programs.

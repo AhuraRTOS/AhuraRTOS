@@ -180,7 +180,7 @@ static __IO uint32_t           os_task_slice_left[OS_CONFIG_CORE_COUNT];
  * ***********************************************************************************************************
 */
 
-static os_status      os_task_create_any(os_task_t *task, const os_task_config_t *config, bool system_task);
+static os_err_t      os_task_create_any(os_task_t *task, const os_task_config_t *config, bool system_task);
 #if (OS_CONFIG_STACK_WATERMARK_ENABLE == 1U)
 static void           os_task_stack_fill(uint8_t *stack_base, size_t stack_bytes);
 #endif
@@ -222,11 +222,11 @@ static void           os_task_mutex_waiter_depart_tcb(os_task_tcb_t *tcb);
  *
  * @param[out] task    Output task handle.
  * @param[in]  config  Task creation configuration.
- * @return os_status   Status code.
+ * @return os_err_t   Status code.
  */
-os_status os_task_create(os_task_t *task, const os_task_config_t *config)
+os_err_t os_task_create(os_task_t *task, const os_task_config_t *config)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     /* Cast to the unsigned level the scheduler stores rather than comparing against the enum
      * directly: priority is a uint32_t and the enum's underlying type is implementation-defined,
@@ -246,15 +246,15 @@ os_status os_task_create(os_task_t *task, const os_task_config_t *config)
  * @brief Create a task without the user priority restriction; kernel use only.
  *
  * Tasks created here are marked as the kernel's own: os_task_pause and os_task_delete refuse them
- * (OS_STATUS_BUSY), so an application cannot stop the timer or log service out from under the
+ * (OS_ERR_BUSY), so an application cannot stop the timer or log service out from under the
  * kernel APIs that depend on it. tsk_main and tsk_test do NOT come through here - they are ordinary
  * application tasks and stay under the application's control.
  *
  * @param[out] task    Output task handle.
  * @param[in]  config  Task creation configuration.
- * @return os_status   Status code.
+ * @return os_err_t   Status code.
  */
-os_status os_task_create_system(os_task_t *task, const os_task_config_t *config)
+os_err_t os_task_create_system(os_task_t *task, const os_task_config_t *config)
 {
     return os_task_create_any(task, config, true);
 }
@@ -264,11 +264,11 @@ os_status os_task_create_system(os_task_t *task, const os_task_config_t *config)
  * @brief Start a created task (make it ready to run).
  *
  * @param[in] task  Task handle.
- * @return os_status  Status code.
+ * @return os_err_t  Status code.
  */
-os_status os_task_start(os_task_t *task)
+os_err_t os_task_start(os_task_t *task)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if ((task != NULL) && (task->id != 0U))
     {
@@ -281,7 +281,7 @@ os_status os_task_start(os_task_t *task)
         {
             /* Reviving a task blocked on a primitive reads as a forced (spurious)
              * signal: the primitive re-checks its condition with its timeout budget
-             * preserved, instead of misreporting OS_STATUS_TIMEOUT - even on an
+             * preserved, instead of misreporting OS_ERR_TIMEOUT - even on an
              * OS_WAIT_FOREVER wait. Unlink runs first (it inspects delay_ticks). */
             if (tcb->state == OS_TASK_STATE_BLOCKED)
             {
@@ -312,7 +312,7 @@ os_status os_task_start(os_task_t *task)
                 os_task_preempt_request(tcb);
             }
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();
@@ -326,23 +326,26 @@ os_status os_task_start(os_task_t *task)
  * @brief Pause a task (NULL means current running task).
  *
  * @param[in] task  Task handle, or NULL for the calling task.
- * @return os_status  Status code.
+ * @return os_err_t  Status code.
  */
-os_status os_task_pause(os_task_t *task)
+os_err_t os_task_pause(os_task_t *task)
 {
     uint32_t       core   = os_arch_core_id_get();
-    os_status      status = OS_STATUS_OK;
+    os_err_t      status = OS_ERR_NONE;
     os_task_tcb_t *tcb    = NULL;
 
     /* Task-only, like os_mutex_lock and os_notify_wait. Both of these can end up acting on the
      * CALLING task - and inside an interrupt "the calling task" is merely whichever task was
      * preempted, whether it was named by a handle or by NULL. Deleting or suspending that one
      * tears down the context the interrupt is about to return into, so the call is refused rather
-     * than allowed to corrupt an innocent task. */
+     * than allowed to corrupt an innocent task.
+     *
+     * OS_ERR_ISR rather than INVALID_ARG: the handle is fine, the CONTEXT is not, and a caller
+     * sent to inspect its arguments is looking in the wrong place. */
 
     if (os_arch_in_isr())
     {
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_ISR;
     }
 
     os_critical_enter();
@@ -353,24 +356,24 @@ os_status os_task_pause(os_task_t *task)
     }
     else if (task->id == 0U)
     {
-        status = OS_STATUS_INVALID_ARG;
+        status = OS_ERR_INVALID_ARG;
     }
     else
     {
         tcb = os_task_find_by_id(task->id);
     }
 
-    if (status == OS_STATUS_OK)
+    if (status == OS_ERR_NONE)
     {
         /* The idle task is checked before the NULL case so the two keep the statuses they
          * always had: BUSY for idle, INVALID_ARG for an unresolvable handle. */
         if (tcb == &os_task_idle_tcb[core])
         {
-            status = OS_STATUS_BUSY;
+            status = OS_ERR_BUSY;
         }
         else if (tcb == NULL)
         {
-            status = OS_STATUS_INVALID_ARG;
+            status = OS_ERR_INVALID_ARG;
         }
         /* The kernel's own service tasks are off limits, for the same reason the idle task is:
          * the timer and log APIs are both built on one running, and suspending it turns
@@ -378,7 +381,7 @@ os_status os_task_pause(os_task_t *task)
          * blocks it from the inside instead. */
         else if (tcb->system_task)
         {
-            status = OS_STATUS_BUSY;
+            status = OS_ERR_BUSY;
         }
         else
         {
@@ -388,7 +391,7 @@ os_status os_task_pause(os_task_t *task)
              * context is live over there. */
             if (!is_self && (os_task_running_core(tcb) < OS_CONFIG_CORE_COUNT))
             {
-                status = OS_STATUS_BUSY;
+                status = OS_ERR_BUSY;
             }
             /* Suspending the CALLING task means switching away from it, which is what
              * a scheduler lock defers - it would keep running while marked SUSPENDED.
@@ -396,7 +399,7 @@ os_status os_task_pause(os_task_t *task)
              * any OTHER task needs no switch and stays allowed. */
             else if (is_self && (os_kernel_lock_count[core] != 0U))
             {
-                status = OS_STATUS_BUSY;
+                status = OS_ERR_BUSY;
             }
             else
             {
@@ -409,7 +412,7 @@ os_status os_task_pause(os_task_t *task)
                 /* Suspending a task blocked on a primitive reads as a forced (spurious)
                  * signal, mirroring os_task_wake/os_task_start: on a later os_task_start
                  * the primitive re-checks its condition instead of misreporting
-                 * OS_STATUS_TIMEOUT, even on an OS_WAIT_FOREVER wait. */
+                 * OS_ERR_TIMEOUT, even on an OS_WAIT_FOREVER wait. */
                 if (tcb->state == OS_TASK_STATE_BLOCKED)
                 {
                     tcb->wait_signaled = true;
@@ -445,9 +448,9 @@ os_status os_task_pause(os_task_t *task)
  * @brief Delete a task and release its TCB slot (NULL means current running task).
  *
  * @param[in,out] task  Task handle, or NULL for the calling task.
- * @return os_status    Status code.
+ * @return os_err_t    Status code.
  */
-os_status os_task_delete(os_task_t *task)
+os_err_t os_task_delete(os_task_t *task)
 {
     uint32_t      core = os_arch_core_id_get();
     os_task_tcb_t *tcb;
@@ -457,11 +460,14 @@ os_status os_task_delete(os_task_t *task)
      * CALLING task - and inside an interrupt "the calling task" is merely whichever task was
      * preempted, whether it was named by a handle or by NULL. Deleting or suspending that one
      * tears down the context the interrupt is about to return into, so the call is refused rather
-     * than allowed to corrupt an innocent task. */
+     * than allowed to corrupt an innocent task.
+     *
+     * OS_ERR_ISR rather than INVALID_ARG: the handle is fine, the CONTEXT is not, and a caller
+     * sent to inspect its arguments is looking in the wrong place. */
 
     if (os_arch_in_isr())
     {
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_ISR;
     }
 
     os_critical_enter();
@@ -472,7 +478,7 @@ os_status os_task_delete(os_task_t *task)
         if ((tcb == NULL) || (tcb == &os_task_idle_tcb[core]))
         {
             os_critical_exit();
-            return (tcb == &os_task_idle_tcb[core]) ? OS_STATUS_BUSY : OS_STATUS_INVALID_ARG;
+            return (tcb == &os_task_idle_tcb[core]) ? OS_ERR_BUSY : OS_ERR_INVALID_ARG;
         }
 
         /* Re-resolve through the table: confirms the running task really owns
@@ -482,7 +488,7 @@ os_status os_task_delete(os_task_t *task)
     else if (task->id == 0U)
     {
         os_critical_exit();
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_INVALID_ARG;
     }
     else
     {
@@ -492,7 +498,7 @@ os_status os_task_delete(os_task_t *task)
     if (tcb == NULL)
     {
         os_critical_exit();
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_INVALID_ARG;
     }
 
     /* See os_task_pause: a kernel service task is not the application's to tear down. Deleting one
@@ -501,7 +507,7 @@ os_status os_task_delete(os_task_t *task)
     if (tcb->system_task)
     {
         os_critical_exit();
-        return OS_STATUS_BUSY;
+        return OS_ERR_BUSY;
     }
 
     is_self = (tcb == os_task_current[core]);
@@ -511,7 +517,7 @@ os_status os_task_delete(os_task_t *task)
     if (!is_self && (os_task_running_core(tcb) < OS_CONFIG_CORE_COUNT))
     {
         os_critical_exit();
-        return OS_STATUS_BUSY;
+        return OS_ERR_BUSY;
     }
 
     /* See os_task_pause: deleting the CALLING task requires switching away
@@ -520,7 +526,7 @@ os_status os_task_delete(os_task_t *task)
     if (is_self && (os_kernel_lock_count[core] != 0U))
     {
         os_critical_exit();
-        return OS_STATUS_BUSY;
+        return OS_ERR_BUSY;
     }
 
     /* See os_task_pause: pass on an unconsumed wake before this task's TCB
@@ -555,7 +561,7 @@ os_status os_task_delete(os_task_t *task)
     }
 
     os_critical_exit();
-    return OS_STATUS_OK;
+    return OS_ERR_NONE;
 }
 
 /******************************************************************************************************/
@@ -592,10 +598,10 @@ void os_task_yield(void)
  *
  * @param[in,out] task      Task handle, or NULL for the calling task.
  * @param[in]     priority  New priority: OS_TASK_PRIO_1..OS_TASK_PRIO_30 (or any value in that range).
- * @return os_status  OK; INVALID_ARG for an unknown handle or an out-of-range priority;
+ * @return os_err_t  OK; INVALID_ARG for an unknown handle or an out-of-range priority;
  *                    BUSY for the idle task or a kernel service task.
  */
-os_status os_task_priority_set(os_task_t *task, os_task_priority_t priority)
+os_err_t os_task_priority_set(os_task_t *task, os_task_priority_t priority)
 {
     uint32_t      core  = os_arch_core_id_get();
     uint32_t      value = (uint32_t)priority;
@@ -604,7 +610,7 @@ os_status os_task_priority_set(os_task_t *task, os_task_priority_t priority)
     /* Cast for the same reason as in os_task_create above. */
     if ((value < (uint32_t)OS_TASK_PRIO_1_LOWEST) || (value > (uint32_t)OS_TASK_PRIO_30_HIGHEST))
     {
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_INVALID_ARG;
     }
 
     os_critical_enter();
@@ -615,13 +621,13 @@ os_status os_task_priority_set(os_task_t *task, os_task_priority_t priority)
     if ((tcb == NULL) || (tcb == &os_task_idle_tcb[core]))
     {
         os_critical_exit();
-        return (tcb == NULL) ? OS_STATUS_INVALID_ARG : OS_STATUS_BUSY;
+        return (tcb == NULL) ? OS_ERR_INVALID_ARG : OS_ERR_BUSY;
     }
 
     if (tcb->system_task)
     {
         os_critical_exit();
-        return OS_STATUS_BUSY;
+        return OS_ERR_BUSY;
     }
 
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
@@ -641,7 +647,7 @@ os_status os_task_priority_set(os_task_t *task, os_task_priority_t priority)
 #endif
 
     os_critical_exit();
-    return OS_STATUS_OK;
+    return OS_ERR_NONE;
 }
 
 /******************************************************************************************************/
@@ -654,11 +660,11 @@ os_status os_task_priority_set(os_task_t *task, os_task_priority_t priority)
  *
  * @param[in]  task          Task handle, or NULL for the calling task.
  * @param[out] priority_out  Receives the task's priority.
- * @return os_status  OK, or INVALID_ARG for an unknown handle or a NULL output.
+ * @return os_err_t  OK, or INVALID_ARG for an unknown handle or a NULL output.
  */
-os_status os_task_priority_get(const os_task_t *task, os_task_priority_t *priority_out)
+os_err_t os_task_priority_get(const os_task_t *task, os_task_priority_t *priority_out)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (priority_out != NULL)
     {
@@ -676,7 +682,7 @@ os_status os_task_priority_get(const os_task_t *task, os_task_priority_t *priori
 #else
             *priority_out = (os_task_priority_t)tcb->priority;
 #endif
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();
@@ -729,11 +735,11 @@ os_task_state_t os_task_state_get(const os_task_t *task)
  *
  * @param[in]  task            Task handle, or NULL for the calling task.
  * @param[out] min_free_bytes  Worst-case remaining stack in bytes.
- * @return os_status  Status code.
+ * @return os_err_t  Status code.
  */
-os_status os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_bytes)
+os_err_t os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_bytes)
 {
-    os_status status      = OS_STATUS_INVALID_ARG;
+    os_err_t status      = OS_ERR_INVALID_ARG;
     uint8_t  *stack_base  = NULL;
     size_t    stack_bytes = 0U;
 
@@ -761,7 +767,7 @@ os_status os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_by
             stack_base  = tcb->stack_base;
             stack_bytes = tcb->stack_bytes;
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();
@@ -777,7 +783,7 @@ os_status os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_by
      * that concurrently. The number would then describe a task that no longer exists, reported as
      * though it were current. So the slot is re-resolved afterwards and the result is only
      * published if the id still names the same live task. */
-    if (status == OS_STATUS_OK)
+    if (status == OS_ERR_NONE)
     {
         size_t               index;
         const os_task_tcb_t *recheck;
@@ -805,7 +811,7 @@ os_status os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_by
         }
         else
         {
-            status = OS_STATUS_INVALID_ARG;
+            status = OS_ERR_INVALID_ARG;
         }
 
         os_critical_exit();
@@ -1693,16 +1699,16 @@ void os_task_slice_tick(uint32_t elapsed_ticks)
  *
  * @param[in] task           Task handle.
  * @param[in] core_affinity  Bitmask of allowed cores; OS_TASK_CORE_ANY (0) = any core.
- * @return os_status  Status code.
+ * @return os_err_t  Status code.
  */
-os_status os_task_core_affinity_set(os_task_t *task, uint32_t core_affinity)
+os_err_t os_task_core_affinity_set(os_task_t *task, uint32_t core_affinity)
 {
     os_task_tcb_t *tcb;
     uint32_t      running;
 
     if ((core_affinity >> OS_CONFIG_CORE_COUNT) != 0U)
     {
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_INVALID_ARG;
     }
 
     os_critical_enter();
@@ -1721,7 +1727,7 @@ os_status os_task_core_affinity_set(os_task_t *task, uint32_t core_affinity)
     if (tcb == NULL)
     {
         os_critical_exit();
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_INVALID_ARG;
     }
 
     tcb->core_affinity = core_affinity;
@@ -1741,7 +1747,7 @@ os_status os_task_core_affinity_set(os_task_t *task, uint32_t core_affinity)
     }
 
     os_critical_exit();
-    return OS_STATUS_OK;
+    return OS_ERR_NONE;
 }
 #endif /* OS_CONFIG_CORE_COUNT > 1U */
 
@@ -1766,15 +1772,15 @@ void os_task_exit(void)
 /**
  * @brief Create the mandatory idle task.
  *
- * @return os_status  Status code.
+ * @return os_err_t  Status code.
  */
-os_status os_task_idle_create(void)
+os_err_t os_task_idle_create(void)
 {
     uint32_t core;
 
     if (os_task_idle_tcb[0].state != OS_TASK_STATE_INACTIVE)
     {
-        return OS_STATUS_OK;
+        return OS_ERR_NONE;
     }
 
     /* One idle task per scheduling core; each is pinned to its core and is
@@ -1796,7 +1802,7 @@ os_status os_task_idle_create(void)
                                                   os_task_idle_entry, NULL);
         if (stack_ptr == NULL)
         {
-            return OS_STATUS_ERROR;
+            return OS_ERR_ERROR;
         }
 
         tcb->name          = "tsk_idle";
@@ -1813,7 +1819,7 @@ os_status os_task_idle_create(void)
         tcb->state         = OS_TASK_STATE_READY;
     }
 
-    return OS_STATUS_OK;
+    return OS_ERR_NONE;
 }
 
 /******************************************************************************************************/
@@ -2074,9 +2080,9 @@ uint32_t* os_task_stack_select_next(void)
  * @param[in]  config       Task creation configuration.
  * @param[in]  system_task  True for a kernel service task (os_task_create_system): exempt from the
  *                          user priority range, and protected from os_task_pause/os_task_delete.
- * @return os_status   Status code.
+ * @return os_err_t   Status code.
  */
-static os_status os_task_create_any(os_task_t *task, const os_task_config_t *config, bool system_task)
+static os_err_t os_task_create_any(os_task_t *task, const os_task_config_t *config, bool system_task)
 {
     uint32_t  index;
     uintptr_t stack_addr;
@@ -2093,20 +2099,20 @@ static os_status os_task_create_any(os_task_t *task, const os_task_config_t *con
         (task->storage->stack_memory == NULL) ||
         (task->storage->stack_bytes < OS_CONFIG_MIN_STACK_SIZE))
     {
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_INVALID_ARG;
     }
 
     /* The affinity mask may only name existing cores (0 = any core). */
     if ((config->core_affinity >> OS_CONFIG_CORE_COUNT) != 0U)
     {
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_INVALID_ARG;
     }
 
     stack_addr = (uintptr_t)task->storage->stack_memory;
     if (((stack_addr % OS_ARCH_STACK_ALIGNMENT_BYTES) != 0U) ||
         ((task->storage->stack_bytes % OS_ARCH_STACK_ALIGNMENT_BYTES) != 0U))
     {
-        return OS_STATUS_INVALID_ARG;
+        return OS_ERR_INVALID_ARG;
     }
 
     /* Refuse a handle that is already live, BEFORE anything writes to its stack.
@@ -2119,7 +2125,7 @@ static os_status os_task_create_any(os_task_t *task, const os_task_config_t *con
      * that damage was done.
      *
      * Every other object in the kernel refuses re-initialisation the same way (os_mutex_init,
-     * os_semaphore_init, os_event_init, os_queue_bind_buffer, all with OS_STATUS_BUSY); a task is
+     * os_semaphore_init, os_event_init, os_queue_bind_buffer, all with OS_ERR_BUSY); a task is
      * simply the one that cannot afford to find out late. Re-checked inside the slot-scan critical
      * section, which is what makes the test and the claim atomic against a peer core creating
      * through this same handle. */
@@ -2127,7 +2133,7 @@ static os_status os_task_create_any(os_task_t *task, const os_task_config_t *con
     if ((task->id != 0U) && (os_task_find_by_id(task->id) != NULL))
     {
         os_critical_exit();
-        return OS_STATUS_BUSY;
+        return OS_ERR_BUSY;
     }
     os_critical_exit();
 
@@ -2147,7 +2153,7 @@ static os_status os_task_create_any(os_task_t *task, const os_task_config_t *con
                                               config->entry, config->context);
     if (stack_ptr == NULL)
     {
-        return OS_STATUS_ERROR;
+        return OS_ERR_ERROR;
     }
 
     os_critical_enter();
@@ -2159,7 +2165,7 @@ static os_status os_task_create_any(os_task_t *task, const os_task_config_t *con
     if ((task->id != 0U) && (os_task_find_by_id(task->id) != NULL))
     {
         os_critical_exit();
-        return OS_STATUS_BUSY;
+        return OS_ERR_BUSY;
     }
 
     for (index = 0U; index < OS_TASK_TABLE_SIZE; index++)
@@ -2200,12 +2206,12 @@ static os_status os_task_create_any(os_task_t *task, const os_task_config_t *con
             }
 
             os_critical_exit();
-            return OS_STATUS_OK;
+            return OS_ERR_NONE;
         }
     }
 
     os_critical_exit();
-    return OS_STATUS_FULL;
+    return OS_ERR_FULL;
 }
 
 #if (OS_CONFIG_STACK_WATERMARK_ENABLE == 1U)
@@ -2328,6 +2334,26 @@ static void os_task_tcb_clear(os_task_tcb_t *tcb)
     tcb->base_priority = 0U;
     tcb->pi_owner_id   = 0U;
 
+    /* A task must not die still owning a mutex - by being deleted, or by simply returning from its
+     * entry function, which os_arch_task_exit_trap turns into exactly the same deletion.
+     *
+     * Nothing downstream can repair it. Only the owner may unlock a mutex, and that owner no longer
+     * exists, so the object stays locked forever behind an owner_id that resolves to nothing. Worse,
+     * it is invisible to os_task_mutex_deadlock_check: that walk stops at the first unresolvable
+     * owner, because normally an owner that cannot be resolved means there is NO cycle. So every
+     * task queued on that mutex blocks permanently while the one tool built to explain this class of
+     * hang stays silent. It is the only way this kernel stops without saying why.
+     *
+     * An assertion rather than a status, for the usual reason: it is a static mistake in the
+     * application - code that took a lock and left without giving it back - not a runtime condition
+     * a caller could handle. On the return path there is no caller left to hand a status to anyway;
+     * the task's own code has already finished. Compiles away completely with
+     * OS_CONFIG_ASSERT_ENABLE at 0, the list walk included.
+     *
+     * Release builds still run the detach below. It cannot rescue the mutex, but it keeps the next
+     * task to occupy this slot from inheriting dangling links into a list that is not its own. */
+    OS_ASSERT(os_list_is_empty(&tcb->owned_mutexes));
+
     /* Detach every mutex this task still owned before the slot is recycled:
      * otherwise the next task placed here would inherit dangling links into
      * an owned_mutexes list that no longer represents it. This only prevents
@@ -2370,7 +2396,7 @@ static void os_task_tcb_clear(os_task_tcb_t *tcb)
  * os_task_current there is merely whichever task the interrupt happened to preempt, so acting on it
  * would hit a plausible but wrong target - silently deleting, pausing or re-prioritising a task that
  * simply had the bad luck to be running. NULL therefore resolves to nothing in interrupt context,
- * and every caller already turns a NULL TCB into OS_STATUS_INVALID_ARG.
+ * and every caller already turns a NULL TCB into OS_ERR_INVALID_ARG.
  *
  * Also NULL before the scheduler dispatches a first task, which lands on the same status.
  *

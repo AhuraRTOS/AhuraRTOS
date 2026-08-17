@@ -50,7 +50,7 @@ static void consumer_entry(void *context)
 
     while (1)
     {
-        if (os_semaphore_take(&os_main_sem, OS_WAIT_FOREVER) == OS_STATUS_OK)
+        if (os_semaphore_take(&os_main_sem, OS_WAIT_FOREVER) == OS_ERR_NONE)
         {
             printf("[semaphore] consumer took a token\r\n");
         }
@@ -72,7 +72,7 @@ static void consumer_entry(void *context)
 void os_main(void)
 {
     /* Starts empty (0 tokens), holds at most 4 - os_semaphore_give() beyond
-     * that would return OS_STATUS_FULL. */
+     * that would return OS_ERR_FULL. */
     (void)os_semaphore_init(&os_main_sem, 0U, 4U);
     (void)os_task_create(&consumer, OS_TASK_CONFIG(consumer_entry, NULL, OS_TASK_PRIO_2));
     (void)os_task_start(&consumer);

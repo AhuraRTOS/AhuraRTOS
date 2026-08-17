@@ -79,13 +79,13 @@ static void consumer_entry(void *context)
 
         /* Blocks until the producer sends. Nothing here is aware of where either queue keeps its
          * items: a queue behaves the same whichever way it got its buffer. */
-        if (os_queue_receive(&os_main_static_queue, &value, OS_WAIT_FOREVER) == OS_STATUS_OK)
+        if (os_queue_receive(&os_main_static_queue, &value, OS_WAIT_FOREVER) == OS_ERR_NONE)
         {
             printf("[queue] consumer received %lu from the static queue\r\n", (unsigned long)value);
         }
 
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
-        if (os_queue_receive(&os_main_dynamic_queue, &value, OS_WAIT_FOREVER) == OS_STATUS_OK)
+        if (os_queue_receive(&os_main_dynamic_queue, &value, OS_WAIT_FOREVER) == OS_ERR_NONE)
         {
             printf("[queue] consumer received %lu from the dynamic queue\r\n", (unsigned long)value);
         }
@@ -117,7 +117,7 @@ void os_main(void)
     /* The geometry is passed as ordinary arguments, so it could come from a config value read at
      * boot rather than a compile-time constant. Worth checking the status: unlike the static
      * queue, this one can fail because the kernel heap is exhausted. */
-    if (os_queue_init_dynamic(&os_main_dynamic_queue, sizeof(uint32_t), QUEUE_CAPACITY) != OS_STATUS_OK)
+    if (os_queue_init_dynamic(&os_main_dynamic_queue, sizeof(uint32_t), QUEUE_CAPACITY) != OS_ERR_NONE)
     {
         printf("[queue] dynamic queue init failed (kernel heap exhausted?)\r\n");
         return;
@@ -134,7 +134,7 @@ void os_main(void)
     {
         /* count and free are the two halves of the same picture: what is waiting to be received,
          * and how much room is left. os_queue_free_get is the one back-pressure asks for - a
-         * producer can slow down before a send has to block or report OS_STATUS_FULL. Both are
+         * producer can slow down before a send has to block or report OS_ERR_FULL. Both are
          * snapshots, so treat a nonzero free count as "worth trying", not as a guarantee. */
         printf("[queue] producer sending %lu (count=%lu, free=%lu before send)\r\n",
                (unsigned long)next_value,
@@ -153,6 +153,6 @@ void os_main(void)
     /* Never reached here, but a queue that outlives its usefulness is torn down with
      * os_queue_cleanup(&os_main_dynamic_queue), which returns the buffer to the kernel heap. The same
      * call on os_main_static_queue just empties it, freeing nothing and leaving it usable, so teardown
-     * code does not care which kind it is holding. It refuses with OS_STATUS_BUSY while any task
+     * code does not care which kind it is holding. It refuses with OS_ERR_BUSY while any task
      * is still blocked on the queue. */
 }

@@ -34,6 +34,44 @@ extern "C"
 
 /*
  * ***********************************************************************************************************
+ * Kernel version
+ * ***********************************************************************************************************
+*/
+
+/* MAJOR.MINOR.PATCH, semantic versioning: MAJOR for a breaking API change, MINOR for additions that
+ * keep existing code compiling, PATCH for fixes that change no interface.
+ *
+ * Plain ints, deliberately: no U suffix, because OS_VERSION_STRING stringifies these very tokens and
+ * a suffix would come out literally as "0U.0U.0U". They are only ever compared against small
+ * constants, so nothing here needs the unsigned type. */
+#define OS_VERSION_MAJOR                0
+#define OS_VERSION_MINOR                0
+#define OS_VERSION_PATCH                0
+
+/* Two steps, and both are necessary. # freezes its argument before macro expansion, so a
+ * single-step version of this would yield "OS_VERSION_MAJOR" instead of "0"; the outer macro exists
+ * only to force the argument through one expansion first. */
+#define OS_VERSION_STRINGIFY_(value)    #value
+#define OS_VERSION_STRINGIFY(value)     OS_VERSION_STRINGIFY_(value)
+
+/* "0.0.0" - a string literal, so it concatenates with adjacent literals:
+ *     OS_LOG_INFO("Ahura " OS_VERSION_STRING " starting"); */
+#define OS_VERSION_STRING               OS_VERSION_STRINGIFY(OS_VERSION_MAJOR) "." \
+                                        OS_VERSION_STRINGIFY(OS_VERSION_MINOR) "." \
+                                        OS_VERSION_STRINGIFY(OS_VERSION_PATCH)
+
+/* One ordered integer, so application code can gate on a kernel version at compile time:
+ *     #if (OS_VERSION >= OS_VERSION_MAKE(1, 2, 0))
+ * Eight bits per field. Past 255 it is the scheme that wants revisiting, not the number. */
+#define OS_VERSION_MAKE(major, minor, patch) \
+    ((((major) & 0xFF) << 16) | (((minor) & 0xFF) << 8) | ((patch) & 0xFF))
+
+#define OS_VERSION                      OS_VERSION_MAKE(OS_VERSION_MAJOR, \
+                                                        OS_VERSION_MINOR, \
+                                                        OS_VERSION_PATCH)
+
+/*
+ * ***********************************************************************************************************
  * PART 1 - ALWAYS AVAILABLE (no configuration option removes any of this)
  * ***********************************************************************************************************
 */
@@ -50,17 +88,18 @@ extern "C"
  */
 typedef enum
 {
-    OS_STATUS_OK          = 0, /**< Operation succeeded.                          */
-    OS_STATUS_ERROR       = 1, /**< Generic failure.                              */
-    OS_STATUS_INVALID_ARG = 2, /**< A required argument was invalid or NULL.      */
-    OS_STATUS_EMPTY       = 3, /**< Object holds no items/tokens.                 */
-    OS_STATUS_FULL        = 4, /**< Object cannot accept more items/tokens.       */
-    OS_STATUS_BUSY        = 5, /**< Object unavailable without blocking.          */
-    OS_STATUS_TIMEOUT     = 6, /**< Wait aborted because the timeout elapsed.     */
-    OS_STATUS_NOT_OWNER   = 7, /**< Caller does not own the object.               */
-    OS_STATUS_NO_MEMORY   = 8, /**< Kernel heap could not satisfy the request.    */
+    OS_ERR_NONE        = 0, /**< Operation succeeded.                          */
+    OS_ERR_ERROR       = 1, /**< Generic failure.                              */
+    OS_ERR_INVALID_ARG = 2, /**< A required argument was invalid or NULL.      */
+    OS_ERR_EMPTY       = 3, /**< Object holds no items/tokens.                 */
+    OS_ERR_FULL        = 4, /**< Object cannot accept more items/tokens.       */
+    OS_ERR_BUSY        = 5, /**< Object unavailable without blocking.          */
+    OS_ERR_TIMEOUT     = 6, /**< Wait aborted because the timeout elapsed.     */
+    OS_ERR_NOT_OWNER   = 7, /**< Caller does not own the object.               */
+    OS_ERR_NO_MEMORY   = 8, /**< Kernel heap could not satisfy the request.    */
+    OS_ERR_ISR         = 9, /**< Task-only call made from interrupt context.   */
 
-} os_status;
+} os_err_t;
 
 /******************************************************************************************************/
 /**
@@ -153,7 +192,7 @@ typedef struct
  *                             timer service by default, though it may be lowered into the user
  *                             range.
  *
- *  os_task_create() and os_task_priority_set() reject both, returning OS_STATUS_INVALID_ARG.
+ *  os_task_create() and os_task_priority_set() reject both, returning OS_ERR_INVALID_ARG.
  *
  *  Safe to enumerate directly like this because the number of levels is a fixed kernel constant
  *  (not application-configurable), so the range never changes. Using a name is a style choice:
@@ -290,7 +329,7 @@ _Static_assert((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *  region an MPU covers, an address the linker script pins. OS_TASK_DEFINE puts its stack in
  *  ordinary .bss with no way to say otherwise; this puts whatever you pass on that same array.
  *
- *      OS_TASK_ATTR_DEFINE(rx_task, 1024U, __attribute__((section(".dtcm"))));
+ *      OS_TASK_DEFINE_ATTR(rx_task, 1024U, __attribute__((section(".dtcm"))));
  *      status = os_task_create(&rx_task, OS_TASK_CONFIG(rx_entry, NULL, OS_TASK_PRIO_3));
  *
  *  Identical to OS_TASK_DEFINE in every other way - same handle, same rounding to a multiple of
@@ -301,7 +340,7 @@ _Static_assert((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *  Variadic on purpose: attributes are taken as the rest of the line, so several may be given
  *  (__attribute__((aligned(32))) __attribute__((section(".noinit")))) whatever commas they
  *  contain. */
-#define OS_TASK_ATTR_DEFINE(task_name, stack_size, ...)                              \
+#define OS_TASK_DEFINE_ATTR(task_name, stack_size, ...)                              \
     static uint8_t task_name##_STACK[(((stack_size) + 7U) & ~7U)]                    \
         OS_STACK_ALIGNED __VA_ARGS__;                                                \
     static const os_task_storage_t task_name##_STORAGE = {                           \
@@ -315,23 +354,32 @@ _Static_assert((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *  is called and where its stack lives came from OS_TASK_DEFINE, so neither appears here.
  *  Two forms, and the signature of each is the SAME whatever OS_CONFIG_CORE_COUNT is:
  *
- *    OS_TASK_CONFIG(entry, context, priority)                runs on any core
- *    OS_TASK_CONFIG_ON(entry, context, priority, affinity)   pinned (multi-core builds only)
+ *  ONE macro, whose parameter list follows OS_CONFIG_CORE_COUNT:
  *
- *  Deliberately NOT one macro whose argument count follows the core count. That would mean every
- *  OS_TASK_CONFIG call in an application stops compiling the day OS_CONFIG_CORE_COUNT goes from 1
- *  to 2, turning a config change into a rewrite - and it is exactly why this kernel's own
- *  self-test suite could not be built for multi-core at all. Source written for one core now
- *  compiles unchanged on several, running anywhere, which is the sensible default for a task
- *  that has no reason to care.
+ *    CORE_COUNT == 1   OS_TASK_CONFIG(entry, context, priority)
+ *    CORE_COUNT  > 1   OS_TASK_CONFIG(entry, context, priority, core_affinity)
  *
- *  Pinning stays explicit and greppable, the same split FreeRTOS SMP makes between xTaskCreate
- *  and xTaskCreateAffinitySet, and os_task_core_affinity_set can change it later either way.
- *  core_affinity is a bitmask (OS_TASK_CORE(n), OR-combinable; OS_TASK_CORE_ANY = any), and bits
- *  naming cores beyond OS_CONFIG_CORE_COUNT fail with OS_STATUS_INVALID_ARG rather than being
- *  ignored. Initialized POSITIONALLY on purpose: the parameters here are named after the fields
- *  they fill, and a designated initializer would have the preprocessor substitute inside
- *  ".entry" and ".priority", turning them into whatever the caller passed. */
+ *  On a single core there is nothing to decide, so affinity does not appear at all. The moment
+ *  there is more than one, every task states where it runs - "anywhere" included, written as
+ *  OS_TASK_CORE_ANY rather than inherited by silence. Placement is the whole design question on
+ *  SMP: which core owns the ISR-adjacent work, what must not migrate, what may float. A task that
+ *  never says is far more often one nobody thought about than one that genuinely does not care.
+ *
+ *  The cost is deliberate and worth stating plainly: raising OS_CONFIG_CORE_COUNT from 1 does not
+ *  merely recompile. Every OS_TASK_CONFIG in the application stops compiling until it is given an
+ *  affinity, which makes the move a real port rather than a config edit. That compile error at
+ *  every creation site IS the feature - it forces each placement decision to be made once and on
+ *  purpose, instead of defaulting to ANY everywhere and surfacing later as a performance problem
+ *  with nothing pointing at its cause.
+ *
+ *  Pinning therefore stays explicit and greppable, and os_task_core_affinity_set can still change
+ *  it at runtime either way. core_affinity is a bitmask (OS_TASK_CORE(n), OR-combinable;
+ *  OS_TASK_CORE_ANY = any), and bits naming cores beyond OS_CONFIG_CORE_COUNT fail with
+ *  OS_ERR_INVALID_ARG rather than being ignored. Initialized POSITIONALLY on purpose: the
+ *  parameters here are named after the fields they fill, and a designated initializer would have
+ *  the preprocessor substitute inside ".entry" and ".priority", turning them into whatever the
+ *  caller passed. */
+#if (OS_CONFIG_CORE_COUNT == 1U)
 #define OS_TASK_CONFIG(entry, context, priority) \
     &(os_task_config_t) { \
         (entry), \
@@ -339,9 +387,8 @@ _Static_assert((uint32_t)OS_TASK_PRIO_MAX < 32U,
         (priority), \
         OS_TASK_CORE_ANY \
     }
-
-#if (OS_CONFIG_CORE_COUNT > 1U)
-#define OS_TASK_CONFIG_ON(entry, context, priority, core_affinity) \
+#else
+#define OS_TASK_CONFIG(entry, context, priority, core_affinity) \
     &(os_task_config_t) { \
         (entry), \
         (context), \
@@ -404,7 +451,7 @@ void os_main(void);
  * os_task_pause and os_task_delete are TASK-ONLY whatever handle they are given: both can act on
  * the running task, and an interrupt must not tear down the context it is about to return to.
  *
- * NULL is refused with OS_STATUS_INVALID_ARG from an ISR, and before the scheduler dispatches its
+ * NULL is refused with OS_ERR_INVALID_ARG from an ISR, and before the scheduler dispatches its
  * first task. There is no calling task in either case - inside an interrupt the running task is
  * merely whichever one was preempted, and pausing, deleting or re-prioritising that by accident is
  * exactly the kind of bug this shorthand must not create.
@@ -414,27 +461,27 @@ void os_main(void);
 /**
  * @brief Create a task; priority must be OS_TASK_PRIO_1_LOWEST..OS_TASK_PRIO_30_HIGHEST.
  */
-os_status os_task_create(os_task_t *task, const os_task_config_t *config);
+os_err_t os_task_create(os_task_t *task, const os_task_config_t *config);
 
 /******************************************************************************************************/
 /**
  * @brief Start a created task (make it ready to run).
  */
-os_status os_task_start(os_task_t *task);
+os_err_t os_task_start(os_task_t *task);
 
 /******************************************************************************************************/
 /**
- * @brief Pause a task (NULL means current running task). OS_STATUS_BUSY for the idle task and for
+ * @brief Pause a task (NULL means current running task). OS_ERR_BUSY for the idle task and for
  *        the kernel's own service tasks (timer, log).
  */
-os_status os_task_pause(os_task_t *task);
+os_err_t os_task_pause(os_task_t *task);
 
 /******************************************************************************************************/
 /**
- * @brief Delete a task and release its TCB slot (NULL means current running task). OS_STATUS_BUSY
+ * @brief Delete a task and release its TCB slot (NULL means current running task). OS_ERR_BUSY
  *        for the idle task and for the kernel's own service tasks (timer, log).
  */
-os_status os_task_delete(os_task_t *task);
+os_err_t os_task_delete(os_task_t *task);
 
 /******************************************************************************************************/
 /**
@@ -446,18 +493,18 @@ void os_task_yield(void);
 /**
  * @brief Change a task's priority (NULL means the calling task); takes effect immediately, including
  *        for a task already queued on a mutex, semaphore, queue or event. Accepts only
- *        OS_TASK_PRIO_1_LOWEST..OS_TASK_PRIO_30_HIGHEST; OS_STATUS_BUSY for the idle task and the
+ *        OS_TASK_PRIO_1_LOWEST..OS_TASK_PRIO_30_HIGHEST; OS_ERR_BUSY for the idle task and the
  *        kernel's service tasks. A priority-inheritance boost in force is kept - the new value
  *        becomes the base the task returns to.
  */
-os_status os_task_priority_set(os_task_t *task, os_task_priority_t priority);
+os_err_t os_task_priority_set(os_task_t *task, os_task_priority_t priority);
 
 /******************************************************************************************************/
 /**
  * @brief Get a task's priority (NULL means the calling task): the priority the application set,
  *        not a priority-inheritance boost that may be in force right now.
  */
-os_status os_task_priority_get(const os_task_t *task, os_task_priority_t *priority_out);
+os_err_t os_task_priority_get(const os_task_t *task, os_task_priority_t *priority_out);
 
 /******************************************************************************************************/
 /**
@@ -673,25 +720,19 @@ typedef struct
 /**
  * @brief Initialize a mutex object.
  */
-os_status os_mutex_init(os_mutex_t *mutex);
+os_err_t os_mutex_init(os_mutex_t *mutex);
 
 /******************************************************************************************************/
 /**
  * @brief Acquire a mutex, waiting up to timeout_ms when contended.
  */
-os_status os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms);
-
-/******************************************************************************************************/
-/**
- * @brief Attempt to acquire a mutex without blocking.
- */
-os_status os_mutex_try_lock(os_mutex_t *mutex);
+os_err_t os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms);
 
 /******************************************************************************************************/
 /**
  * @brief Release a mutex object (only the owner may unlock).
  */
-os_status os_mutex_unlock(os_mutex_t *mutex);
+os_err_t os_mutex_unlock(os_mutex_t *mutex);
 
 #endif /* OS_CONFIG_MUTEX_ENABLE */
 
@@ -719,19 +760,19 @@ typedef struct
 /**
  * @brief Initialize a semaphore object.
  */
-os_status os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, uint32_t max_count);
+os_err_t os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, uint32_t max_count);
 
 /******************************************************************************************************/
 /**
  * @brief Give one token to semaphore (ISR-safe, never blocks).
  */
-os_status os_semaphore_give(os_semaphore_t *semaphore);
+os_err_t os_semaphore_give(os_semaphore_t *semaphore);
 
 /******************************************************************************************************/
 /**
  * @brief Take one token from semaphore, waiting up to timeout_ms when empty.
  */
-os_status os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms);
+os_err_t os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms);
 
 #endif /* OS_CONFIG_SEMAPHORE_ENABLE */
 
@@ -869,7 +910,7 @@ typedef struct
  *        not known until run time. Only the buffer is allocated; the queue object itself is the
  *        caller's, and os_queue_cleanup releases what this obtained.
  */
-os_status os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capacity);
+os_err_t os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capacity);
 #endif /* OS_CONFIG_ALLOC_ENABLE */
 
 /* --- Operations: identical for every storage kind --------------------------------------------- */
@@ -878,13 +919,13 @@ os_status os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capa
 /**
  * @brief Send one item into queue, waiting up to timeout_ms when full.
  */
-os_status os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms);
+os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms);
 
 /******************************************************************************************************/
 /**
  * @brief Receive one item from queue, waiting up to timeout_ms when empty.
  */
-os_status os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_ms);
+os_err_t os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_ms);
 
 /******************************************************************************************************/
 /**
@@ -903,9 +944,9 @@ size_t os_queue_free_get(const os_queue_t *queue);
  * @brief Tear down a queue of any kind: empty it, and release the item buffer only when
  *        os_queue_init_dynamic allocated it. A queue that owns no buffer keeps its storage and
  *        stays usable, so a statically defined queue needs no init call after this either.
- *        Refuses with OS_STATUS_BUSY while tasks are blocked on the queue.
+ *        Refuses with OS_ERR_BUSY while tasks are blocked on the queue.
  */
-os_status os_queue_cleanup(os_queue_t *queue);
+os_err_t os_queue_cleanup(os_queue_t *queue);
 
 #endif /* OS_CONFIG_QUEUE_ENABLE */
 
@@ -932,19 +973,19 @@ typedef struct
 /**
  * @brief Initialize an event object.
  */
-os_status os_event_init(os_event_t *event);
+os_err_t os_event_init(os_event_t *event);
 
 /******************************************************************************************************/
 /**
  * @brief Set event bits (ISR-safe).
  */
-os_status os_event_set_bits(os_event_t *event, uint32_t bits);
+os_err_t os_event_set_bits(os_event_t *event, uint32_t bits);
 
 /******************************************************************************************************/
 /**
  * @brief Clear event bits (ISR-safe).
  */
-os_status os_event_clear_bits(os_event_t *event, uint32_t bits);
+os_err_t os_event_clear_bits(os_event_t *event, uint32_t bits);
 
 /******************************************************************************************************/
 /**
@@ -952,7 +993,7 @@ os_status os_event_clear_bits(os_event_t *event, uint32_t bits);
  *        consumes the requested bits atomically with the match (no lost set between the
  *        wait returning and a separate manual clear).
  */
-os_status os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bool clear_on_exit, uint32_t *matched_bits, uint32_t timeout_ms);
+os_err_t os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bool clear_on_exit, uint32_t *matched_bits, uint32_t timeout_ms);
 
 #endif /* OS_CONFIG_EVENT_ENABLE */
 
@@ -994,7 +1035,7 @@ typedef struct
 {
     /** Points at this object, so the kernel can tell a real timer from a lump of memory: the
      *  link state lives inside the object, and following a garbage node would write to an
-     *  address nobody chose. Anything else is refused with OS_STATUS_INVALID_ARG. A
+     *  address nobody chose. Anything else is refused with OS_ERR_INVALID_ARG. A
      *  self-pointer rather than a constant catches a COPIED timer too. See os_timer.c. */
     void                *self;
     uint32_t            period_ticks;
@@ -1033,7 +1074,7 @@ typedef struct
 /**
  * @brief A pool of deferred calls: the storage os_timer_submit hands out, one slot per call.
  *
- * Declared by OS_TIMER_DEFINE_SUBMIT and owned by the caller, which is what keeps OS_STATUS_FULL
+ * Declared by OS_TIMER_DEFINE_SUBMIT and owned by the caller, which is what keeps OS_ERR_FULL
  * local to one pool. Everything here is settled at compile time except free_list and ready, which
  * the kernel fills in the first time the pool is used - so a pool needs no init call and the
  * kernel keeps no list of pools.
@@ -1127,7 +1168,7 @@ struct os_timer_pool_s
  *  reschedules it, which is what a debounce wants and what deferring an interrupt must not do.
  *  A submission never coalesces - each call takes its own slot.
  *
- *  The slots are yours, so OS_STATUS_FULL means "your eight are in flight" and there is no
+ *  The slots are yours, so OS_ERR_FULL means "your eight are in flight" and there is no
  *  kernel-wide number to tune. The delay belongs to the pool, converted to ticks here, so
  *  os_timer_submit does no arithmetic at all; work needing a different delay is another pool.
  *
@@ -1155,7 +1196,7 @@ struct os_timer_pool_s
  *        time it had left, anything else starts a full period. context and value are what the
  *        callback receives on every expiry of this run.
  */
-os_status os_timer_start(os_timer_t *timer, void *context, uint32_t value);
+os_err_t os_timer_start(os_timer_t *timer, void *context, uint32_t value);
 
 /******************************************************************************************************/
 /**
@@ -1163,40 +1204,40 @@ os_status os_timer_start(os_timer_t *timer, void *context, uint32_t value);
  *        The call to reach for when an event should push the deadline back. context and value as
  *        for os_timer_start.
  */
-os_status os_timer_restart(os_timer_t *timer, void *context, uint32_t value);
+os_err_t os_timer_restart(os_timer_t *timer, void *context, uint32_t value);
 
 /******************************************************************************************************/
 /**
  * @brief Halt a running timer, keeping the time it had left for os_timer_start to resume from.
  *        An expiry already noted but not yet delivered still runs.
  */
-os_status os_timer_pause(os_timer_t *timer);
+os_err_t os_timer_pause(os_timer_t *timer);
 
 /******************************************************************************************************/
 /**
  * @brief Stop a software timer, discarding the remaining time and any owed callback.
  */
-os_status os_timer_stop(os_timer_t *timer);
+os_err_t os_timer_stop(os_timer_t *timer);
 
 /******************************************************************************************************/
 /**
  * @brief Change a timer's period, in milliseconds. A countdown already under way keeps the time
  *        it had; follow with os_timer_restart to apply the new period from now.
  */
-os_status os_timer_period_set(os_timer_t *timer, uint32_t period_ms);
+os_err_t os_timer_period_set(os_timer_t *timer, uint32_t period_ms);
 
 /******************************************************************************************************/
 /**
  * @brief Change what a timer calls. Takes effect from the next expiry; a delivery already under
  *        way still runs what it copied out. The context stays as os_timer_start left it.
  */
-os_status os_timer_callback_set(os_timer_t *timer, os_timer_callback_t callback);
+os_err_t os_timer_callback_set(os_timer_t *timer, os_timer_callback_t callback);
 
 /******************************************************************************************************/
 /**
  * @brief Change the value a timer's callback receives. Takes effect from the next expiry.
  */
-os_status os_timer_value_set(os_timer_t *timer, uint32_t value);
+os_err_t os_timer_value_set(os_timer_t *timer, uint32_t value);
 
 /******************************************************************************************************/
 /**
@@ -1210,7 +1251,7 @@ os_status os_timer_value_set(os_timer_t *timer, uint32_t value);
  *        until it runs. If the call may need to change its mind, give the callback something to
  *        re-read; if it may need cancelling, it wants a named timer and os_timer_start instead.
  */
-os_status os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value);
+os_err_t os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value);
 
 #endif /* OS_CONFIG_TIMER_ENABLE */
 
@@ -1228,14 +1269,14 @@ os_status os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value);
  *        it if it is currently blocked in os_notify_wait; ISR-safe. NULL means the calling task,
  *        which an ISR does not have and is refused for.
  */
-os_status os_notify_give(os_task_t *task, uint32_t value);
+os_err_t os_notify_give(os_task_t *task, uint32_t value);
 
 /******************************************************************************************************/
 /**
  * @brief Wait for this task's notification mailbox, up to timeout_ms. Task-only. value_out may
  *        be NULL to take the wake-up and discard the value; it is consumed either way.
  */
-os_status os_notify_wait(uint32_t timeout_ms, uint32_t *value_out);
+os_err_t os_notify_wait(uint32_t timeout_ms, uint32_t *value_out);
 
 #endif /* OS_CONFIG_NOTIFY_ENABLE */
 
@@ -1432,7 +1473,7 @@ void os_atomic_set_bit_to(os_atomic_t *target, uint32_t bit, bool value);
 /**
  * @brief Get the minimum stack headroom a task has ever had, in bytes (NULL means current task).
  */
-os_status os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_bytes);
+os_err_t os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_bytes);
 #endif /* OS_CONFIG_STACK_WATERMARK_ENABLE */
 
 /*
@@ -1671,7 +1712,7 @@ void os_core_start(void);
 /**
  * @brief Change which cores a task may run on (bitmask, OS_TASK_CORE_ANY = any core).
  */
-os_status os_task_core_affinity_set(os_task_t *task, uint32_t core_affinity);
+os_err_t os_task_core_affinity_set(os_task_t *task, uint32_t core_affinity);
 
 /* The two SoC callbacks below are also declared by the arch port
  * (os_arch_port_common.h), which calls them; repeated here because they are

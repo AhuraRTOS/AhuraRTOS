@@ -48,12 +48,12 @@
  *
  * @param[in,out] task   Target task, or NULL for the calling task.
  * @param[in]     value  Value to store.
- * @return os_status  OK, or INVALID_ARG for a stale handle, or for NULL from an ISR or before any
+ * @return os_err_t  OK, or INVALID_ARG for a stale handle, or for NULL from an ISR or before any
  *                    task is running.
  */
-os_status os_notify_give(os_task_t *task, uint32_t value)
+os_err_t os_notify_give(os_task_t *task, uint32_t value)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
     void      *tcb   = NULL;
 
     os_critical_enter();
@@ -97,7 +97,7 @@ os_status os_notify_give(os_task_t *task, uint32_t value)
             os_task_wake_tcb(tcb);
         }
 
-        status = OS_STATUS_OK;
+        status = OS_ERR_NONE;
     }
 
     os_critical_exit();
@@ -114,17 +114,23 @@ os_status os_notify_give(os_task_t *task, uint32_t value)
  * is the copy, not the delivery), so a NULL cannot leave the mailbox full.
  *
  * @param[in]  timeout_ms  OS_WAIT_NOTHING, a duration in ms, or OS_WAIT_FOREVER.
- * @param[out] value_out   Set to the delivered value on OS_STATUS_OK; NULL to discard it.
- * @return os_status  OK on delivery, EMPTY when unavailable without waiting, TIMEOUT when the
- *                     wait elapsed, INVALID_ARG from an ISR or before a real task exists.
+ * @param[out] value_out   Set to the delivered value on OS_ERR_NONE; NULL to discard it.
+ * @return os_err_t  OK on delivery, EMPTY when unavailable without waiting, TIMEOUT when the
+ *                   wait elapsed, ISR from interrupt context, INVALID_ARG before a real task
+ *                   exists.
  */
-os_status os_notify_wait(uint32_t timeout_ms, uint32_t *value_out)
+os_err_t os_notify_wait(uint32_t timeout_ms, uint32_t *value_out)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
-    /* Task-only, like os_mutex_lock: an ISR has no task identity to wait as. */
+    /* Task-only, like os_mutex_lock: an ISR has no task identity to wait as, and says so with
+     * its own status instead of blaming the arguments. */
 
-    if (!os_arch_in_isr())
+    if (os_arch_in_isr())
+    {
+        status = OS_ERR_ISR;
+    }
+    else
     {
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
         uint32_t start_tick      = os_tick_get();
@@ -144,7 +150,7 @@ os_status os_notify_wait(uint32_t timeout_ms, uint32_t *value_out)
             {
                 os_critical_exit();
 
-                status  = OS_STATUS_INVALID_ARG;
+                status  = OS_ERR_INVALID_ARG;
                 waiting = false;
             }
             else
@@ -168,21 +174,21 @@ os_status os_notify_wait(uint32_t timeout_ms, uint32_t *value_out)
                     slot->value = 0U;
                     os_critical_exit();
 
-                    status  = OS_STATUS_OK;
+                    status  = OS_ERR_NONE;
                     waiting = false;
                 }
                 else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
                 {
                     os_critical_exit();
 
-                    status  = OS_STATUS_EMPTY;
+                    status  = OS_ERR_EMPTY;
                     waiting = false;
                 }
                 else if (remaining_ticks == 0U)
                 {
                     os_critical_exit();
 
-                    status  = OS_STATUS_TIMEOUT;
+                    status  = OS_ERR_TIMEOUT;
                     waiting = false;
                 }
                 else

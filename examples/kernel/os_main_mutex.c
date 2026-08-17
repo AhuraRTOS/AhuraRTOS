@@ -4,7 +4,7 @@
  *
  * os_main and a worker task both run a read-delay-write sequence on a
  * shared value while holding the same mutex, so the two halves of each
- * update can never interleave - also exercises os_mutex_try_lock() on an
+ * update can never interleave - also exercises os_mutex_lock(OS_WAIT_NOTHING) on an
  * uncontended mutex. Copy this file into the application source tree as
  * os_main.c to run it; needs OS_CONFIG_MUTEX_ENABLE=1 in os_config.h
  * (the default).
@@ -55,7 +55,7 @@ static void worker_entry(void *context)
 
     for (i = 0U; i < 5U; i++)
     {
-        if (os_mutex_lock(&os_main_mutex, OS_WAIT_FOREVER) == OS_STATUS_OK)
+        if (os_mutex_lock(&os_main_mutex, OS_WAIT_FOREVER) == OS_ERR_NONE)
         {
             uint32_t value = os_main_shared_value;
 
@@ -97,7 +97,7 @@ void os_main(void)
 
     for (i = 0U; i < 5U; i++)
     {
-        if (os_mutex_lock(&os_main_mutex, OS_WAIT_FOREVER) == OS_STATUS_OK)
+        if (os_mutex_lock(&os_main_mutex, OS_WAIT_FOREVER) == OS_ERR_NONE)
         {
             uint32_t value = os_main_shared_value;
 
@@ -117,8 +117,8 @@ void os_main(void)
     printf("[mutex] final value=%lu (expect 10 - every read-modify-write stayed atomic)\r\n",
            (unsigned long)os_main_shared_value);
 
-    printf("[mutex] os_mutex_try_lock() on an unheld mutex -> %d (OS_STATUS_OK)\r\n",
-           (int)os_mutex_try_lock(&os_main_mutex));
+    printf("[mutex] os_mutex_lock(OS_WAIT_NOTHING) on an unheld mutex -> %d (OS_ERR_NONE)\r\n",
+           (int)os_mutex_lock(&os_main_mutex, OS_WAIT_NOTHING));
     (void)os_mutex_unlock(&os_main_mutex);
 
     while (1)

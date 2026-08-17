@@ -123,7 +123,7 @@ void os_main(void)
     printf("[timer] three events back to back\r\n");
     for (event = 1U; event <= 3U; event++)
     {
-        if (os_timer_submit(&os_main_events, &os_main_device, event) != OS_STATUS_OK)
+        if (os_timer_submit(&os_main_events, &os_main_device, event) != OS_ERR_NONE)
         {
             /* Only reachable once all four slots are in flight - a real overrun, worth counting. */
             printf("[timer] event %lu dropped: pool full\r\n", (unsigned long)event);

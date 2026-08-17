@@ -61,7 +61,7 @@ _Static_assert((OS_CONFIG_TIMER_PRIORITY >= OS_TASK_PRIO_1_LOWEST) &&
  * functions needed anyway. Being a marker it is a strong heuristic, not a proof -
  * os_timer_unlink_locked is what makes the unlink path provable.
  *
- * Failing it is NOT asserted. Every public call here documents OS_STATUS_INVALID_ARG as its answer
+ * Failing it is NOT asserted. Every public call here documents OS_ERR_INVALID_ARG as its answer
  * to a bad argument, which makes a bad argument a defined input with a defined result rather than
  * a programming error. An assert would contradict that contract and would make the documented
  * return impossible to test. The asserts left in this file are internal invariants only -
@@ -126,7 +126,7 @@ static os_list_t            os_timer_ready_list;
 
 static void        os_timer_task_entry(void *context);
 static bool        os_timer_expired_fetch(os_timer_callback_t *callback_out, void **context_out, uint32_t *value_out);
-static os_status   os_timer_arm(os_timer_t *timer, bool reload, void *context, uint32_t value);
+static os_err_t   os_timer_arm(os_timer_t *timer, bool reload, void *context, uint32_t value);
 static void        os_timer_detach_locked(os_timer_t *timer);
 static bool        os_timer_is_running_linked(const os_timer_t *timer);
 static bool        os_timer_member_locked(const os_list_t *list, const os_list_node_t *node);
@@ -152,10 +152,10 @@ static void        os_timer_pool_prepare_locked(os_timer_pool_t *pool);
  * @param[in,out] timer    Timer object.
  * @param[in]     context  Pointer passed to the callback (not copied, so it must outlive the run).
  * @param[in]     value    Number passed to the callback.
- * @return os_status  OK, or OS_STATUS_INVALID_ARG for a timer that did not come from a DEFINE
+ * @return os_err_t  OK, or OS_ERR_INVALID_ARG for a timer that did not come from a DEFINE
  *                    macro. Nothing is reserved, so there is no other failure.
  */
-os_status os_timer_start(os_timer_t *timer, void *context, uint32_t value)
+os_err_t os_timer_start(os_timer_t *timer, void *context, uint32_t value)
 {
     return os_timer_arm(timer, false, context, value);
 }
@@ -172,10 +172,10 @@ os_status os_timer_start(os_timer_t *timer, void *context, uint32_t value)
  * @param[in,out] timer    Timer object.
  * @param[in]     context  Pointer passed to the callback, as for os_timer_start.
  * @param[in]     value    Number passed to the callback, as for os_timer_start.
- * @return os_status  OK on restart, or OS_STATUS_INVALID_ARG for a timer that did not come from
+ * @return os_err_t  OK on restart, or OS_ERR_INVALID_ARG for a timer that did not come from
  *                    one of the DEFINE macros.
  */
-os_status os_timer_restart(os_timer_t *timer, void *context, uint32_t value)
+os_err_t os_timer_restart(os_timer_t *timer, void *context, uint32_t value)
 {
     return os_timer_arm(timer, true, context, value);
 }
@@ -187,15 +187,15 @@ os_status os_timer_restart(os_timer_t *timer, void *context, uint32_t value)
  * The countdown stops where it is and os_timer_start resumes from there - and since a resume
  * reserves nothing, it can never be refused. An expiry the tick already noted is still owed and
  * runs; only os_timer_stop discards it.
- * Pausing a timer that is not running reports OS_STATUS_ERROR rather than quietly doing nothing,
+ * Pausing a timer that is not running reports OS_ERR_ERROR rather than quietly doing nothing,
  * since a later start would then begin a full period instead of the expected resume.
  *
  * @param[in,out] timer  Timer object.
- * @return os_status  OK when paused (or already paused), OS_STATUS_ERROR when not running.
+ * @return os_err_t  OK when paused (or already paused), OS_ERR_ERROR when not running.
  */
-os_status os_timer_pause(os_timer_t *timer)
+os_err_t os_timer_pause(os_timer_t *timer)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (OS_TIMER_VALID(timer))
     {
@@ -205,13 +205,13 @@ os_status os_timer_pause(os_timer_t *timer)
         {
             timer->active = false;
             timer->paused = true;
-            status        = OS_STATUS_OK;
+            status        = OS_ERR_NONE;
         }
         else
         {
             /* Already paused is success - the timer is in the state asked for. Anything else
              * (never started, stopped, or a one-shot that has fired) had no countdown to halt. */
-            status = timer->paused ? OS_STATUS_OK : OS_STATUS_ERROR;
+            status = timer->paused ? OS_ERR_NONE : OS_ERR_ERROR;
         }
 
         os_critical_exit();
@@ -225,11 +225,11 @@ os_status os_timer_pause(os_timer_t *timer)
  * @brief Stop a software timer, discarding any not-yet-delivered expiry.
  *
  * @param[in,out] timer  Timer object.
- * @return os_status Status code.
+ * @return os_err_t Status code.
  */
-os_status os_timer_stop(os_timer_t *timer)
+os_err_t os_timer_stop(os_timer_t *timer)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     /* The validity gate matters most here: this is the call that unlinks, and unlinking a garbage
      * node is the write-through-a-wild-pointer that OS_TIMER_VALID exists to prevent. */
@@ -243,7 +243,7 @@ os_status os_timer_stop(os_timer_t *timer)
 
         os_critical_exit();
 
-        status = OS_STATUS_OK;
+        status = OS_ERR_NONE;
     }
 
     return status;
@@ -262,11 +262,11 @@ os_status os_timer_stop(os_timer_t *timer)
  * @param[in,out] timer      Timer object.
  * @param[in]     period_ms  New period in milliseconds. Rounded UP to whole ticks, so any nonzero
  *                           request stays at least one tick.
- * @return os_status  OK, or OS_STATUS_INVALID_ARG for NULL, 0, or OS_WAIT_FOREVER.
+ * @return os_err_t  OK, or OS_ERR_INVALID_ARG for NULL, 0, or OS_WAIT_FOREVER.
  */
-os_status os_timer_period_set(os_timer_t *timer, uint32_t period_ms)
+os_err_t os_timer_period_set(os_timer_t *timer, uint32_t period_ms)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (OS_TIMER_VALID(timer) && (period_ms != 0U) && (period_ms != OS_WAIT_FOREVER))
     {
@@ -278,7 +278,7 @@ os_status os_timer_period_set(os_timer_t *timer, uint32_t period_ms)
 
         os_critical_exit();
 
-        status = OS_STATUS_OK;
+        status = OS_ERR_NONE;
     }
 
     return status;
@@ -295,11 +295,11 @@ os_status os_timer_period_set(os_timer_t *timer, uint32_t period_ms)
  *
  * @param[in,out] timer     Timer object.
  * @param[in]     callback  New expiry callback.
- * @return os_status  OK, or OS_STATUS_INVALID_ARG for an undefined timer or a NULL callback.
+ * @return os_err_t  OK, or OS_ERR_INVALID_ARG for an undefined timer or a NULL callback.
  */
-os_status os_timer_callback_set(os_timer_t *timer, os_timer_callback_t callback)
+os_err_t os_timer_callback_set(os_timer_t *timer, os_timer_callback_t callback)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (OS_TIMER_VALID(timer) && (callback != NULL))
     {
@@ -311,7 +311,7 @@ os_status os_timer_callback_set(os_timer_t *timer, os_timer_callback_t callback)
 
         os_critical_exit();
 
-        status = OS_STATUS_OK;
+        status = OS_ERR_NONE;
     }
 
     return status;
@@ -326,11 +326,11 @@ os_status os_timer_callback_set(os_timer_t *timer, os_timer_callback_t callback)
  *
  * @param[in,out] timer  Timer object.
  * @param[in]     value  Passed to the callback on each expiry.
- * @return os_status  OK, or OS_STATUS_INVALID_ARG for a NULL timer.
+ * @return os_err_t  OK, or OS_ERR_INVALID_ARG for a NULL timer.
  */
-os_status os_timer_value_set(os_timer_t *timer, uint32_t value)
+os_err_t os_timer_value_set(os_timer_t *timer, uint32_t value)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (OS_TIMER_VALID(timer))
     {
@@ -340,7 +340,7 @@ os_status os_timer_value_set(os_timer_t *timer, uint32_t value)
 
         os_critical_exit();
 
-        status = OS_STATUS_OK;
+        status = OS_ERR_NONE;
     }
 
     return status;
@@ -366,12 +366,12 @@ os_status os_timer_value_set(os_timer_t *timer, uint32_t value)
  * @param[in,out] pool     Pool declared with OS_TIMER_DEFINE_SUBMIT.
  * @param[in]     context  Pointer passed to the callback (not copied).
  * @param[in]     value    Number passed to the callback.
- * @return os_status  OK; INVALID_ARG for a pool that did not come from OS_TIMER_DEFINE_SUBMIT;
+ * @return os_err_t  OK; INVALID_ARG for a pool that did not come from OS_TIMER_DEFINE_SUBMIT;
  *                    FULL when every one of this pool's entries is in flight.
  */
-os_status os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value)
+os_err_t os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (OS_TIMER_POOL_VALID(pool))
     {
@@ -387,7 +387,7 @@ os_status os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value)
 
         if (node == NULL)
         {
-            status = OS_STATUS_FULL;
+            status = OS_ERR_FULL;
         }
         else
         {
@@ -425,7 +425,7 @@ os_status os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value)
                 os_list_push_back(&os_timer_running_list, &entry->running_node);
             }
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();
@@ -483,11 +483,11 @@ static void os_timer_pool_prepare_locked(os_timer_pool_t *pool)
 /**
  * @brief Create and start the kernel timer service task. Called from os_init.
  *
- * @return os_status  Status code.
+ * @return os_err_t  Status code.
  */
-os_status os_timer_system_init(void)
+os_err_t os_timer_system_init(void)
 {
-    os_status status;
+    os_err_t status;
 
     os_task_config_t config =
     {
@@ -504,12 +504,12 @@ os_status os_timer_system_init(void)
 
     /* Each step only runs once the previous one succeeded, and the first failure
      * is what gets reported. */
-    if (status == OS_STATUS_OK)
+    if (status == OS_ERR_NONE)
     {
         status = os_task_start(&tsk_timer);
     }
 
-    if (status == OS_STATUS_OK)
+    if (status == OS_ERR_NONE)
     {
         /* Resolved once: the timer task is never deleted, so the tick-time
          * expiry wake can skip the id lookup from here on. */
@@ -779,12 +779,12 @@ static bool os_timer_expired_fetch(os_timer_callback_t *callback_out, void **con
  * @param[in]     reload   true to count a full period, false to resume a pause where it left off.
  * @param[in]     context  Handed to the callback on each expiry of this run.
  * @param[in]     value    Handed to the callback on each expiry of this run.
- * @return os_status  OK on start, or OS_STATUS_INVALID_ARG for a timer that did not come from
+ * @return os_err_t  OK on start, or OS_ERR_INVALID_ARG for a timer that did not come from
  *                    one of the DEFINE macros or has no callback.
  */
-static os_status os_timer_arm(os_timer_t *timer, bool reload, void *context, uint32_t value)
+static os_err_t os_timer_arm(os_timer_t *timer, bool reload, void *context, uint32_t value)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (OS_TIMER_VALID(timer) && (timer->callback != NULL) && (timer->period_ticks != 0U))
     {
@@ -792,7 +792,7 @@ static os_status os_timer_arm(os_timer_t *timer, bool reload, void *context, uin
 
         /* Already linked when re-arming a running or paused timer, and pushing a node twice
          * would corrupt the list - so the check, not a blind push. There is nothing to run out
-         * of here, which is why this cannot report OS_STATUS_FULL. */
+         * of here, which is why this cannot report OS_ERR_FULL. */
         if (!os_timer_is_running_linked(timer))
         {
             os_list_push_back(&os_timer_running_list, &timer->running_node);
@@ -827,7 +827,7 @@ static os_status os_timer_arm(os_timer_t *timer, bool reload, void *context, uin
         timer->paused = false;
         timer->active = true;
 
-        status = OS_STATUS_OK;
+        status = OS_ERR_NONE;
 
         os_critical_exit();
     }

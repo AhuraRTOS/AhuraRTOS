@@ -53,12 +53,12 @@ OS_TASK_DEFINE(worker, 512U);
  * makes such a section useful for state that must survive a reset. Several attributes are fine
  * too, whatever commas they contain:
  *
- *      OS_TASK_ATTR_DEFINE(placed, 512U, __attribute__((aligned(32), section(".ram2"))));
+ *      OS_TASK_DEFINE_ATTR(placed, 512U, __attribute__((aligned(32), section(".ram2"))));
  *
  * Everything else matches OS_TASK_DEFINE, including the 8-byte alignment it already applies: a
  * section attribute carries no alignment of its own, and os_task_create refuses a stack whose
  * address or size is not 8-byte aligned. */
-OS_TASK_ATTR_DEFINE(placed, 512U, __attribute__((section(".ram2"))));
+OS_TASK_DEFINE_ATTR(placed, 512U, __attribute__((section(".ram2"))));
 
 static __IO uint32_t os_main_worker_iterations = 0U;
 static __IO uint32_t os_main_placed_iterations = 0U;
@@ -163,7 +163,7 @@ void os_main(void)
          * kernel's own service tasks, so neither is the application's to hand out. */
         printf("[task] out-of-range priority refused: %s\r\n",
                (os_task_priority_set(&worker, (os_task_priority_t)OS_TASK_PRIO_MAX) ==
-                OS_STATUS_INVALID_ARG) ? "yes" : "no");
+                OS_ERR_INVALID_ARG) ? "yes" : "no");
 
         (void)os_task_priority_set(&worker, OS_TASK_PRIO_1);
     }

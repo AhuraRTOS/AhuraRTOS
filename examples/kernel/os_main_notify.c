@@ -50,7 +50,7 @@ static void receiver_entry(void *context)
     {
         uint32_t value;
 
-        if (os_notify_wait(OS_WAIT_FOREVER, &value) == OS_STATUS_OK)
+        if (os_notify_wait(OS_WAIT_FOREVER, &value) == OS_ERR_NONE)
         {
             printf("[notify] receiver got value=%lu\r\n", (unsigned long)value);
         }

@@ -116,7 +116,7 @@
  * NOT counted here: it reserves their slots on top of this number, so enabling
  * the log or the timer service never costs the application a task, and this value
  * is exactly what os_task_create() will accept before returning
- * OS_STATUS_FULL. */
+ * OS_ERR_FULL. */
 #define OS_CONFIG_MAX_USER_TASKS            6U
 
 /**

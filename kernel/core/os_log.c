@@ -198,11 +198,11 @@ uint32_t os_log_dropped_get(void)
 /**
  * @brief Create and start the kernel log service task. Called from os_init.
  *
- * @return os_status  Status code.
+ * @return os_err_t  Status code.
  */
-os_status os_log_system_init(void)
+os_err_t os_log_system_init(void)
 {
-    os_status status;
+    os_err_t status;
 
     os_task_config_t config =
     {
@@ -220,12 +220,12 @@ os_status os_log_system_init(void)
 
     /* Each step only runs once the previous one succeeded, and the first failure
      * is what gets reported. */
-    if (status == OS_STATUS_OK)
+    if (status == OS_ERR_NONE)
     {
         status = os_task_start(&tsk_log);
     }
 
-    if (status == OS_STATUS_OK)
+    if (status == OS_ERR_NONE)
     {
         os_log_task_tcb = os_task_tcb_resolve(tsk_log.id);
     }

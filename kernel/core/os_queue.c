@@ -27,7 +27,7 @@
  * ***********************************************************************************************************
 */
 
-static os_status os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t item_size, size_t capacity);
+static os_err_t os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t item_size, size_t capacity);
 
 #endif /* OS_CONFIG_ALLOC_ENABLE */
 
@@ -47,12 +47,12 @@ static os_status os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t it
  * @param[in,out] queue       Queue object.
  * @param[in]     item        Item data to copy.
  * @param[in]     timeout_ms  OS_WAIT_NOTHING, a duration in ms, or OS_WAIT_FOREVER.
- * @return os_status  OK on send, FULL when no space without waiting,
+ * @return os_err_t  OK on send, FULL when no space without waiting,
  *                    TIMEOUT when the wait elapsed.
  */
-os_status os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
+os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if ((queue != NULL) && (item != NULL))
     {
@@ -81,7 +81,7 @@ os_status os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_OK;
+                status  = OS_ERR_NONE;
                 waiting = false;
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
@@ -89,7 +89,7 @@ os_status os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_FULL;
+                status  = OS_ERR_FULL;
                 waiting = false;
             }
             else if (remaining_ticks == 0U)
@@ -97,7 +97,7 @@ os_status os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_TIMEOUT;
+                status  = OS_ERR_TIMEOUT;
                 waiting = false;
             }
             else
@@ -118,7 +118,7 @@ os_status os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms
                 {
                     os_task_wait_end();
 
-                    status  = OS_STATUS_TIMEOUT;
+                    status  = OS_ERR_TIMEOUT;
                     waiting = false;
                 }
             }
@@ -135,12 +135,12 @@ os_status os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms
  * @param[in,out] queue       Queue object.
  * @param[out]    item_out    Destination buffer.
  * @param[in]     timeout_ms  OS_WAIT_NOTHING, a duration in ms, or OS_WAIT_FOREVER.
- * @return os_status  OK on receive, EMPTY when no items without waiting,
+ * @return os_err_t  OK on receive, EMPTY when no items without waiting,
  *                    TIMEOUT when the wait elapsed.
  */
-os_status os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_ms)
+os_err_t os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_ms)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if ((queue != NULL) && (item_out != NULL))
     {
@@ -168,7 +168,7 @@ os_status os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_m
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_OK;
+                status  = OS_ERR_NONE;
                 waiting = false;
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
@@ -176,7 +176,7 @@ os_status os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_m
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_EMPTY;
+                status  = OS_ERR_EMPTY;
                 waiting = false;
             }
             else if (remaining_ticks == 0U)
@@ -184,7 +184,7 @@ os_status os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_m
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_TIMEOUT;
+                status  = OS_ERR_TIMEOUT;
                 waiting = false;
             }
             else
@@ -205,7 +205,7 @@ os_status os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_m
                 {
                     os_task_wait_end();
 
-                    status  = OS_STATUS_TIMEOUT;
+                    status  = OS_ERR_TIMEOUT;
                     waiting = false;
                 }
             }
@@ -248,7 +248,7 @@ size_t os_queue_count_get(const os_queue_t *queue)
  * items fit right now, without having to pair a count with the capacity the caller declared
  * somewhere else. Both are snapshots - anything that sends or receives in between changes the
  * answer - so treat a nonzero result as "worth trying", not as a guarantee that the next send
- * cannot report OS_STATUS_FULL.
+ * cannot report OS_ERR_FULL.
  *
  * @param[in] queue  Queue object.
  * @return size_t    Free item slots; 0 for a dynamic queue with no buffer bound yet.
@@ -287,13 +287,13 @@ size_t os_queue_free_get(const os_queue_t *queue)
  * @param[out] queue      Queue object, on zero-initialized storage (OS_QUEUE_DEFINE_DYNAMIC).
  * @param[in]  item_size  Size of one item in bytes.
  * @param[in]  capacity   Number of items the queue can hold.
- * @return os_status  OS_STATUS_OK, OS_STATUS_INVALID_ARG for a zero/overflowing geometry,
- *                    OS_STATUS_BUSY if the queue still has blocked waiters, or
- *                    OS_STATUS_NO_MEMORY when the heap cannot satisfy the request.
+ * @return os_err_t  OS_ERR_NONE, OS_ERR_INVALID_ARG for a zero/overflowing geometry,
+ *                    OS_ERR_BUSY if the queue still has blocked waiters, or
+ *                    OS_ERR_NO_MEMORY when the heap cannot satisfy the request.
  */
-os_status os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capacity)
+os_err_t os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capacity)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     /* The geometry check rejects a byte count that does not fit in size_t before anything is
      * allocated: the product would otherwise wrap to a small, successful allocation that every
@@ -307,7 +307,7 @@ os_status os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capa
 
         if (buffer == NULL)
         {
-            status = OS_STATUS_NO_MEMORY;
+            status = OS_ERR_NO_MEMORY;
         }
         else
         {
@@ -328,7 +328,7 @@ os_status os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capa
 
             status = os_queue_bind_buffer(queue, buffer, item_size, capacity);
 
-            if (status == OS_STATUS_OK)
+            if (status == OS_ERR_NONE)
             {
                 queue->buffer_owned = true;
             }
@@ -336,10 +336,10 @@ os_status os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capa
             os_critical_exit();
 
             /* status carries the bind's own answer, not a guess at it:
-             * os_queue_bind_buffer also reports OS_STATUS_INVALID_ARG, and
+             * os_queue_bind_buffer also reports OS_ERR_INVALID_ARG, and
              * hardcoding BUSY here would be correct only for as long as every
              * INVALID_ARG precondition happens to be checked above. */
-            if (status != OS_STATUS_OK)
+            if (status != OS_ERR_NONE)
             {
                 os_mem_free(buffer);
             }
@@ -365,16 +365,16 @@ os_status os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capa
  * cannot tell from a real transfer. Drain it and let the waiters time out first.
  *
  * @param[in,out] queue  Queue to tear down.
- * @return os_status  OS_STATUS_OK, OS_STATUS_INVALID_ARG for NULL, or OS_STATUS_BUSY if any task
+ * @return os_err_t  OS_ERR_NONE, OS_ERR_INVALID_ARG for NULL, or OS_ERR_BUSY if any task
  *                    is currently blocked on the queue.
  */
-os_status os_queue_cleanup(os_queue_t *queue)
+os_err_t os_queue_cleanup(os_queue_t *queue)
 {
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
     void *buffer_to_free = NULL;
 #endif
 
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (queue != NULL)
     {
@@ -382,7 +382,7 @@ os_status os_queue_cleanup(os_queue_t *queue)
 
         if ((queue->send_waiters.head != NULL) || (queue->receive_waiters.head != NULL))
         {
-            status = OS_STATUS_BUSY;
+            status = OS_ERR_BUSY;
         }
         else
         {
@@ -408,7 +408,7 @@ os_status os_queue_cleanup(os_queue_t *queue)
         }
 #endif
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();
@@ -444,11 +444,11 @@ os_status os_queue_cleanup(os_queue_t *queue)
  * @param[in]     buffer     Backing storage buffer.
  * @param[in]     item_size  Size of one item in bytes.
  * @param[in]     capacity   Number of items buffer can hold.
- * @return os_status    Status code.
+ * @return os_err_t    Status code.
  */
-static os_status os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t item_size, size_t capacity)
+static os_err_t os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t item_size, size_t capacity)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if ((queue != NULL) && (buffer != NULL) && (item_size != 0U) && (capacity != 0U))
     {
@@ -459,7 +459,7 @@ static os_status os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t it
          * zero-initialized storage - static objects are). */
         if ((queue->send_waiters.head != NULL) || (queue->receive_waiters.head != NULL))
         {
-            status = OS_STATUS_BUSY;
+            status = OS_ERR_BUSY;
         }
         else
         {
@@ -474,7 +474,7 @@ static os_status os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t it
             os_list_init(&queue->send_waiters);
             os_list_init(&queue->receive_waiters);
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();

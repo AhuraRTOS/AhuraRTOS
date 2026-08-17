@@ -283,7 +283,7 @@ is why a wait can end two ways: `os_task_waiters_wake_one()` takes the list head
 (the highest-priority waiter, FIFO among equals) and sets `wait_signaled`, while
 the tick's delay-list walk unlinks the task from **both** lists and leaves
 `wait_signaled` false. The two are distinguishable, so the caller returns
-`OS_STATUS_TIMEOUT` or retries accordingly.
+`OS_ERR_TIMEOUT` or retries accordingly.
 
 **Three wake shapes**, each matching what the object means:
 
@@ -378,7 +378,7 @@ back, and records the pending flag.
 
 Three of the kernel's subsystems need to run application callbacks in task
 context, so each gets its own task, created by `os_init()` and protected from
-`os_task_pause` / `os_task_delete` (both return `OS_STATUS_BUSY`) - pausing one
+`os_task_pause` / `os_task_delete` (both return `OS_ERR_BUSY`) - pausing one
 would turn every later call into a silent no-op that still reported success.
 
 | Task | Default priority | Fed by | Runs |
@@ -412,7 +412,7 @@ Because the link state lives inside the object, a hand-declared `os_timer_t`
 would hand the kernel two list nodes of garbage, and `os_timer_stop` would
 execute `node->prev->next = ...` - a write
 through a pointer nobody chose. Four bytes per timer and one comparison per call
-turn that into an `OS_STATUS_INVALID_ARG`.
+turn that into an `OS_ERR_INVALID_ARG`.
 
 A self-pointer rather than a magic constant, at identical cost: a constant is
 passed by any stale memory that happens to contain it, whereas this is passed
@@ -431,7 +431,7 @@ times, in order, each with its own value.
 Two pending calls with two different values need two pieces of storage, which no
 API shape avoids. What `OS_TIMER_DEFINE_SUBMIT` arranges is *whose*: the slots are
 the caller's, declared where the work is and sized by whoever knows the burst
-rate, so `OS_STATUS_FULL` is always local to one pool and there is no kernel-wide
+rate, so `OS_ERR_FULL` is always local to one pool and there is no kernel-wide
 number. `OS_TIMER_MODE_SUBMIT` marks an entry so delivery knows to hand it back;
 an entry returns to its pool as delivery *starts*, so a callback may submit again.
 
@@ -663,7 +663,7 @@ application routes to `os_tick_handler()`.
   kernel enforces it: blocking calls degrade to non-blocking rather than parking
   a task it cannot switch away from. See [Scheduler lock](api.md#scheduler-lock).
 - The kernel's service tasks (`tsk_timer`, `tsk_log`) cannot be
-  paused or deleted by the application; both calls return `OS_STATUS_BUSY`.
+  paused or deleted by the application; both calls return `OS_ERR_BUSY`.
 - Timer callbacks run on the highest-priority kernel task by default, so keep
   them short or user tasks will starve. They *may* block - they run in task
   context, not in the tick ISR - but everything queued behind them waits.

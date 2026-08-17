@@ -66,11 +66,11 @@ static bool os_event_waiter_match(uint32_t data0, uint32_t data1, void *context,
  * storage - static objects are.)
  *
  * @param[in,out] event  Event object.
- * @return os_status  OK, or BUSY while tasks are waiting on it.
+ * @return os_err_t  OK, or BUSY while tasks are waiting on it.
  */
-os_status os_event_init(os_event_t *event)
+os_err_t os_event_init(os_event_t *event)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (event != NULL)
     {
@@ -78,14 +78,14 @@ os_status os_event_init(os_event_t *event)
 
         if (event->waiters.head != NULL)
         {
-            status = OS_STATUS_BUSY;
+            status = OS_ERR_BUSY;
         }
         else
         {
             event->flags = 0U;
             os_list_init(&event->waiters);
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();
@@ -105,11 +105,11 @@ os_status os_event_init(os_event_t *event)
  *
  * @param[in,out] event  Event object.
  * @param[in]     bits   Bits to set.
- * @return os_status Status code.
+ * @return os_err_t Status code.
  */
-os_status os_event_set_bits(os_event_t *event, uint32_t bits)
+os_err_t os_event_set_bits(os_event_t *event, uint32_t bits)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (event != NULL)
     {
@@ -128,7 +128,7 @@ os_status os_event_set_bits(os_event_t *event, uint32_t bits)
 
         os_critical_exit();
 
-        status = OS_STATUS_OK;
+        status = OS_ERR_NONE;
     }
 
     return status;
@@ -140,11 +140,11 @@ os_status os_event_set_bits(os_event_t *event, uint32_t bits)
  *
  * @param[in,out] event  Event object.
  * @param[in]     bits   Bits to clear.
- * @return os_status Status code.
+ * @return os_err_t Status code.
  */
-os_status os_event_clear_bits(os_event_t *event, uint32_t bits)
+os_err_t os_event_clear_bits(os_event_t *event, uint32_t bits)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (event != NULL)
     {
@@ -152,7 +152,7 @@ os_status os_event_clear_bits(os_event_t *event, uint32_t bits)
         event->flags &= ~bits;
         os_critical_exit();
 
-        status = OS_STATUS_OK;
+        status = OS_ERR_NONE;
     }
 
     return status;
@@ -173,12 +173,12 @@ os_status os_event_clear_bits(os_event_t *event, uint32_t bits)
  * @param[in]  clear_on_exit  True to consume (clear) the requested bits on a match.
  * @param[out] matched_bits   Matched bits snapshot (also written on failure).
  * @param[in]  timeout_ms     OS_WAIT_NOTHING, a duration in ms, or OS_WAIT_FOREVER.
- * @return os_status  OK on match, BUSY when unmatched without waiting,
+ * @return os_err_t  OK on match, BUSY when unmatched without waiting,
  *                    TIMEOUT when the wait elapsed.
  */
-os_status os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bool clear_on_exit, uint32_t *matched_bits, uint32_t timeout_ms)
+os_err_t os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bool clear_on_exit, uint32_t *matched_bits, uint32_t timeout_ms)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if ((event != NULL) && (matched_bits != NULL) && (bits != 0U))
     {
@@ -220,7 +220,7 @@ os_status os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bo
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_OK;
+                status  = OS_ERR_NONE;
                 waiting = false;
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
@@ -228,7 +228,7 @@ os_status os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bo
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_BUSY;
+                status  = OS_ERR_BUSY;
                 waiting = false;
             }
             else if (remaining_ticks == 0U)
@@ -236,7 +236,7 @@ os_status os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bo
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_TIMEOUT;
+                status  = OS_ERR_TIMEOUT;
                 waiting = false;
             }
             else
@@ -252,7 +252,7 @@ os_status os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bo
                 {
                     os_task_wait_end();
 
-                    status  = OS_STATUS_TIMEOUT;
+                    status  = OS_ERR_TIMEOUT;
                     waiting = false;
                 }
                 else
@@ -268,7 +268,7 @@ os_status os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bo
                         *matched_bits = delivered;
                         os_task_wait_end();
 
-                        status  = OS_STATUS_OK;
+                        status  = OS_ERR_NONE;
                         waiting = false;
                     }
                     else

@@ -183,7 +183,7 @@ task may run:
 
 There is one constraint worth knowing: a task currently executing on another
 core cannot be paused or deleted from this one, and the call returns
-`OS_STATUS_BUSY`. Suspend it from its own core first. The SMP paths compile in
+`OS_ERR_BUSY`. Suspend it from its own core first. The SMP paths compile in
 the CI matrix but have not run on real multi-core silicon yet, so treat them as
 experimental.
 

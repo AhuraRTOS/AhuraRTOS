@@ -30,11 +30,11 @@
  * @param[in,out] semaphore      Semaphore object.
  * @param[in]     initial_count  Initial token count.
  * @param[in]     max_count      Maximum token count.
- * @return os_status        Status code.
+ * @return os_err_t        Status code.
  */
-os_status os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, uint32_t max_count)
+os_err_t os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, uint32_t max_count)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if ((semaphore != NULL) && (max_count != 0U) && (initial_count <= max_count))
     {
@@ -45,7 +45,7 @@ os_status os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, u
          * zero-initialized storage - static objects are). */
         if (semaphore->waiters.head != NULL)
         {
-            status = OS_STATUS_BUSY;
+            status = OS_ERR_BUSY;
         }
         else
         {
@@ -53,7 +53,7 @@ os_status os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, u
             semaphore->max_count = max_count;
             os_list_init(&semaphore->waiters);
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();
@@ -67,11 +67,11 @@ os_status os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, u
  * @brief Give one token to semaphore (ISR-safe, never blocks).
  *
  * @param[in,out] semaphore  Semaphore object.
- * @return os_status    Status code.
+ * @return os_err_t    Status code.
  */
-os_status os_semaphore_give(os_semaphore_t *semaphore)
+os_err_t os_semaphore_give(os_semaphore_t *semaphore)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (semaphore != NULL)
     {
@@ -79,7 +79,7 @@ os_status os_semaphore_give(os_semaphore_t *semaphore)
 
         if (semaphore->count >= semaphore->max_count)
         {
-            status = OS_STATUS_FULL;
+            status = OS_ERR_FULL;
         }
         else
         {
@@ -89,7 +89,7 @@ os_status os_semaphore_give(os_semaphore_t *semaphore)
              * own context). */
             (void)os_task_waiters_wake_one(&semaphore->waiters);
 
-            status = OS_STATUS_OK;
+            status = OS_ERR_NONE;
         }
 
         os_critical_exit();
@@ -107,12 +107,12 @@ os_status os_semaphore_give(os_semaphore_t *semaphore)
  *
  * @param[in,out] semaphore   Semaphore object.
  * @param[in]     timeout_ms  OS_WAIT_NOTHING, a duration in ms, or OS_WAIT_FOREVER.
- * @return os_status  OK on take, EMPTY when unavailable without waiting,
+ * @return os_err_t  OK on take, EMPTY when unavailable without waiting,
  *                    TIMEOUT when the wait elapsed.
  */
-os_status os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms)
+os_err_t os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms)
 {
-    os_status status = OS_STATUS_INVALID_ARG;
+    os_err_t status = OS_ERR_INVALID_ARG;
 
     if (semaphore != NULL)
     {
@@ -134,7 +134,7 @@ os_status os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms)
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_OK;
+                status  = OS_ERR_NONE;
                 waiting = false;
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
@@ -142,7 +142,7 @@ os_status os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms)
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_EMPTY;
+                status  = OS_ERR_EMPTY;
                 waiting = false;
             }
             else if (remaining_ticks == 0U)
@@ -150,7 +150,7 @@ os_status os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms)
                 os_task_wait_end();
                 os_critical_exit();
 
-                status  = OS_STATUS_TIMEOUT;
+                status  = OS_ERR_TIMEOUT;
                 waiting = false;
             }
             else
@@ -171,7 +171,7 @@ os_status os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms)
                 {
                     os_task_wait_end();
 
-                    status  = OS_STATUS_TIMEOUT;
+                    status  = OS_ERR_TIMEOUT;
                     waiting = false;
                 }
             }

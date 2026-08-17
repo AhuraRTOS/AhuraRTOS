@@ -22,12 +22,12 @@
 */
 
 #if (OS_CONFIG_TEST_ENABLE == 0U)
-static os_status os_main_system_init(void);
+static os_err_t os_main_system_init(void);
 static void      os_main_task_entry(void *context);
 #endif
 
 #if (OS_CONFIG_TEST_ENABLE == 1U)
-static os_status os_test_system_init(void);
+static os_err_t os_test_system_init(void);
 static void      os_test_task_entry(void *context);
 #endif
 
@@ -171,7 +171,7 @@ bool os_kernel_is_running(void)
  * section, since this lock excludes neither.
  *
  * The calling task cannot block while it holds one: blocking primitives behave as if given
- * OS_WAIT_NOTHING, os_delay_ms busy-waits, and pause/delete of the CALLER return OS_STATUS_BUSY.
+ * OS_WAIT_NOTHING, os_delay_ms busy-waits, and pause/delete of the CALLER return OS_ERR_BUSY.
  * Blocking means switching away, which is what the lock forbids. No-op from interrupt context.
  *
  * @return None.
@@ -288,11 +288,11 @@ void os_assert_failed(const char *file, uint32_t line)
  * Not compiled in when OS_CONFIG_TEST_ENABLE is also 1: the self-test suite
  * runs instead of the application's own task in that build (see os_init()).
  *
- * @return os_status  Status code.
+ * @return os_err_t  Status code.
  */
-static os_status os_main_system_init(void)
+static os_err_t os_main_system_init(void)
 {
-    os_status status;
+    os_err_t status;
 
     os_task_config_t config =
     {
@@ -305,7 +305,7 @@ static os_status os_main_system_init(void)
     status = os_task_create(&tsk_main, &config);
 
     /* Only start what was actually created; a failed create is reported as-is. */
-    if (status == OS_STATUS_OK)
+    if (status == OS_ERR_NONE)
     {
         status = os_task_start(&tsk_main);
     }
@@ -333,11 +333,11 @@ static void os_main_task_entry(void *context)
 /**
  * @brief Create and start the self-test task. Called from os_init().
  *
- * @return os_status  Status code.
+ * @return os_err_t  Status code.
  */
-static os_status os_test_system_init(void)
+static os_err_t os_test_system_init(void)
 {
-    os_status status;
+    os_err_t status;
 
     os_task_config_t config =
     {
@@ -350,7 +350,7 @@ static os_status os_test_system_init(void)
     status = os_task_create(&tsk_test, &config);
 
     /* Only start what was actually created; a failed create is reported as-is. */
-    if (status == OS_STATUS_OK)
+    if (status == OS_ERR_NONE)
     {
         status = os_task_start(&tsk_test);
     }
