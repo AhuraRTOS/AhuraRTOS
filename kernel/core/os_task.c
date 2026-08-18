@@ -1706,6 +1706,8 @@ os_err_t os_task_core_affinity_set(os_task_t *task, uint32_t core_affinity)
     os_task_tcb_t *tcb;
     uint32_t      running;
 
+    /* Bits naming cores that do not exist are rejected rather than ignored. An empty mask is
+     * OS_TASK_CORE_ANY and passes: it is a real request, not a missing one. */
     if ((core_affinity >> OS_CONFIG_CORE_COUNT) != 0U)
     {
         return OS_ERR_INVALID_ARG;

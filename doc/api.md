@@ -63,9 +63,14 @@ does not appear; above one, every task states where it runs:
 /* OS_CONFIG_CORE_COUNT == 1 */
 os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_3));
 
-/* OS_CONFIG_CORE_COUNT > 1 - pinned to cores 1 and 2 */
+/* OS_CONFIG_CORE_COUNT > 1 - pinned to core 0. Cores are numbered from 0, so a
+   dual-core part is core 0 and core 1. */
 os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_3,
-                                       OS_TASK_CORE(1) | OS_TASK_CORE(2)));
+                                       OS_TASK_CORE(0)));
+
+/* OS_CONFIG_CORE_COUNT > 1 - allowed on either core of a dual-core part */
+os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_3,
+                                       OS_TASK_CORE(0) | OS_TASK_CORE(1)));
 
 /* OS_CONFIG_CORE_COUNT > 1 - free to run on any core, said explicitly */
 os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_3,

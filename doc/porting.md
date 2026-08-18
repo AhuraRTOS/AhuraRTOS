@@ -151,9 +151,11 @@ pulls work from the shared ready lists. **Core affinity** selects where each
 task may run:
 
 - `os_task_config_t.core_affinity` is a bitmask of allowed cores, where bit n
-  means core n. `OS_TASK_CORE_ANY` (0, the default) means any core. Change it at
-  runtime with `os_task_core_affinity_set(task, mask)`. A task executing on a
-  core the new mask excludes is asked to reschedule, either locally or by IPI.
+  means core n. Cores are numbered from 0, so a dual-core part is
+  `OS_TASK_CORE(0)` and `OS_TASK_CORE(1)`, OR-combinable. `OS_TASK_CORE_ANY`
+  (0, the empty mask) means any core. Change it at runtime with
+  `os_task_core_affinity_set(task, mask)`. A task executing on a core the new
+  mask excludes is asked to reschedule, either locally or by IPI.
 - When a task becomes ready, through a wake or a start, the kernel preempts
   locally if the task's affinity allows this core. Otherwise it nudges the first
   core in the mask through `os_arch_core_ipi_request_cb`, which the SoC layer

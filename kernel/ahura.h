@@ -258,12 +258,14 @@ _Static_assert(((uint32_t)OS_TASK_PRIO_1_LOWEST == ((uint32_t)OS_TASK_PRIO_IDLE 
 _Static_assert((uint32_t)OS_TASK_PRIO_MAX < 32U,
                "OS_TASK_PRIO_MAX must fit the 32-bit ready bitmap");
 
-/** Core affinity: the task may run on any core (multi-core builds; the
- *  affinity is a bitmask otherwise, bit n = may run on core n). */
+/** Core affinity: the task may run on any core - the empty mask, so no core is
+ *  named and none is excluded. What the kernel's own idle, timer and log tasks
+ *  use, and what a single-core OS_TASK_CONFIG fills in for you. */
 #define OS_TASK_CORE_ANY        0U
 
 /** Core affinity: the task may run only on core n. Combine with | for a set
- *  of allowed cores: OS_TASK_CORE(0) | OS_TASK_CORE(2). */
+ *  of allowed cores. Cores are numbered from 0, so a dual-core part is
+ *  OS_TASK_CORE(0) and OS_TASK_CORE(1). */
 #define OS_TASK_CORE(n)         (1UL << (n))
 
 /*
@@ -374,7 +376,7 @@ _Static_assert((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *
  *  Pinning therefore stays explicit and greppable, and os_task_core_affinity_set can still change
  *  it at runtime either way. core_affinity is a bitmask (OS_TASK_CORE(n), OR-combinable;
- *  OS_TASK_CORE_ANY = any), and bits naming cores beyond OS_CONFIG_CORE_COUNT fail with
+ *  OS_TASK_CORE_ANY = any core), and bits naming cores beyond OS_CONFIG_CORE_COUNT fail with
  *  OS_ERR_INVALID_ARG rather than being ignored. Initialized POSITIONALLY on purpose: the
  *  parameters here are named after the fields they fill, and a designated initializer would have
  *  the preprocessor substitute inside ".entry" and ".priority", turning them into whatever the
