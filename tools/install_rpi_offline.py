@@ -200,7 +200,7 @@ def resolve_module(repo: Path):
             "  the kernel, so the checkout has to be complete. Re-download it."
             .format(repo))
 
-    spec = importlib.util.spec_from_file_location("install_commoner_rpi", module_path)
+    spec = importlib.util.spec_from_file_location("ahura_installer_rpi", module_path)
     if spec is None or spec.loader is None:
         raise Fatal("could not load {}".format(module_path))
 
@@ -215,20 +215,14 @@ def resolve_module(repo: Path):
     bytecode = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
 
-    # The online half imports the shared core (install_common.py) from beside itself, and loading
-    # a module by path does NOT put its directory on sys.path. Add it for the duration of the
-    # import, at the front so the checkout being installed from wins over any same-named module
-    # elsewhere, then take it back out - this script does not own the caller's sys.path.
-    tools_dir = str(module_path.parent)
-    sys.path.insert(0, tools_dir)
+    # The online half is self-contained (the former install_common.py is merged into it), so
+    # loading it needs nothing beside it on disk.
     try:
         spec.loader.exec_module(module)
     except Exception as exc:                                  # noqa: BLE001
         raise Fatal("could not load {}: {}".format(module_path, exc))
     finally:
         sys.dont_write_bytecode = bytecode
-        if tools_dir in sys.path:
-            sys.path.remove(tools_dir)
 
     required = ("Fatal", "Project", "plan", "plan_uninstall", "finish",
                 "looks_like_ahura", "relative")

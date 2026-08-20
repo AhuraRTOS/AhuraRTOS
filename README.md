@@ -139,7 +139,9 @@ AhuraRTOS/
 ├── examples/   <- one runnable main per feature
 ├── tools/      <- one-command installers: install_stm32_online.py (CubeMX) and
 │               install_rpi_online.py (Pico SDK), each with an _offline twin
-│               for machines with no internet, over a shared install_common.py
+│               for machines with no internet. Each online installer is one
+│               self-contained file - piping it straight into Python needs
+│               nothing else on disk
 ├── CSTYLE.md   <- the C style every file here is written to
 ├── LICENSE
 └── README.md   <- this file
