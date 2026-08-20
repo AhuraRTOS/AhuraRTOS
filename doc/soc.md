@@ -8,8 +8,7 @@ optional: without one the kernel builds exactly as it always has, and the
 application writes that group itself.
 
 ```cmake
-| `raspberrypi/rp2040` | RP2040 (Pico, Pico W) |
-| `raspberrypi/rp235x_arm` | RP2350, RP2354 - Arm cores (Pico 2) |
+set(AHURA_SOC raspberrypi/rp235x_arm)
 add_subdirectory(AhuraRTOS/kernel)
 ```
 
@@ -202,7 +201,12 @@ not run on hardware.
 
 | `AHURA_SOC` | Parts | Notes |
 |---|---|---|
+| `raspberrypi/rp235x_arm` | RP2350, RP2354 - Arm cores (Pico 2) | `isr_pendsv`, `isr_systick`, `SystemCoreClock`, core id, doorbell IPI, SIO spinlocks. Verified on silicon, single-core and dual-core SMP |
+| `raspberrypi/rp2040` | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO. Compiles and runs in CI; not yet run on hardware |
 | `st/stm32` | Every STM32 | Contributes no code. CMSIS-Pack startup already satisfies the kernel |
+
+Installing either `raspberrypi` package is one command - see
+**[Raspberry Pi Pico SDK](pico-sdk.md)**.
 
 An unpackaged part is not an unsupported part. Leave `AHURA_SOC` unset, copy
 `template/soc_cb.c`, and the kernel behaves as it always has - which is what

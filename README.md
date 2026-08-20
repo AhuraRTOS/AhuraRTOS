@@ -108,15 +108,54 @@ multi-core (SMP) scheduling verified on the RP2350 · experimental tickless idle
 Every one of these is described in full, with the mechanism behind it, in the
 [kernel reference](doc/kernel.md).
 
+## Install it
+
+One command, from the root of your project. It prints the exact diff it wants to
+apply and waits for a `y` before touching anything - Python 3.8 or newer and
+nothing else, no `pip install`, and no installer file left behind.
+
+**Raspberry Pi Pico SDK** - RP2040, RP2350, RP2354. The chip is read out of
+`PICO_BOARD` / `PICO_PLATFORM`:
+
+```powershell
+irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_rpi_online.py | python -
+```
+```bash
+curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_rpi_online.py | python3 -
+```
+
+**STM32CubeMX / STM32CubeIDE** - a project generated with the CMake toolchain:
+
+```powershell
+irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python -
+```
+```bash
+curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python3 -
+```
+
+PowerShell first, then bash / zsh. Add `--dry-run` after the `-` to see the diff
+and write nothing, `--yes` to skip the prompt, `--uninstall` to take it back
+out. Re-running is safe: it fills in only what is missing.
+
+**No internet on the build machine?** Every installer has an offline twin that
+only ever reads a copy already on disk - clone or download the repository
+somewhere with a connection, copy it into your project, and run
+`python3 AhuraRTOS/tools/install_rpi_offline.py` (or `install_stm32_offline.py`).
+Details: **[Pico SDK → offline](doc/pico-sdk.md#offline---no-internet-on-the-machine)**,
+**[STM32 → offline](doc/stm32cubemx.md#offline---no-internet-on-the-machine)**.
+
+**Any other vendor, IDE or build system:** the same integration by hand, in six
+steps - **[Installation](doc/installation.md)**.
+
 ## Documentation
 
 **[📖 Documentation index](doc/README.md)**
 
 | Getting it running | |
 |---|---|
-| **[Installation](doc/installation.md)** | **Start here.** The manual install with CMake: six steps, any vendor, IDE and build system. Get the source, copy three files, add them to the build, route the tick, check `PendSV`, boot |
-| **[STM32CubeMX / CubeIDE](doc/stm32cubemx.md)** | On ST tooling, two ways: **[automatic](doc/stm32cubemx.md#automatic---one-command)** - one command does the lot - or **[manual](doc/stm32cubemx.md#manual---step-by-step)**, checkbox by checkbox on real hardware |
-| **[Raspberry Pi Pico SDK](doc/soc.md)** | RP2040, RP2350 and RP2354. One command - `install_rpi_online.py` - detects the board and does the lot, or `install_rpi_offline.py` from a local copy: the SoC package supplies the vector names and the tick, so there is no PendSV or SysTick step to do by hand |
+| **[Installation](doc/installation.md)** | **The general procedure.** The manual install with CMake: six steps, any vendor, IDE and build system. Get the source, copy three files, add them to the build, route the tick, check `PendSV`, boot |
+| **[STM32CubeMX / CubeIDE](doc/stm32cubemx.md)** | On ST tooling, three ways: **[automatic](doc/stm32cubemx.md#automatic---one-command)** - one command does the lot - **[offline](doc/stm32cubemx.md#offline---no-internet-on-the-machine)**, or **[manual](doc/stm32cubemx.md#manual---step-by-step)**, checkbox by checkbox on real hardware |
+| **[Raspberry Pi Pico SDK](doc/pico-sdk.md)** | RP2040, RP2350 and RP2354, three ways: **[automatic](doc/pico-sdk.md#automatic---one-command)** - one command detects the board and does the lot - **[offline](doc/pico-sdk.md#offline---no-internet-on-the-machine)**, or **[manual](doc/pico-sdk.md#manual---step-by-step)**. The SoC package supplies the vector names and the tick, so there is no PendSV or SysTick step to do by hand |
 | [Vendor notes](doc/vendor-notes.md) | The one thing that differs per vendor, and what to do about it |
 | [Self-test suite](doc/self-test.md) | Prove a fresh port before writing anything on top of it |
 

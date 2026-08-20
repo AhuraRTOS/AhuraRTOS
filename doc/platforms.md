@@ -78,7 +78,10 @@ rest - are already covered by the ARM ports today: what a new port adds is a new
 - **Multi-core (SMP) on the RP2040.** The ARMv6-M SMP glue (SIO hardware
   spinlocks, the FIFO IPI) compiles and is exercised in CI, but has not run on
   real multi-core silicon. The same kernel paths ARE verified on the RP2350's
-  dual Cortex-M33 - see the [RP2350 package](soc.md).
+  dual Cortex-M33 - see the
+  [RP2350 package](../kernel/soc/raspberrypi/rp235x_arm/README.md), and
+  [Pico SDK → running both cores](pico-sdk.md#running-both-cores) for how to
+  turn it on.
 - **Tickless idle.** Real SysTick suppression is implemented on the ARMv8-M
   mainline port; the v6m and v7m ports still need the same change, and the idle
   task does not yet call into it.

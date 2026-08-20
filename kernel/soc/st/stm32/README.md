@@ -37,7 +37,7 @@ competes for two things the kernel needs:
 - move the HAL timebase off SysTick to a spare timer (SYS → Timebase Source).
 
 Both are project edits rather than kernel ones, which is why they live in
-[vendor notes](../../../doc/vendor-notes.md) and are applied by the installer.
+[vendor notes](../../../../doc/vendor-notes.md) and are applied by the installer.
 
 ## Expected additions
 

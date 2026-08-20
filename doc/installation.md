@@ -12,18 +12,31 @@ This page is the procedure itself: **six steps, by hand, for any vendor, IDE and
 build system.** CMake gets the exact lines to paste; everything else gets the
 source and include lists it needs.
 
-> **On STM32CubeMX?** There is a one-command installer that does all six for
-> you - see **[STM32CubeMX → Automatic](stm32cubemx.md#automatic---one-command)**.
-> No internet on the build machine? The same installation runs from a local
-> copy - see **[Offline](stm32cubemx.md#offline---no-internet-on-the-machine)**.
-> This page is still worth reading as the reference for what it did.
+> **On a Raspberry Pi Pico or an STM32CubeMX project?** There is a one-command
+> installer for each, and it does all six steps for you:
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_rpi_online.py | python3 -     # Pico SDK
+> curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python3 -   # STM32CubeMX
+> ```
+>
+> On Windows, `irm <url> | python -`. **No internet on the build machine?** Each
+> has an offline twin that runs from a local copy of the repository:
+> `python3 AhuraRTOS/tools/install_rpi_offline.py`, or the `_stm32_` one.
+>
+> Details: **[Pico SDK](pico-sdk.md#automatic---one-command)**
+> ([offline](pico-sdk.md#offline---no-internet-on-the-machine)) ·
+> **[STM32CubeMX](stm32cubemx.md#automatic---one-command)**
+> ([offline](stm32cubemx.md#offline---no-internet-on-the-machine)).
+> This page is still worth reading as the reference for what they did.
 
-Two companion pages go with this one:
+Three companion pages go with this one:
 
 | Page | When to read it |
 |---|---|
 | **[Vendor notes](vendor-notes.md)** | The one thing that differs per vendor, and what to do about it on STM32, Nordic, NXP and everything else |
-| **[STM32CubeMX / STM32CubeIDE](stm32cubemx.md)** | ST tooling, on a concrete board: the one-command installer, then the same steps by hand with exact checkboxes and file paths |
+| **[Raspberry Pi Pico SDK](pico-sdk.md)** | RP2040, RP2350 and RP2354: the two installers, then the same steps by hand. Steps 4 and 5 below are already done for you there, by the SoC package |
+| **[STM32CubeMX / STM32CubeIDE](stm32cubemx.md)** | ST tooling, on a concrete board: the two installers, then the same steps by hand with exact checkboxes and file paths |
 
 Paths below assume the kernel sits at `AhuraRTOS/kernel/` in your project, which
 is what step 1 produces. Nothing depends on that layout - only on the build
@@ -128,11 +141,27 @@ that the target already exists. A generator-owned `CMakeLists.txt` (CubeMX,
 MCUXpresso) then stays exactly as generated, and the integration is one block to
 review or remove.
 
+**On packaged silicon, one line more.** Some chips need glue the kernel cannot
+derive - a non-CMSIS vector name, inter-core signalling, hardware spinlocks -
+and where that work is already in the tree it is selected with one variable,
+set **before** `add_subdirectory` like `OS_CONFIG_DIR`:
+
+```cmake
+set(AHURA_SOC raspberrypi/rp235x_arm)   # see doc/soc.md for the list
+```
+
+Leaving it unset is fully supported and is what an unpackaged part does. On a
+Pico, though, it is the difference between a build that runs and one that links
+cleanly and then traps at `os_start()`, because the SDK calls vector entry 14
+`isr_pendsv` rather than `PendSV_Handler`. See
+[SoC packages](soc.md) for the full list, and [Pico SDK](pico-sdk.md) for that
+case end to end.
+
 The kernel library picks its own architecture port from the `-mcpu` / `-march`
 in your toolchain file and prints what it chose at configure time:
 
 ```text
--- Ahura kernel arch: cortex_m33
+-- Ahura kernel arch: arm/cortex_m33
 ```
 
 Override it with `-DOS_ARCH_VARIANT=cortex_m4` if that guess is ever wrong.

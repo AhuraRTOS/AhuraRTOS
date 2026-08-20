@@ -3,6 +3,9 @@
 [← Documentation index](README.md) · [Installation](installation.md) ·
 [Vendor notes](vendor-notes.md)
 
+> On a Raspberry Pi Pico instead? The same two installers exist for the Pico SDK
+> - see **[Raspberry Pi Pico SDK](pico-sdk.md)**.
+
 The [six general installation steps](installation.md) carried out on real ST
 hardware. **Three ways to do it - pick one:**
 
@@ -65,8 +68,14 @@ Exactly the manual steps below, in the same order:
 | Option | Effect |
 |---|---|
 | `--dry-run` | Print the diff and stop. Writes nothing |
-| `--yes` | Skip the confirmation |
+| `--yes`, `-y` | Skip the confirmation |
+| `--app-dir DIR` | Which source tree to install into, on a dual-core part |
+| `--tick external` | Drive `os_tick_handler()` from your own timer instead of SysTick |
+| `--ref REF` | Branch or tag to download (default: `main`) |
+| `--project DIR` | Project root (default: the current directory) |
+| `--source PATH` | Use this checkout instead of downloading |
 | `--update` | Replace an `AhuraRTOS/` already in the project with the current version |
+| `--force-templates` | Overwrite an existing `os_config.h` / `os_cb.c` / `os_main.c` |
 | `--uninstall` | Take the whole integration back out |
 
 They go after the `-`, which is where the pipe leaves room for the script's own
@@ -453,7 +462,7 @@ cmake --build build/Debug
 The configure log should end with the kernel naming its port:
 
 ```text
--- Ahura kernel arch: cortex_m33
+-- Ahura kernel arch: arm/cortex_m33
 Memory region         Used Size  Region Size  %age Used
              RAM:        7856 B        32 KB     23.97%
            FLASH:       35320 B       128 KB     26.95%

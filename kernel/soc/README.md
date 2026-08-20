@@ -3,8 +3,7 @@
 Optional per-silicon support, selected with one CMake variable:
 
 ```cmake
-| `raspberrypi/rp2040` | RP2040 (Pico, Pico W) |
-| `raspberrypi/rp235x_arm` | RP2350, RP2354 - Arm cores (Pico 2) |
+set(AHURA_SOC raspberrypi/rp235x_arm)
 ```
 
 A package answers the questions that are **facts about the chip** rather than
@@ -42,7 +41,9 @@ CMake dispatch never need a special case.
 
 | `AHURA_SOC` | Parts | Contributes |
 |---|---|---|
-| `st/stm32` | Every STM32 | Nothing: CMSIS-Pack startup already satisfies the kernel. See its README |
+| [`raspberrypi/rp235x_arm`](raspberrypi/rp235x_arm/README.md) | RP2350, RP2354 - Arm cores (Pico 2) | `isr_pendsv`, `isr_systick`, `SystemCoreClock`, core id, doorbell IPI, SIO spinlocks |
+| [`raspberrypi/rp2040`](raspberrypi/rp2040/README.md) | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO |
+| [`st/stm32`](st/stm32/README.md) | Every STM32 | Nothing: CMSIS-Pack startup already satisfies the kernel. See its README |
 
 ## Writing one
 
