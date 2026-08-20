@@ -46,6 +46,11 @@ Three things have to line up, and the build says clearly if any is missing:
    An `os_cb.c` copied before that guard existed needs the same condition added.
    Nothing is lost: the suite's own PASS/FAIL report goes to `printf`, not
    through that callback.
+4. On multi-core builds, leave `OS_CONFIG_LOG_CORE_AFFINITY` at the template
+   default `OS_TASK_CORE(0)`. The log overrun checks flood from core 0 and
+   count on `tsk_log` being starved there (it runs at a lower priority on the
+   same core); with `OS_TASK_CORE_ANY` the drain task can run on the other core
+   in parallel, the ring never overflows, and the four drop-related checks fail.
 
 [Running the self-test suite](self-test.md)
 has the full run-through, including how to derive point 2 from point 1 in CMake

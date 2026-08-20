@@ -116,6 +116,7 @@ Every one of these is described in full, with the mechanism behind it, in the
 |---|---|
 | **[Installation](doc/installation.md)** | **Start here.** The manual install with CMake: six steps, any vendor, IDE and build system. Get the source, copy three files, add them to the build, route the tick, check `PendSV`, boot |
 | **[STM32CubeMX / CubeIDE](doc/stm32cubemx.md)** | On ST tooling, two ways: **[automatic](doc/stm32cubemx.md#automatic---one-command)** - one command does the lot - or **[manual](doc/stm32cubemx.md#manual---step-by-step)**, checkbox by checkbox on real hardware |
+| **[Raspberry Pi Pico SDK](doc/soc.md)** | RP2040, RP2350 and RP2354. One command - `install_rpi_online.py` - detects the board and does the lot, or `install_rpi_offline.py` from a local copy: the SoC package supplies the vector names and the tick, so there is no PendSV or SysTick step to do by hand |
 | [Vendor notes](doc/vendor-notes.md) | The one thing that differs per vendor, and what to do about it |
 | [Self-test suite](doc/self-test.md) | Prove a fresh port before writing anything on top of it |
 

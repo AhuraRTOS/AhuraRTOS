@@ -252,9 +252,14 @@
 #define OS_CONFIG_TIMER_PRIORITY            OS_TASK_PRIO_MAX
 
 /* Which cores the timer task (and so the timer callbacks) may run on:
- * a core-affinity bitmask, 0 = any core. Only meaningful when
- * OS_CONFIG_CORE_COUNT (PART 3) > 1; keep 0 on single-core builds. */
-#define OS_CONFIG_TIMER_CORE_AFFINITY       0U
+ * a core-affinity bitmask; OS_TASK_CORE_ANY (0) = any core.
+ *
+ * Default OS_TASK_CORE(0) because core 0 owns the time base and the priority
+ * relationship between timer callbacks and the application's core-0 tasks
+ * then means what it says. Only meaningful when OS_CONFIG_CORE_COUNT
+ * (PART 3) > 1; OS_TASK_CORE(0) is accepted - and ignored - on a single-core
+ * build, so one value serves both. */
+#define OS_CONFIG_TIMER_CORE_AFFINITY       OS_TASK_CORE(0)
 
 /*
  * ***********************************************************************************************************
@@ -367,16 +372,19 @@
  *              lines are truncated, never overflowed.
  * TASK_*       tsk_log, which drains the ring and calls os_log_output_cb(). Its stack must hold
  *              that callback. Keep the priority low: logging must never preempt real work.
- *              CORE_AFFINITY places the drain task on multi-core builds; OS_TASK_CORE_ANY lets
- *              it follow the work, a fixed core keeps its priority relationship to one core's
- *              tasks meaningful.
+ *              CORE_AFFINITY places the drain task on multi-core builds. Default
+ *              OS_TASK_CORE(0): a fixed core keeps the drain's priority relationship to that
+ *              core's tasks meaningful - which the self-test's overrun checks depend on (they
+ *              flood from core 0 and count on tsk_log being starved there). OS_TASK_CORE_ANY
+ *              lets it follow the work instead, but the suite then fails its drop checks on
+ *              multi-core. OS_TASK_CORE(0) is accepted - and ignored - on a single-core build.
  */
 #define OS_CONFIG_LOG_LEVEL                 OS_LOG_LEVEL_INFO
 #define OS_CONFIG_LOG_BUFFER_SIZE           1024U
 #define OS_CONFIG_LOG_LINE_MAX              128U
 #define OS_CONFIG_LOG_TASK_STACK_SIZE       512U
 #define OS_CONFIG_LOG_TASK_PRIORITY         OS_TASK_PRIO_1
-#define OS_CONFIG_LOG_CORE_AFFINITY         OS_TASK_CORE_ANY
+#define OS_CONFIG_LOG_CORE_AFFINITY         OS_TASK_CORE(0)
 
 /*
  * ***********************************************************************************************************

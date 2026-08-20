@@ -183,7 +183,11 @@ task may run:
   preemption and round-robin. CPU usage through `os_cpu_usage_get` samples core 0.
 - The kernel service tasks are placed with `OS_CONFIG_TIMER_CORE_AFFINITY` and
   `OS_CONFIG_LOG_CORE_AFFINITY`, core-affinity bitmasks where 0 means any core,
-  so timer callbacks and deferred calls run where the config says.
+  so timer callbacks and deferred calls run where the config says. The template
+  defaults both to `OS_TASK_CORE(0)`: core 0 owns the time base, and a fixed
+  core keeps each service task's priority relationship to the core-0 tasks
+  meaningful. `OS_TASK_CORE(0)` is accepted - and ignored - on single-core
+  builds.
 - Critical sections are the local interrupt mask plus a global kernel spinlock
   with per-core nesting. The spinlock uses `LDREX/STREX` on ARMv7-M and ARMv8-M,
   while ARMv6-M multi-core SoCs such as the RP2040 must provide
