@@ -31,7 +31,7 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | **Debugging** | `OS_ASSERT` · `os_assert_failed_cb` · `OS_LOG_ERROR` / `OS_LOG_WARN` / `OS_LOG_INFO` / `OS_LOG_DEBUG` · `os_log_write` · `os_log_dropped_get` · `os_log_output_cb` |
 | **Intrusive list** | `os_list_init` · `os_list_is_empty` · `os_list_push_back` · `os_list_pop_front` · `os_list_remove` · `os_list_insert_before` |
 | **Tickless idle** | `os_tickless_idle_process` · `os_tickless_expected_idle_ticks_get` · `os_tickless_max_suppressed_ticks_get` |
-| **Application-provided** | `os_main` · `os_test` · `os_tickless_pre_sleep_cb` · `os_tickless_post_sleep_cb` · `os_arch_tz_context_save_cb` · `os_arch_tz_context_restore_cb` · `os_arch_core_id_get_cb` · `os_arch_core_ipi_request_cb` |
+| **Application-provided** | `os_main` · `os_test` · `os_tickless_pre_sleep_cb` · `os_tickless_post_sleep_cb` · `os_arch_tz_context_save_cb` · `os_arch_tz_context_restore_cb` · `os_arch_core_id_get_cb` · `os_arch_core_ipi_request_cb` · `os_arch_handler_stack_top_cb` · `os_arch_handler_stack_limit_cb` |
 
 Helper macros: `OS_TASK_DEFINE` (name, stack and handle), `OS_TASK_CONFIG` (what
 the task does), `OS_TICKS_FROM_MS`, `OS_WAIT_NOTHING`, and `OS_WAIT_FOREVER`.

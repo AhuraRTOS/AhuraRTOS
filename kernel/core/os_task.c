@@ -917,6 +917,28 @@ void os_task_tick_update(uint32_t elapsed_ticks)
             tcb->delay_ticks = 0U;
             os_task_unlink(tcb);
             os_task_make_ready(tcb);
+
+            /* Tell whichever core may run it, exactly as every other wake path does. Making a
+             * task READY only puts it in a list; something still has to look.
+             *
+             * Single-core needs no more than the reschedule check at the end of
+             * os_tick_handler, which is why this line was missing and why nothing noticed.
+             * Across cores that check is worthless: it runs on THIS core and asks only about
+             * THIS core's running task, so a task pinned elsewhere was woken here and its own
+             * core was never told. It then waited for that core's next tick to poll the ready
+             * bitmap and happen to notice - and if that core was idle in a WFI/WFE, the poll
+             * that would have found it was itself what needed waking. The task stayed READY
+             * and its core stayed asleep, each waiting for the other.
+             *
+             * That is not a latency bug, it is the wake being lost outright: a core that goes
+             * quiet mid-run and never comes back, with everything else still running normally.
+             * Safe here for the same reason it is safe in os_task_wake_locked - the caller
+             * holds the cross-core spinlock, which is what makes reading os_task_current[]
+             * inside meaningful, and the IPI callback takes no lock of its own. */
+            if (os_kernel_is_running())
+            {
+                os_task_preempt_request(tcb);
+            }
         }
 
         node = next_node;
@@ -1766,7 +1788,7 @@ void os_task_exit(void)
     /* Deletion switches away; if it could not (pre-scheduler misuse), park. */
     while (1)
     {
-        OS_ARCH_IDLE();
+        os_arch_soc_idle_cb();
     }
 }
 
@@ -2302,7 +2324,7 @@ static void os_task_idle_entry(void *context)
 
     while (1)
     {
-        OS_ARCH_IDLE();
+        os_arch_soc_idle_cb();
     }
 }
 

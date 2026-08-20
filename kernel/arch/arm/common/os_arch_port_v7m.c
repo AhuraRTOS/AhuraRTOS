@@ -142,11 +142,19 @@ OS_ARCH_STRINGIFY(OS_CONFIG_ARCH_PENDSV_HANDLER) ":\n"
 
 "1:\n"                                     /* first start: nothing to save */
 "    bl      os_task_stack_select_next\n"  /* r0 = first task stack pointer */
-"    movw    r1, #0xED08\n"                /* reset MSP to the vector-table initial value; */
+#if (OS_CONFIG_CORE_COUNT > 1U)
+"    mov     r5, r0\n"                     /* keep the task stack pointer across the calls below */
+"    bl      os_arch_core_id_get_cb\n"     /* r0 = this core's id */
+"    bl      os_arch_handler_stack_top_cb\n" /* r0 = this core's handler stack top */
+"    msr     msp, r0\n"                    /* abandon the boot context, including the frame this  */
+"    mov     r0, r5\n"                     /* exception pushed - the return below unstacks from   */
+#else                                      /* PSP instead. Single-core: the vector-table value    */
+"    movw    r1, #0xED08\n"                /* is exactly this core's stack, and always was.      */
 "    movt    r1, #0xE000\n"                /* the boot (main) context is abandoned here,   */
 "    ldr     r1, [r1]\n"                   /* including the frame this exception pushed -  */
 "    ldr     r1, [r1]\n"                   /* the return below unstacks from PSP instead   */
 "    msr     msp, r1\n"
+#endif
 "    b       os_arch_context_restore_asm\n"
 
 ".global os_arch_context_restore_asm\n"

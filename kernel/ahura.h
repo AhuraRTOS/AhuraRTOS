@@ -1734,7 +1734,51 @@ uint32_t os_arch_core_id_get_cb(void);
  */
 void os_arch_core_ipi_request_cb(uint32_t core_id);
 
+/******************************************************************************************************/
+/**
+ * @brief Multi-core SoC callback: boot a secondary core so it reaches os_core_start().
+ *        Called by os_start(), once per core above 0. REQUIRED when OS_CONFIG_CORE_COUNT is
+ *        above 1; the kernel ships no default.
+ */
+void os_arch_core_launch_cb(uint32_t core_id);
+
+/******************************************************************************************************/
+/**
+ * @brief Multi-core SoC callback: print whatever the SoC package knows about its own bring-up.
+ *        Called only when something has already gone wrong, so it may take its time.
+ *
+ * Optional - the kernel ships a weak empty default, so a package that has nothing to add costs
+ * nothing. It exists because the kernel cannot diagnose a chip: whether a core was released, which
+ * inter-core interrupt was armed, what a fault handler caught are all facts only the package
+ * holds, and the failures they cause look identical from the kernel's side.
+ *
+ * Called from task context with the kernel running, which is deliberate: the natural moment for a
+ * package to report is start-up, and on a USB-console board nothing printed then is ever seen -
+ * the host has not opened the port yet. This runs late enough to be read.
+ */
+void os_arch_soc_diagnose_cb(void);
+
 #endif /* OS_CONFIG_CORE_COUNT > 1U */
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: wait for work on an idle core. Optional - the kernel's weak default is a
+ *        plain WFI, which is right on most parts.
+ *
+ * It exists because "how a core waits, and what wakes it" is a fact about the silicon rather than
+ * the architecture, and on some parts WFI is the wrong instrument. On the RP2 family WFI gates the
+ * core's clock, which stops that core's own SysTick with it: an idle secondary core then has no
+ * timer of its own left and depends entirely on an inter-core interrupt arriving. Miss one and the
+ * core sleeps for good.
+ *
+ * WFE is the answer there, because the event register LATCHES: an SEV that arrives before the WFE
+ * makes it return immediately, so the wake cannot be lost in the window between deciding to sleep
+ * and sleeping. A package overriding this should pair it with an SEV wherever it signals another
+ * core. FreeRTOS's own RP2040 SMP port makes the same choice for the same reason.
+ *
+ * May return spuriously; the idle loop simply calls it again.
+ */
+void os_arch_soc_idle_cb(void);
 
 /*
  * ***********************************************************************************************************

@@ -38,6 +38,13 @@ What differs between vendors is only their *tooling* - specifically whether the
 code generator emits a competing `PendSV_Handler` - and
 [Vendor notes](vendor-notes.md) covers it, vendor by vendor.
 
+Parts that genuinely need silicon-specific glue - a non-CMSIS vector name,
+inter-core signalling, hardware spinlocks - can have it packaged under
+`kernel/soc/<vendor>/<family>/` instead of hand-written into every project. That
+layer is optional and additive: with no package the kernel builds exactly as it
+always has, which is what keeps the claim above true. See
+[SoC packages](soc.md).
+
 STM32 is the primary bring-up and testing target, because that is the hardware
 on hand - not because anything in the kernel is STM32-specific.
 
@@ -68,9 +75,10 @@ rest - are already covered by the ARM ports today: what a new port adds is a new
 
 ## Experimental
 
-- **Multi-core (SMP) scheduling.** Per-task core affinity across shared ready
-  lists. Compiles and is exercised in CI, but has not run on real multi-core
-  silicon.
+- **Multi-core (SMP) on the RP2040.** The ARMv6-M SMP glue (SIO hardware
+  spinlocks, the FIFO IPI) compiles and is exercised in CI, but has not run on
+  real multi-core silicon. The same kernel paths ARE verified on the RP2350's
+  dual Cortex-M33 - see the [RP2350 package](soc.md).
 - **Tickless idle.** Real SysTick suppression is implemented on the ARMv8-M
   mainline port; the v6m and v7m ports still need the same change, and the idle
   task does not yet call into it.

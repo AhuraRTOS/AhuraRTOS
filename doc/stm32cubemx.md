@@ -31,13 +31,13 @@ and the `.ioc`.
 **Windows** (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32.py | python -
+irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python -
 ```
 
 **Linux and macOS** (bash, zsh):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32.py | python3 -
+curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python3 -
 ```
 
 That is the whole thing. It prints the exact diff it wants to apply and waits
@@ -73,7 +73,7 @@ They go after the `-`, which is where the pipe leaves room for the script's own
 arguments:
 
 ```bash
-curl -fsSL .../tools/install_stm32.py | python3 - --dry-run
+curl -fsSL .../tools/install_stm32_online.py | python3 - --dry-run
 ```
 
 ### Running it twice
@@ -157,7 +157,7 @@ That is the whole procedure. It finds the kernel beside itself, reads the
 project, prints the same diff and waits for a `y` - exactly like the online
 installer, because it *is* the online installer: everything that reads the
 project, computes the edits and writes them with rollback is imported from
-`install_stm32.py`. Only the "where does the kernel come from" step differs, so
+`install_stm32_online.py`. Only the "where does the kernel come from" step differs, so
 the two cannot drift apart.
 
 A ZIP download unpacks as `AhuraRTOS-main/` rather than `AhuraRTOS/`. That works

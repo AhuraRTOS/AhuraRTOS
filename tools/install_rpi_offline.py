@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """
-Install AhuraRTOS into an STM32CubeMX-generated CMake project, offline.
+Install AhuraRTOS into a Raspberry Pi Pico SDK project, offline.
 
-The companion to install_stm32_online.py, for a machine with no internet access - an
+The companion to install_rpi_online.py, for a machine with no internet access - an
 air-gapped lab, a locked-down corporate network, a build agent with no route
 out. It performs exactly the same six-step installation and produces a
 byte-identical result; the only difference is where the kernel comes from.
 
-    install_stm32_online.py           downloads the repository when it cannot find one
-    install_stm32_offline.py   only ever uses a copy already on this machine
+    install_rpi_online.py           downloads the repository when it cannot find one
+    install_rpi_offline.py   only ever uses a copy already on this machine
 
 Nothing here imports urllib, tarfile or socket, so "offline" is a property of
 the file rather than a promise in a comment.
@@ -17,19 +17,19 @@ the file rather than a promise in a comment.
 USAGE
 
 Download the repository on a machine that has a connection (git clone, or the
-"Download ZIP" button on GitHub), copy it into the root of your CubeMX project,
+"Download ZIP" button on GitHub), copy it into the root of your Pico project,
 and run it:
 
     MyProject/
-    |- CMakeLists.txt          <- the top-level one CubeMX generated
-    |- MyProject.ioc
-    |- Core/
+    |- CMakeLists.txt          <- the top-level one
+    |- pico_sdk_import.cmake
+    |- main.c
     |- AhuraRTOS/              <- the repository you copied in
        |- kernel/
-       |- tools/install_stm32_offline.py
+       |- tools/install_rpi_offline.py
 
     cd MyProject
-    python3 AhuraRTOS/tools/install_stm32_offline.py
+    python3 AhuraRTOS/tools/install_rpi_offline.py
 
 That is the whole procedure. The script finds the kernel beside itself, reads
 the project, prints the diff and asks before writing anything.
@@ -47,15 +47,13 @@ Options are the same as the online installer, minus --ref (nothing to fetch):
     --uninstall          take the integration back out
     --source PATH        use this checkout, wherever it is
     --project DIR        project root (default: the current directory)
-    --app-dir DIR        which source tree to install into, on a dual-core part
-    --tick external      drive os_tick_handler() from your own timer
     --update             refresh AhuraRTOS/ in the project from --source
     --force-templates    overwrite an existing os_config.h / os_cb.c / os_main.c
 
-HOW IT RELATES TO install_stm32_online.py
+HOW IT RELATES TO install_rpi_online.py
 
 Everything that reads the project, computes the edits, prints the diff and
-writes with rollback lives in install_stm32_online.py and is imported from there. This
+writes with rollback lives in install_rpi_online.py and is imported from there. This
 file contains only what is genuinely different: finding a local checkout, and
 the rule below. Duplicating the editing logic would mean two installers that
 drift apart, and the one nobody runs on a network-connected machine is the one
@@ -80,7 +78,7 @@ import sys
 from pathlib import Path
 
 # Where the repository is installed inside the project. Not configurable, and
-# deliberately: install_stm32_online.py hardcodes the same name when it writes the
+# deliberately: install_rpi_online.py hardcodes the same name when it writes the
 # CMake block, so a second path here would produce a project the online
 # installer could no longer recognise or uninstall.
 INSTALL_DIRNAME = "AhuraRTOS"
@@ -93,7 +91,7 @@ SOURCE_GLOB = "AhuraRTOS*"
 class Fatal(Exception):
     """A problem the user has to fix before anything can be written.
 
-    Declared here as well as in install_stm32_online.py because the repository has to
+    Declared here as well as in install_rpi_online.py because the repository has to
     be located before that module can be imported from it - so this file needs
     a way to fail before it has the shared one. resolve_module() replaces it
     with the shared class the moment one is available, and everything raised
@@ -104,7 +102,7 @@ class Fatal(Exception):
 def looks_like_ahura(path: Path) -> bool:
     """A usable AhuraRTOS tree: the kernel and the templates that get copied.
 
-    Deliberately the same two-file test install_stm32_online.py uses. It is duplicated
+    Deliberately the same two-file test install_rpi_online.py uses. It is duplicated
     rather than imported for the reason above - this is what decides WHICH tree
     to import from - and it is two lines that cannot drift meaningfully.
     """
@@ -122,7 +120,7 @@ def find_repo(source: str, root: Path, script: Path) -> Path:
          error, never a reason to go looking elsewhere - silently installing
          some other copy is how the wrong kernel version ends up in a build.
       2. The checkout this script is running from. Running
-         AhuraRTOS/tools/install_stm32_offline.py means the kernel beside it is
+         AhuraRTOS/tools/install_rpi_offline.py means the kernel beside it is
          the one being asked for.
       3. <project>/AhuraRTOS - already installed, or copied in by hand.
       4. <project>/AhuraRTOS* - a ZIP download still under its branch name.
@@ -143,7 +141,7 @@ def find_repo(source: str, root: Path, script: Path) -> Path:
 
     candidates = []
 
-    # The tree this file lives in: tools/install_stm32_offline.py -> repo root.
+    # The tree this file lives in: tools/install_rpi_offline.py -> repo root.
     # Only when __file__ is a real file on disk: piped into Python it is the
     # literal string "<stdin>" and would resolve against the working directory.
     if script.is_file():
@@ -182,7 +180,7 @@ def find_repo(source: str, root: Path, script: Path) -> Path:
 
 
 def resolve_module(repo: Path):
-    """Import install_stm32_online.py out of the located checkout.
+    """Import install_rpi_online.py out of the located checkout.
 
     Loaded by path rather than by name so it is found whether this script is
     run from tools/ or was copied to the project root, and so the module always
@@ -194,15 +192,15 @@ def resolve_module(repo: Path):
     """
     global Fatal
 
-    module_path = repo / "tools" / "install_stm32_online.py"
+    module_path = repo / "tools" / "install_rpi_online.py"
     if not module_path.is_file():
         raise Fatal(
-            "{} has no tools/install_stm32_online.py in it.\n"
+            "{} has no tools/install_rpi_online.py in it.\n"
             "  The offline installer reuses that file for everything except finding\n"
             "  the kernel, so the checkout has to be complete. Re-download it."
             .format(repo))
 
-    spec = importlib.util.spec_from_file_location("install_commoner_stm32", module_path)
+    spec = importlib.util.spec_from_file_location("install_commoner_rpi", module_path)
     if spec is None or spec.loader is None:
         raise Fatal("could not load {}".format(module_path))
 
@@ -250,19 +248,18 @@ def resolve_module(repo: Path):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        prog="install_stm32_offline.py",
-        description="Install AhuraRTOS into an STM32CubeMX-generated CMake project "
-                    "from a local copy of the repository. Never uses the network. "
-                    "Run it from the project root; it never touches the .ioc.")
+        prog="install_rpi_offline.py",
+        description="Install AhuraRTOS into a Raspberry Pi Pico SDK project (RP2040, "
+                    "RP2350, RP2354) from a local copy of the repository. Never uses "
+                    "the network. Run it from the project root.")
     parser.add_argument("--project", default=".", metavar="DIR",
                         help="project root (default: the current directory)")
-    parser.add_argument("--app-dir", metavar="DIR",
-                        help="which source tree to install into, on a dual-core part")
     parser.add_argument("--source", metavar="PATH",
                         help="the AhuraRTOS checkout to install from (default: found "
                              "beside this script, then in or next to the project)")
-    parser.add_argument("--tick", choices=("systick", "external"), default="systick",
-                        help="tick source (default: systick)")
+    parser.add_argument("--soc", metavar="PKG",
+                        help="SoC package to install (default: chosen from PICO_PLATFORM / "
+                             "PICO_BOARD); raspberrypi/rp2040 or raspberrypi/rp235x_arm")
     parser.add_argument("--update", action="store_true",
                         help="refresh an AhuraRTOS/ already in the project from the "
                              "source checkout (otherwise it is left as it is)")
@@ -286,7 +283,7 @@ def main(argv=None) -> int:
         # the project's own copy, before any search runs.
         if args.uninstall:
             module = resolve_module(_repo_for_uninstall(root, script, args.source))
-            project = module.Project(root, args.app_dir)
+            project = module.Project(root, args.soc)
             _banner(module, project, root, None)
 
             edits = module.plan_uninstall(project)
@@ -304,9 +301,9 @@ def main(argv=None) -> int:
         repo = find_repo(args.source, root, script)
         module = resolve_module(repo)
 
-        project = module.Project(root, args.app_dir)
+        project = module.Project(root, args.soc)
         _banner(module, project, root, repo)
-        project.check(args.tick)
+        project.check()
 
         destination = root / INSTALL_DIRNAME
         in_place = _same_path(repo, destination)
@@ -326,7 +323,7 @@ def main(argv=None) -> int:
         copy_tree = (not in_place) and ((not installed) or args.update)
 
         edits, copies, notes = module.plan(
-            project, repo, args.tick, args.force_templates, copy_tree=copy_tree)
+            project, repo, args.force_templates, copy_tree=copy_tree)
 
         # When nothing is copied, plan() explains it in terms of DOWNLOADING a
         # current version - which is the one thing this installer will never
@@ -362,7 +359,7 @@ def main(argv=None) -> int:
 
 
 def _repo_for_uninstall(root: Path, script: Path, source: str) -> Path:
-    """A checkout to load install_stm32_online.py from, for --uninstall only.
+    """A checkout to load install_rpi_online.py from, for --uninstall only.
 
     Uninstalling must keep working after the source has been deleted, so this
     accepts anything that can supply the module and says so plainly when it
@@ -372,11 +369,11 @@ def _repo_for_uninstall(root: Path, script: Path, source: str) -> Path:
     for candidate in (Path(source).expanduser() if source else None,
                       script.resolve().parent.parent if script.is_file() else None,
                       root / INSTALL_DIRNAME):
-        if candidate is not None and (candidate / "tools" / "install_stm32_online.py").is_file():
+        if candidate is not None and (candidate / "tools" / "install_rpi_online.py").is_file():
             return candidate
 
     raise Fatal(
-        "cannot uninstall: no copy of tools/install_stm32_online.py to work from.\n"
+        "cannot uninstall: no copy of tools/install_rpi_online.py to work from.\n"
         "  Uninstalling only edits your project, but it reuses that file to do it.\n"
         "  Point at any AhuraRTOS checkout with --source PATH, or remove the blocks\n"
         "  by hand - each one is marked '>>> AhuraRTOS BEGIN' ... '<<< AhuraRTOS END'.")
@@ -402,12 +399,11 @@ def _banner(module, project, root: Path, repo):
     print("  project   {}".format(root))
     if repo is not None:
         print("  kernel    {}".format(module.relative(repo, root)))
-    if project.mcu:
-        print("  device    {}{}".format(
-            project.mcu, " ({})".format(project.core) if project.core else ""))
+    if project.board:
+        print("  board     {}".format(project.board))
+    print("  soc       {}".format(project.soc))
     print("  target    {}".format(project.target))
-    print("  sources   {} / {}".format(module.relative(project.main_c, root),
-                                       module.relative(project.it_c, root)))
+    print("  sources   {}".format(module.relative(project.main_c, root)))
     print()
 
 

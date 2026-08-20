@@ -53,7 +53,9 @@ thing: a periodic call to `os_tick_handler()`. It claims no `SVC_Handler`, no
   benchmark table.
 - **Broad Cortex-M coverage.** M0/M0+/M23, M3/M4/M7, and M33/M35P/M52/M55/M85
   all share just three portable port implementations.
-- **Experimental:** multi-core (SMP) scheduling and tickless idle.
+- **Experimental:** tickless idle. Multi-core (SMP) scheduling is verified on
+  the RP2350's dual Cortex-M33; the RP2040's ARMv6-M path has not run on
+  silicon.
 
 **No dynamic allocation anywhere in the kernel itself.** Task control blocks,
 ready lists, timer objects, the log ring and the optional heap are all static.

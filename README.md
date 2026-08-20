@@ -103,7 +103,7 @@ software timers plus caller-owned deferred-call pools, all delivered on one
 service task so callbacks run in task context · an optional first-fit kernel heap with
 coalescing · stack watermarking, stack-overflow detection, mutex deadlock
 detection and CPU-load sampling · buffered logging that never stalls the caller ·
-experimental multi-core scheduling and tickless idle.
+multi-core (SMP) scheduling verified on the RP2350 · experimental tickless idle.
 
 Every one of these is described in full, with the mechanism behind it, in the
 [kernel reference](doc/kernel.md).
@@ -135,9 +135,12 @@ Every one of these is described in full, with the mechanism behind it, in the
 AhuraRTOS/
 ├── doc/        <- the documentation above
 ├── kernel/     <- the kernel: core, arch ports, templates, self-test suite
+│   └── soc/    <- optional per-silicon packages, <vendor>/<family> (see doc/soc.md)
 ├── examples/   <- one runnable main per feature
-├── tools/      <- install_stm32.py, the one-command CubeMX installer
-│               (install_stm32_offline.py for machines with no internet)
+├── tools/      <- one-command installers: install_stm32_online.py (CubeMX) and
+│               install_rpi_online.py (Pico SDK), each with an _offline twin
+│               for machines with no internet, over a shared install_common.py
+├── CSTYLE.md   <- the C style every file here is written to
 ├── LICENSE
 └── README.md   <- this file
 ```

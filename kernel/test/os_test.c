@@ -32,6 +32,30 @@
 static uint32_t os_test_pass_count = 0U;
 static uint32_t os_test_fail_count = 0U;
 
+/* OS_TASK_CONFIG takes a core affinity only when OS_CONFIG_CORE_COUNT is above 1 - the kernel
+ * makes that a compile error at every creation site on purpose, so raising the core count is a
+ * real port rather than a config edit. This suite has 53 such sites and none of them cares
+ * where it runs, so it says so once here and stays buildable at either core count.
+ *
+ * A test that DOES care about placement uses OS_TASK_CONFIG directly, inside a
+ * #if (OS_CONFIG_CORE_COUNT > 1U) block - see test_multicore(). */
+#if (OS_CONFIG_CORE_COUNT == 1U)
+#define TEST_TASK_CONFIG(entry, context, priority) \
+    OS_TASK_CONFIG((entry), (context), (priority))
+#else
+/* PINNED TO CORE 0, not OS_TASK_CORE_ANY, and for now that is an experiment rather than a
+ * decision. With ANY, this suite hangs at a different point in Task Lifecycle on almost every run
+ * - sometimes a fault, sometimes a task that never runs, sometimes a dead stop with no output.
+ * Non-determinism at that scale is a race, and the only thing ANY adds is migration between cores.
+ *
+ * Pinning removes exactly that variable while leaving core 1 busy with its own pinned worker, so
+ * the two cores still contend for the kernel's locks. If the suite then runs clean, the fault is
+ * in migration specifically; if it still breaks, migration is innocent and the contention itself
+ * is at fault. Either answer is worth more than another run of the same test. */
+#define TEST_TASK_CONFIG(entry, context, priority) \
+    OS_TASK_CONFIG((entry), (context), (priority), OS_TASK_CORE(0))
+#endif
+
 #define AHURA_TEST_CHECK(cond, fmt, ...) \
     do { \
         if (cond) { os_test_pass_count++; printf("  [PASS] " fmt "\r\n", ##__VA_ARGS__); } \
@@ -483,6 +507,35 @@ static void test_benchmarks(void);
 static void test_tickless_hooks(void);
 static void test_tickless_sleep(void);
 static void test_list(void);
+#if (OS_CONFIG_CORE_COUNT > 1U)
+static void test_multicore(void);
+static void test_multicore_watch(uint32_t watch_ms, const char *when);
+static void test_smp_critical_nested(void);
+#if (OS_CONFIG_ATOMIC_ENABLE == 1U)
+static void test_smp_atomic_contention(void);
+#endif
+#if (OS_CONFIG_NOTIFY_ENABLE == 1U)
+static void test_smp_notify_pingpong(void);
+#endif
+#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+static void test_smp_semaphore_pingpong(void);
+#endif
+#if (OS_CONFIG_QUEUE_ENABLE == 1U)
+static void test_smp_queue_accounting(void);
+#endif
+#if (OS_CONFIG_EVENT_ENABLE == 1U)
+static void test_smp_event_pingpong(void);
+#endif
+static void test_smp_migration(void);
+static void test_smp_lock_independent(void);
+static void test_smp_task_churn(void);
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+static void test_smp_deferred_submit(void);
+#endif
+#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
+static void test_smp_soak_mixed(void);
+#endif
+#endif
 static void test_unsupported_features(void);
 #if (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_MUTEX_ENABLE == 1U)
 static void test_pipeline_producer_entry(void *context);
@@ -751,7 +804,7 @@ static os_err_t test_spawn_helper(helper_role_t role, uint32_t hold_ms, uint32_t
     os_test_helper_ctx.bits    = bits;
     os_test_helper_ctx.value   = value;
 
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_helper_entry, NULL, 3U));
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_helper_entry, NULL, 3U));
     if (status != OS_ERR_NONE)
     {
         return status;
@@ -826,19 +879,42 @@ static void test_critical_section(void)
     /* os_arch_kernel_mask_active reads PRIMASK or BASEPRI depending on
      * OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY, so the checks hold in both
      * kernel mask modes. */
-    AHURA_TEST_CHECK(os_arch_kernel_mask_active() == 0U, "the kernel mask is lowered before entering a critical section");
+    /* Every reading is taken first and printed afterwards. Printing from INSIDE the section is
+     * what this test used to do, and on a multi-core build it is not merely slow - it is a
+     * correctness bug in the test itself:
+     *
+     * os_critical_enter() takes the cross-core kernel spinlock with interrupts masked. printf on
+     * this board goes to USB CDC, which waits on the host and can take a very long time. While it
+     * does, the OTHER core's SysTick lands, calls os_task_reschedule_possible(), and spins on that
+     * same spinlock - inside an interrupt handler, with its own interrupts masked. Its ticks
+     * coalesce and it stops scheduling entirely.
+     *
+     * The rule this restores is the one every kernel states about critical sections: keep them
+     * short and never block inside one. A test that breaks that rule is not testing the kernel,
+     * it is testing what the kernel does when misused. */
+    bool before  = (os_arch_kernel_mask_active() == 0U);
+    bool outer;
+    bool nested;
+    bool inner_exit;
+    bool after;
 
     os_critical_enter();
-    AHURA_TEST_CHECK(os_arch_kernel_mask_active() != 0U, "os_critical_enter() raises the kernel mask");
+    outer = (os_arch_kernel_mask_active() != 0U);
 
     os_critical_enter(); /* nested */
-    AHURA_TEST_CHECK(os_arch_kernel_mask_active() != 0U, "a nested os_critical_enter() keeps the kernel mask raised");
+    nested = (os_arch_kernel_mask_active() != 0U);
 
     os_critical_exit(); /* inner exit: outer level still held */
-    AHURA_TEST_CHECK(os_arch_kernel_mask_active() != 0U, "exiting the inner level keeps the kernel mask raised (nesting works)");
+    inner_exit = (os_arch_kernel_mask_active() != 0U);
 
     os_critical_exit(); /* outer exit */
-    AHURA_TEST_CHECK(os_arch_kernel_mask_active() == 0U, "the matching outer os_critical_exit() lowers the kernel mask");
+    after = (os_arch_kernel_mask_active() == 0U);
+
+    AHURA_TEST_CHECK(before, "the kernel mask is lowered before entering a critical section");
+    AHURA_TEST_CHECK(outer, "os_critical_enter() raises the kernel mask");
+    AHURA_TEST_CHECK(nested, "a nested os_critical_enter() keeps the kernel mask raised");
+    AHURA_TEST_CHECK(inner_exit, "exiting the inner level keeps the kernel mask raised (nesting works)");
+    AHURA_TEST_CHECK(after, "the matching outer os_critical_exit() lowers the kernel mask");
 }
 
 /******************************************************************************************************/
@@ -851,7 +927,7 @@ static void test_task_lifecycle(void)
     test_print_section("Task Lifecycle");
 
     /* --- Reject invalid creation parameters (should not touch any handle). --- */
-    cfg = *OS_TASK_CONFIG(test_worker_entry, NULL, 1U);
+    cfg = *TEST_TASK_CONFIG(test_worker_entry, NULL, 1U);
 
     cfg.priority = 0U;
     AHURA_TEST_CHECK(os_task_create(&helper, &cfg) == OS_ERR_INVALID_ARG,
@@ -891,7 +967,7 @@ static void test_task_lifecycle(void)
     os_test_worker_counter    = 0U;
     os_test_worker_should_run = true;
 
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_worker_entry, NULL, 1U));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_worker_entry, NULL, 1U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "os_task_create() creates the worker task");
     AHURA_TEST_CHECK(os_task_state_get(&worker) == OS_TASK_STATE_SUSPENDED,
                       "a created-but-not-started task reports SUSPENDED");
@@ -922,7 +998,7 @@ static void test_task_lifecycle(void)
 
     /* --- NULL means "current task": the worker pauses itself; we resume it. --- */
     os_test_worker_counter = 0U;
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_self_pause_worker_entry, NULL, 1U));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_self_pause_worker_entry, NULL, 1U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "worker task re-created for the self-pause test");
     AHURA_TEST_CHECK(os_task_start(&worker) == OS_ERR_NONE, "os_task_start() starts it");
 
@@ -967,11 +1043,11 @@ static void test_task_identity(void)
     os_test_worker_should_run = true;
 
     /* Three tasks alive at once: their ids must all differ. */
-    AHURA_TEST_CHECK(os_task_create(&worker, OS_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE,
+    AHURA_TEST_CHECK(os_task_create(&worker, TEST_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE,
                       "identity task A created");
-    AHURA_TEST_CHECK(os_task_create(&helper, OS_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE,
+    AHURA_TEST_CHECK(os_task_create(&helper, TEST_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE,
                       "identity task B created");
-    AHURA_TEST_CHECK(os_task_create(&helper2, OS_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE,
+    AHURA_TEST_CHECK(os_task_create(&helper2, TEST_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE,
                       "identity task C created");
 
     id_a = worker.id;
@@ -994,7 +1070,7 @@ static void test_task_identity(void)
                       "a stale handle to the deleted task reports INACTIVE");
 
     /* The next task very likely lands in B's freed slot - but must not inherit B's id. */
-    AHURA_TEST_CHECK(os_task_create(&helper3, OS_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE,
+    AHURA_TEST_CHECK(os_task_create(&helper3, TEST_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE,
                       "identity task D created into the freed slot");
     AHURA_TEST_CHECK(helper3.id != stale_id,
                       "the task reusing a freed slot gets a fresh id, not the deleted task's (%lu vs %lu)",
@@ -1044,7 +1120,7 @@ static void test_priority_preemption(void)
 
     os_test_busy_counter    = 0U;
     os_test_busy_should_run = true;
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_busy_spin_entry, NULL, TEST_PRIO_LOW));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_busy_spin_entry, NULL, TEST_PRIO_LOW));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "low-priority spinner task created (priority %u)",
                       (unsigned)TEST_PRIO_LOW);
     AHURA_TEST_CHECK(os_task_start(&worker) == OS_ERR_NONE, "low-priority spinner started");
@@ -1057,7 +1133,7 @@ static void test_priority_preemption(void)
 
     /* A task at a strictly higher priority than both the spinner and this test task never
      * yields/delays for its whole burst - so the spinner cannot possibly run until it is gone. */
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_burst_spin_entry, NULL,
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_burst_spin_entry, NULL,
                                                             TEST_PRIO_HIGH));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "higher-priority burst task created (priority %u)",
                       (unsigned)TEST_PRIO_HIGH);
@@ -1146,7 +1222,7 @@ static void test_scheduler_lock(void)
                       "empty semaphore initialized (a take on it can only block)");
 #endif
 
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_sched_lock_entry, NULL, TEST_PRIO_HIGH));
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_sched_lock_entry, NULL, TEST_PRIO_HIGH));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "higher-priority task created (priority %u)",
                       (unsigned)TEST_PRIO_HIGH);
 
@@ -1417,9 +1493,9 @@ static void test_atomic(void)
     /* Two tasks at the same priority as each other: they round-robin every tick, so each is
      * preempted repeatedly mid-update. That is precisely the window a non-atomic
      * read-modify-write loses. */
-    if ((os_task_create(&worker, OS_TASK_CONFIG(test_atomic_hammer_entry, NULL,
+    if ((os_task_create(&worker, TEST_TASK_CONFIG(test_atomic_hammer_entry, NULL,
                                                         TEST_PRIO_HIGH)) == OS_ERR_NONE) &&
-        (os_task_create(&helper, OS_TASK_CONFIG(test_atomic_hammer_entry, NULL,
+        (os_task_create(&helper, TEST_TASK_CONFIG(test_atomic_hammer_entry, NULL,
                                                         TEST_PRIO_HIGH)) == OS_ERR_NONE))
     {
         (void)os_task_start(&worker);
@@ -2004,7 +2080,7 @@ static void test_timer(void)
  *
  * SVC is the vehicle. It exists on every Cortex-M, it is synchronous - so the test knows exactly
  * when the handler ran, with no peripheral to configure and no vendor header to include - and the
- * kernel deliberately claims no SVC_Handler of its own. An application that defines one cannot link
+ * kernel deliberately claims no SVC handler of its own. An application that defines one cannot link
  * this suite: a duplicate symbol, which is the loudest way for that clash to be noticed.
 */
 
@@ -2058,7 +2134,7 @@ static void test_isr_defer_cb(void *context, uint32_t value)
  * @brief The interrupt under test: it does nothing but call the timer API and record what came
  *        back. Reached with "svc #0" from the test task below.
  */
-void SVC_Handler(void)
+void OS_CONFIG_ARCH_SVC_HANDLER(void)
 {
     os_test_isr_entered++;
     os_test_isr_was_isr = os_arch_in_isr();
@@ -2089,6 +2165,34 @@ static void test_timer_isr(void)
     __IO uint32_t *shpr2 = (__IO uint32_t *)0xE000ED1CUL;
 
     test_print_section("Timer API from an ISR");
+
+    /* Before the first svc: confirm the vector table actually routes SVC to the handler above.
+     * It is not a link error when it does not - the handler links fine and simply nothing points
+     * at it, because the startup file named that entry something else (isr_svcall on the Pico SDK,
+     * SVC_Handler under CMSIS-Pack). The instruction then lands on the startup file's default
+     * stub, which is a breakpoint on every SDK checked, and with no debugger attached that
+     * escalates to HardFault whose default handler is also a breakpoint. The board hangs here,
+     * mid-suite, with the last PASS line as the only clue.
+     *
+     * OS_CONFIG_ARCH_SVC_HANDLER is what fixes it, and a SoC package sets it. Skipping loudly is
+     * the right behaviour when it is wrong: a suite that stops dead tells you less than one that
+     * says which vector to name. */
+    {
+        const uint32_t *vector_table = (const uint32_t *)(uintptr_t)OS_ARCH_REG_VTOR;
+        uint32_t        installed    = vector_table[OS_ARCH_VECTOR_SVC] & ~(uint32_t)1U;
+        uint32_t        expected     = (uint32_t)(uintptr_t)&OS_CONFIG_ARCH_SVC_HANDLER & ~(uint32_t)1U;
+
+        if (installed != expected)
+        {
+            printf("  [SKIP] the SVC vector does not point at this suite's handler\r\n");
+            printf("         vector[11]=0x%08lX, handler=0x%08lX\r\n",
+                   (unsigned long)installed, (unsigned long)expected);
+            printf("         Set OS_CONFIG_ARCH_SVC_HANDLER to this target's SVC vector name\r\n");
+            printf("         (a SoC package does this: AHURA_SOC_SVC_HANDLER in its soc.cmake).\r\n");
+            printf("         Skipped rather than run: `svc` would hang the board here.\r\n");
+            return;
+        }
+    }
 
     *shpr2 = (*shpr2 & 0x00FFFFFFUL) | 0xFF000000UL;
 
@@ -2791,7 +2895,7 @@ static void test_task_notify(void)
 
     /* Give-before-wait: the latched value must be delivered without blocking. */
     os_test_notify_wait_timeout_ms = 500U;
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_notify_wait_entry, NULL, 3U));
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_notify_wait_entry, NULL, 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "give-before-wait helper created");
     AHURA_TEST_CHECK(os_notify_give(&helper, 111U) == OS_ERR_NONE,
                       "os_notify_give() to a created-but-not-started task succeeds");
@@ -2807,7 +2911,7 @@ static void test_task_notify(void)
 
     /* Wait-then-give: blocks, then wakes promptly once given. */
     os_test_notify_wait_timeout_ms = 500U;
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_notify_wait_entry, NULL, 3U));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_notify_wait_entry, NULL, 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "wait-then-give helper created");
     AHURA_TEST_CHECK(os_task_start(&worker) == OS_ERR_NONE, "wait-then-give helper started");
     os_delay_ms(20U);
@@ -2824,7 +2928,7 @@ static void test_task_notify(void)
 
     /* Timeout: nobody gives. */
     os_test_notify_wait_timeout_ms = 200U;
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_notify_wait_entry, NULL, 3U));
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_notify_wait_entry, NULL, 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "timeout-case helper created");
     AHURA_TEST_CHECK(os_task_start(&helper) == OS_ERR_NONE, "timeout-case helper started");
     AHURA_TEST_CHECK(test_wait_inactive(&helper, 400U), "timeout-case helper finished");
@@ -2835,7 +2939,7 @@ static void test_task_notify(void)
                       (unsigned long)os_test_notify_wait_ticks);
 
     /* give() during an unrelated block must not cut it short, and must not be lost. */
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_notify_unrelated_block_entry, NULL, 3U));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_notify_unrelated_block_entry, NULL, 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "unrelated-block helper created");
     t0 = os_tick_get();
     AHURA_TEST_CHECK(os_task_start(&worker) == OS_ERR_NONE, "unrelated-block helper started (delaying 80ms)");
@@ -2853,7 +2957,7 @@ static void test_task_notify(void)
                       (unsigned long)os_test_notify_wait_value);
 
     /* value_out = NULL: wait for the signal, discard the value, still consume the delivery. */
-    (void)os_task_create(&helper, OS_TASK_CONFIG(test_notify_discard_entry, NULL, 3U));
+    (void)os_task_create(&helper, TEST_TASK_CONFIG(test_notify_discard_entry, NULL, 3U));
     (void)os_task_start(&helper);
     os_delay_ms(20U);
     (void)os_notify_give(&helper, 444U);
@@ -3131,7 +3235,7 @@ static void test_cpu_usage(void)
      * have gotten). */
     os_test_busy_counter    = 0U;
     os_test_busy_should_run = true;
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_busy_spin_entry, NULL, TEST_PRIO_LOW));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_busy_spin_entry, NULL, TEST_PRIO_LOW));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "busy worker task created to load the CPU (priority 1)");
     AHURA_TEST_CHECK(os_task_start(&worker) == OS_ERR_NONE, "busy worker task started");
 
@@ -3248,13 +3352,13 @@ static void test_pipeline(void)
 
     /* Consumers at a higher priority than producers so they drain the small queue promptly,
      * keeping both producers genuinely blocking on a full queue rather than racing ahead. */
-    status = os_task_create(&helper2, OS_TASK_CONFIG(test_pipeline_consumer_entry, NULL, 4U));
+    status = os_task_create(&helper2, TEST_TASK_CONFIG(test_pipeline_consumer_entry, NULL, 4U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "consumer task 1 created (priority 4)");
-    status = os_task_create(&helper3, OS_TASK_CONFIG(test_pipeline_consumer_entry, NULL, 4U));
+    status = os_task_create(&helper3, TEST_TASK_CONFIG(test_pipeline_consumer_entry, NULL, 4U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "consumer task 2 created (priority 4)");
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_pipeline_producer_entry, &os_test_producer_ctx[0], 3U));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_pipeline_producer_entry, &os_test_producer_ctx[0], 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "producer task 1 created (priority 3, values 0-5)");
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_pipeline_producer_entry, &os_test_producer_ctx[1], 3U));
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_pipeline_producer_entry, &os_test_producer_ctx[1], 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "producer task 2 created (priority 3, values 100-105)");
 
     (void)os_task_start(&helper2);
@@ -3315,11 +3419,11 @@ static void test_mutex_priority_ordering(void)
     os_test_prio_ctx[1].priority_tag = 5U;
     os_test_prio_ctx[2].priority_tag = 6U;
 
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_prio_waiter_entry, &os_test_prio_ctx[0], 4U));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_prio_waiter_entry, &os_test_prio_ctx[0], 4U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "low-priority waiter created (priority 4)");
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_prio_waiter_entry, &os_test_prio_ctx[1], 5U));
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_prio_waiter_entry, &os_test_prio_ctx[1], 5U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "medium-priority waiter created (priority 5)");
-    status = os_task_create(&helper2, OS_TASK_CONFIG(test_prio_waiter_entry, &os_test_prio_ctx[2], 6U));
+    status = os_task_create(&helper2, TEST_TASK_CONFIG(test_prio_waiter_entry, &os_test_prio_ctx[2], 6U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "high-priority waiter created (priority 6)");
 
     /* Start low first, high last: if the wake order below still comes out high-to-low, that
@@ -3403,7 +3507,7 @@ static void test_mutex_priority_inheritance(void)
     /* Higher priority than this test task: preempts immediately, finds the mutex locked, and
      * boosts this test task's effective priority before blocking - synchronously, inside this
      * os_task_start() call, so the test task resumes already boosted. */
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_inherit_high_entry, NULL,
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_inherit_high_entry, NULL,
                                                             OS_CONFIG_TEST_PRIORITY + 2U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "high-priority waiter created (priority %u)",
                       (unsigned)(OS_CONFIG_TEST_PRIORITY + 2U));
@@ -3414,7 +3518,7 @@ static void test_mutex_priority_inheritance(void)
 
     /* A medium-priority task, created and started while this test task is (boosted) running: it
      * must not get any CPU time yet - proving the boost, not just "it'll run eventually". */
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_inherit_medium_entry, NULL,
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_inherit_medium_entry, NULL,
                                                              OS_CONFIG_TEST_PRIORITY + 1U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "medium-priority task created (priority %u)",
                       (unsigned)(OS_CONFIG_TEST_PRIORITY + 1U));
@@ -3486,14 +3590,14 @@ static void test_mutex_multi_inheritance(void)
     os_test_inherit2_ctx[1].tag   = 2U;
 
     /* HIGH blocks on A: boosts the owner to +2 (synchronously, inside os_task_start). */
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_inherit2_waiter_entry, &os_test_inherit2_ctx[0],
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_inherit2_waiter_entry, &os_test_inherit2_ctx[0],
                                                             OS_CONFIG_TEST_PRIORITY + 2U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "waiter HIGH created for mutex A (priority %u)",
                       (unsigned)(OS_CONFIG_TEST_PRIORITY + 2U));
     AHURA_TEST_CHECK(os_task_start(&helper) == OS_ERR_NONE, "waiter HIGH started");
 
     /* HIGHER blocks on B: boosts the owner again, to +3. */
-    status = os_task_create(&helper2, OS_TASK_CONFIG(test_inherit2_waiter_entry, &os_test_inherit2_ctx[1],
+    status = os_task_create(&helper2, TEST_TASK_CONFIG(test_inherit2_waiter_entry, &os_test_inherit2_ctx[1],
                                                              OS_CONFIG_TEST_PRIORITY + 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "waiter HIGHER created for mutex B (priority %u)",
                       (unsigned)(OS_CONFIG_TEST_PRIORITY + 3U));
@@ -3504,7 +3608,7 @@ static void test_mutex_multi_inheritance(void)
                       (unsigned long)os_test_inherit2_done_mask);
 
     /* Medium (+1) must stay starved for as long as ANY boost is in effect. */
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_inherit_medium_entry, NULL,
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_inherit_medium_entry, NULL,
                                                              OS_CONFIG_TEST_PRIORITY + 1U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "medium-priority task created (priority %u)",
                       (unsigned)(OS_CONFIG_TEST_PRIORITY + 1U));
@@ -3585,11 +3689,11 @@ static void test_event_queue_fanin(void)
     os_test_fanin_ctx[2].bit = 0x04U; os_test_fanin_ctx[2].value = 30U; os_test_fanin_ctx[2].work_ms = 40U;
     expected_sum = os_test_fanin_ctx[0].value + os_test_fanin_ctx[1].value + os_test_fanin_ctx[2].value;
 
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_fanin_worker_entry, &os_test_fanin_ctx[0], 3U));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_fanin_worker_entry, &os_test_fanin_ctx[0], 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "fan-in worker 1 created (bit 0x01, 60 ms work)");
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_fanin_worker_entry, &os_test_fanin_ctx[1], 3U));
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_fanin_worker_entry, &os_test_fanin_ctx[1], 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "fan-in worker 2 created (bit 0x02, 20 ms work)");
-    status = os_task_create(&helper2, OS_TASK_CONFIG(test_fanin_worker_entry, &os_test_fanin_ctx[2], 3U));
+    status = os_task_create(&helper2, TEST_TASK_CONFIG(test_fanin_worker_entry, &os_test_fanin_ctx[2], 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "fan-in worker 3 created (bit 0x04, 40 ms work)");
 
     (void)os_task_start(&worker);
@@ -3811,13 +3915,13 @@ static void test_stress_soak(void)
         os_test_stress_ctx[i].prng_state = 0x9E3779B9U ^ (i * 0x2545F491U) ^ (os_tick_get() | 1U);
     }
 
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_stress_worker_entry, &os_test_stress_ctx[0], 3U));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_stress_worker_entry, &os_test_stress_ctx[0], 3U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "stress worker 0 created (priority 3)");
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_stress_worker_entry, &os_test_stress_ctx[1], 4U));
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_stress_worker_entry, &os_test_stress_ctx[1], 4U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "stress worker 1 created (priority 4)");
-    status = os_task_create(&helper2, OS_TASK_CONFIG(test_stress_worker_entry, &os_test_stress_ctx[2], 5U));
+    status = os_task_create(&helper2, TEST_TASK_CONFIG(test_stress_worker_entry, &os_test_stress_ctx[2], 5U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "stress worker 2 created (priority 5)");
-    status = os_task_create(&helper3, OS_TASK_CONFIG(test_stress_worker_entry, &os_test_stress_ctx[3], 6U));
+    status = os_task_create(&helper3, TEST_TASK_CONFIG(test_stress_worker_entry, &os_test_stress_ctx[3], 6U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "stress worker 3 created (priority 6)");
 
     (void)os_task_start(&worker);
@@ -3936,7 +4040,7 @@ static void test_stress_task_churn(void)
 
     for (i = 0U; i < OS_TEST_CHURN_ITERATIONS; i++)
     {
-        status = os_task_create(&worker, OS_TASK_CONFIG(test_churn_worker_entry, NULL, 1U));
+        status = os_task_create(&worker, TEST_TASK_CONFIG(test_churn_worker_entry, NULL, 1U));
         if (status != OS_ERR_NONE)
         {
             all_created = false;
@@ -4547,7 +4651,7 @@ static void test_stress_semaphore_pingpong(void)
     AHURA_TEST_CHECK(os_semaphore_init(&os_test_pp_ping, 0U, 1U) == OS_ERR_NONE, "ping semaphore initialized (binary, empty)");
     AHURA_TEST_CHECK(os_semaphore_init(&os_test_pp_pong, 0U, 1U) == OS_ERR_NONE, "pong semaphore initialized (binary, empty)");
 
-    if (os_task_create(&worker, OS_TASK_CONFIG(test_pp_entry, NULL, TEST_PRIO_HIGH)) != OS_ERR_NONE)
+    if (os_task_create(&worker, TEST_TASK_CONFIG(test_pp_entry, NULL, TEST_PRIO_HIGH)) != OS_ERR_NONE)
     {
         printf("  [SKIP] could not create the ping-pong partner task\r\n");
         return;
@@ -4634,7 +4738,7 @@ static void test_stress_notify_storm(void)
     os_test_ns_order_ok = true;
     os_test_ns_run      = true;
 
-    if (os_task_create(&worker, OS_TASK_CONFIG(test_ns_entry, NULL, TEST_PRIO_HIGH)) != OS_ERR_NONE)
+    if (os_task_create(&worker, TEST_TASK_CONFIG(test_ns_entry, NULL, TEST_PRIO_HIGH)) != OS_ERR_NONE)
     {
         printf("  [SKIP] could not create the notification waiter task\r\n");
         return;
@@ -4991,7 +5095,7 @@ static void test_task_footprint(void)
          * feature applied to a task other than "self". */
         os_test_busy_counter    = 0U;
         os_test_busy_should_run = true;
-        status = os_task_create(&worker, OS_TASK_CONFIG(test_busy_spin_entry, NULL, TEST_PRIO_LOW));
+        status = os_task_create(&worker, TEST_TASK_CONFIG(test_busy_spin_entry, NULL, TEST_PRIO_LOW));
         if (status == OS_ERR_NONE)
         {
             (void)os_task_start(&worker);
@@ -5037,9 +5141,9 @@ static void test_context_switch_timing(void)
     os_test_switch_count      = 0U;
     os_test_switch_should_run = true;
 
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_switch_ping_entry, NULL, 1U));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_switch_ping_entry, NULL, 1U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "ping task created for the switch benchmark (priority 1)");
-    status = os_task_create(&helper, OS_TASK_CONFIG(test_switch_ping_entry, NULL, 1U));
+    status = os_task_create(&helper, TEST_TASK_CONFIG(test_switch_ping_entry, NULL, 1U));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "pong task created for the switch benchmark (priority 1)");
 
     t0 = os_tick_get();
@@ -5467,7 +5571,7 @@ static void test_benchmarks(void)
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
     /* Created but never started: give() then only latches, which is exactly the ISR-side cost
      * an application cares about (the wake path is a context switch, measured below). */
-    if (os_task_create(&helper, OS_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE)
+    if (os_task_create(&helper, TEST_TASK_CONFIG(test_worker_entry, NULL, 1U)) == OS_ERR_NONE)
     {
         TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_SAMPLES, (void)os_notify_give(&helper, 1U));
         test_bench_row("os_notify_give (latch, no wake)", TEST_BENCH_SUB(best, overhead), clock_hz);
@@ -5528,7 +5632,7 @@ static void test_benchmarks(void)
     test_bench_row("os_task_yield (switch, re-selects self)", TEST_BENCH_SUB(best, overhead), clock_hz);
 
     TEST_BENCH_MIN_CYCLES(best, TEST_BENCH_HEAVY_SAMPLES,
-                          if (os_task_create(&helper, OS_TASK_CONFIG(test_worker_entry,
+                          if (os_task_create(&helper, TEST_TASK_CONFIG(test_worker_entry,
                                                                       NULL, 1U)) == OS_ERR_NONE)
                           {
                               (void)os_task_delete(&helper);
@@ -5588,13 +5692,1362 @@ static void test_list(void)
  * ***********************************************************************************************************
 */
 
+/*
+ * ***********************************************************************************************************
+ * Multi-core (SMP)
+ * ***********************************************************************************************************
+*/
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+
+/* Enough contention that a broken lock loses updates reliably rather than occasionally: each core
+ * does this many read-modify-writes on one word, as fast as it can, at the same time as the other.
+ * A lock that does not exclude drops hundreds, not one or two. */
+#define TEST_MC_LOCK_ITERATIONS     4000U
+
+/* How long core 0 waits for a task pinned to core 1 to run at all. Generous by design - this is
+ * the check that says whether the second core booted, and a slow answer is still an answer. */
+#define TEST_MC_START_TIMEOUT_MS    500U
+
+/* How often each parked worker proves its core is still alive, and how long the late check
+ * watches for. The window is several heartbeats so one missed wake cannot fail it. */
+#define TEST_MC_HEARTBEAT_MS        100U
+#define TEST_MC_WATCH_MS            600U
+
+OS_TASK_DEFINE(test_mc_core0, 512U);
+OS_TASK_DEFINE(test_mc_core1, 512U);
+
+/* One slot per worker, indexed by the core it is PINNED to, so a worker writing the wrong slot is
+ * itself a detectable failure. __IO throughout: written on one core and read on the other, with
+ * no lock, so the compiler must not cache any of it in a register. */
+static __IO uint32_t test_mc_seen_core[2]  = { 0xFFFFFFFFU, 0xFFFFFFFFU };
+static __IO uint32_t test_mc_ready[2]      = { 0U, 0U };
+static __IO uint32_t test_mc_done[2]       = { 0U, 0U };
+static __IO uint32_t test_mc_begin_tick[2] = { 0U, 0U };
+static __IO uint32_t test_mc_end_tick[2]   = { 0U, 0U };
+
+/* Advanced by each parked worker, once per heartbeat, for the whole rest of the run. Read twice by
+ * the late check to see whether that core is still going. */
+static __IO uint32_t test_mc_alive[2]      = { 0U, 0U };
+
+/* The kernel tick at each core's most recent heartbeat. Whatever it holds at the end is the moment
+ * that core last ran. */
+static __IO uint32_t test_mc_last_tick[2]  = { 0U, 0U };
+
+/* Released by core 0 once BOTH workers have reported in, so the two hammer the shared counter at
+ * the same time. Without it one could finish before the other starts and the lock would never be
+ * contended - the test would pass on a lock that excludes nothing. */
+static __IO uint32_t test_mc_gate = 0U;
+
+/* The word the kernel spinlock is supposed to protect. Deliberately NOT atomic: the point is to
+ * test os_critical_enter/exit, so the increment must be a plain read-modify-write that interleaves
+ * destructively if the lock fails. */
+static __IO uint32_t test_mc_counter = 0U;
+
+/******************************************************************************************************/
+/**
+ * @brief Body of both multi-core workers: report which core we are on, then hammer the shared
+ *        counter under the kernel lock.
+ *
+ * @param context The core index this task was pinned to, as a small integer cast to a pointer.
+ */
+static void test_mc_worker_entry(void *context)
+{
+    uint32_t slot = (uint32_t)(uintptr_t)context;
+    uint32_t i;
+
+    /* Read the id BEFORE anything can migrate us. With core affinity honoured this is fixed for
+     * the task's lifetime; the whole point of the check is that it equals `slot`. */
+    test_mc_seen_core[slot] = os_arch_core_id_get();
+    test_mc_ready[slot]     = 1U;
+
+    /* Spin, not block: a delay would let the two workers drift apart, and the lock is only under
+     * test while both are inside the loop below at once. */
+    while (test_mc_gate == 0U)
+    {
+    }
+
+    test_mc_begin_tick[slot] = os_tick_get();
+
+    for (i = 0U; i < TEST_MC_LOCK_ITERATIONS; i++)
+    {
+        os_critical_enter();
+        test_mc_counter = test_mc_counter + 1U;
+        os_critical_exit();
+    }
+
+    test_mc_end_tick[slot] = os_tick_get();
+    test_mc_done[slot]     = 1U;
+
+    /* Parked rather than deleted: a task running on another core cannot be deleted from this one
+     * (OS_ERR_BUSY by design), so the suite leaves both workers blocked here.
+     *
+     * The heartbeat is the point of parking here rather than exiting. A secondary core that has
+     * gone quiet is indistinguishable from one that simply has nothing to do, and this suite
+     * spent a long time confusing the two. A counter that stops advancing is the difference. */
+    while (1)
+    {
+        os_delay_ms(TEST_MC_HEARTBEAT_MS);
+
+        test_mc_alive[slot]++;
+
+        /* Stamped every beat, so the LAST one records the moment this core stopped. Knowing that a
+         * core died is not actionable; knowing it died at tick 1200 out of 12000 points straight
+         * at whichever test was running then. */
+        test_mc_last_tick[slot] = os_tick_get();
+    }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Exercise what a dual-core SoC package has to get right: that the second core starts at
+ *        all, that each core reports its own id, that affinity pins a task where it was asked to
+ *        go, and that the kernel spinlock really excludes across cores.
+ *
+ * Every check here fails SILENTLY on a broken port rather than loudly, which is why they are worth
+ * running on real silicon. A core that never boots looks like tasks that are merely never
+ * scheduled; a core-id callback stubbed to 0 looks like a scheduler that ignores affinity; a
+ * spinlock that does not exclude looks like nothing at all until state corrupts hours later.
+ */
+static void test_multicore(void)
+{
+    uint32_t waited;
+    uint32_t expected = TEST_MC_LOCK_ITERATIONS * 2U;
+    bool     overlapped;
+
+    test_print_section("Multi-core (SMP): core start, core id, affinity, kernel spinlock");
+
+    AHURA_TEST_CHECK(os_task_create(&test_mc_core0,
+                     OS_TASK_CONFIG(test_mc_worker_entry, (void *)0U, OS_TASK_PRIO_2,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "worker pinned to core 0 created");
+    AHURA_TEST_CHECK(os_task_create(&test_mc_core1,
+                     OS_TASK_CONFIG(test_mc_worker_entry, (void *)1U, OS_TASK_PRIO_2,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "worker pinned to core 1 created");
+
+    AHURA_TEST_CHECK(os_task_start(&test_mc_core0) == OS_ERR_NONE, "worker on core 0 started");
+    AHURA_TEST_CHECK(os_task_start(&test_mc_core1) == OS_ERR_NONE, "worker on core 1 started");
+
+    /* The core-start check. Nothing else in the suite can tell whether os_arch_core_launch_cb()
+     * did anything, because a core that never booted is indistinguishable from one whose tasks
+     * are simply never picked. */
+    for (waited = 0U; (waited < TEST_MC_START_TIMEOUT_MS) && (test_mc_ready[1] == 0U); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    AHURA_TEST_CHECK(test_mc_ready[1] == 1U,
+                     "core 1 is running: a task pinned to it ran within %u ms",
+                     (unsigned)TEST_MC_START_TIMEOUT_MS);
+
+    if (test_mc_ready[1] == 0U)
+    {
+        printf("  [INFO] core 1 never ran the task pinned to it.\r\n");
+        printf("         Everything below this line is chip-specific, so the SoC package is where\r\n");
+        printf("         to look - it owns core start-up, the inter-core interrupt and the fault\r\n");
+        printf("         vectors.\r\n");
+
+        /* The package reports what only it can know. Called from here rather than at start-up
+         * because on a USB-console board nothing printed during os_start() is ever seen: the host
+         * has not opened the port yet. Weak-defaulted, so a target without a package prints
+         * nothing and this costs one call. */
+        os_arch_soc_diagnose_cb();
+
+        printf("         Remaining multi-core checks skipped: they share this one cause.\r\n");
+        return;
+    }
+
+    for (waited = 0U; (waited < TEST_MC_START_TIMEOUT_MS) && (test_mc_ready[0] == 0U); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    /* Both id checks together, because the failure they exist to catch is one callback answering
+     * the same value everywhere. Either alone would pass against a stub returning 0. */
+    AHURA_TEST_CHECK(test_mc_seen_core[0] == 0U,
+                     "core id on core 0 reads 0 (saw %u)", (unsigned)test_mc_seen_core[0]);
+    AHURA_TEST_CHECK(test_mc_seen_core[1] == 1U,
+                     "core id on core 1 reads 1 (saw %u)", (unsigned)test_mc_seen_core[1]);
+    AHURA_TEST_CHECK(test_mc_seen_core[0] != test_mc_seen_core[1],
+                     "the two cores report DIFFERENT ids (a stubbed callback returns one value)");
+
+    /* Now the lock. Both workers are parked on the gate, so releasing it puts them into the
+     * critical section together. */
+    test_mc_gate = 1U;
+
+    for (waited = 0U; (waited < TEST_MC_START_TIMEOUT_MS) &&
+                      ((test_mc_done[0] == 0U) || (test_mc_done[1] == 0U)); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    AHURA_TEST_CHECK((test_mc_done[0] == 1U) && (test_mc_done[1] == 1U),
+                     "both workers finished %u guarded increments each",
+                     (unsigned)TEST_MC_LOCK_ITERATIONS);
+
+    /* The result that matters. Any value below `expected` is a lost update, which means two cores
+     * were inside the critical section at once. */
+    AHURA_TEST_CHECK(test_mc_counter == expected,
+                     "kernel spinlock excludes across cores: counter is %u, expected %u",
+                     (unsigned)test_mc_counter, (unsigned)expected);
+
+    /* Proof the previous check was actually under contention. If the two runs did not overlap in
+     * time, a lock that excludes nothing would have passed it, so the result would mean nothing.
+     * Reported rather than failed: overlap depends on scheduling, and a serialised run is a weak
+     * test rather than a broken kernel. */
+    overlapped = (test_mc_begin_tick[0] <= test_mc_end_tick[1]) &&
+                 (test_mc_begin_tick[1] <= test_mc_end_tick[0]);
+
+    if (overlapped)
+    {
+        printf("  [INFO] the two runs overlapped (core0 %u..%u, core1 %u..%u ticks) - the lock\r\n",
+               (unsigned)test_mc_begin_tick[0], (unsigned)test_mc_end_tick[0],
+               (unsigned)test_mc_begin_tick[1], (unsigned)test_mc_end_tick[1]);
+        printf("         was genuinely contended, so the check above means something\r\n");
+    }
+    else
+    {
+        printf("  [INFO] the two runs did NOT overlap in time - the lock was never contended, so\r\n");
+        printf("         the counter check above passes trivially and proves little\r\n");
+    }
+
+    /* Affinity at runtime, which is the one multi-core API an application is likely to call. */
+    AHURA_TEST_CHECK(os_task_core_affinity_set(&test_mc_core1, OS_TASK_CORE(1)) == OS_ERR_NONE,
+                     "os_task_core_affinity_set() accepts a valid mask");
+
+    AHURA_TEST_CHECK(os_task_core_affinity_set(&test_mc_core1,
+                     OS_TASK_CORE(OS_CONFIG_CORE_COUNT)) != OS_ERR_NONE,
+                     "os_task_core_affinity_set() rejects a core beyond OS_CONFIG_CORE_COUNT");
+}
+
+#endif /* OS_CONFIG_CORE_COUNT > 1U */
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+
+/******************************************************************************************************/
+/**
+ * @brief Re-check, at the very end of the run, that both cores are still alive.
+ *
+ * The same mechanisms test_multicore() proves at one instant, watched over a window: the two
+ * workers that test parked are still beating, several heartbeats apart, so a single missed wake
+ * cannot fail it. That is the question worth asking LAST - whether the secondary core survived
+ * the whole suite, not just its own section - which is why the multi-core pair runs after
+ * everything else.
+ */
+static void test_multicore_watch(uint32_t watch_ms, const char *when)
+{
+    uint32_t before0;
+    uint32_t before1;
+
+    printf("\r\n--- Multi-core (SMP): still alive %s? ---\r\n", when);
+
+    if (test_mc_ready[1] == 0U)
+    {
+        printf("  [SKIP] core 1 never started, so there is nothing to outlive\r\n");
+        return;
+    }
+
+    before0 = test_mc_alive[0];
+    before1 = test_mc_alive[1];
+
+    os_delay_ms(watch_ms);
+
+    AHURA_TEST_CHECK(test_mc_alive[0] > before0,
+                     "core 0 still scheduling (%lu beats in %lu ms)",
+                     (unsigned long)(test_mc_alive[0] - before0), (unsigned long)watch_ms);
+
+    /* The one that matters. A core that ran at the start of the suite and is silent now has died
+     * somewhere in between, and being idle for long stretches is the only thing that separates
+     * core 1 from core 0 here. */
+    AHURA_TEST_CHECK(test_mc_alive[1] > before1,
+                     "core 1 STILL ALIVE (%lu beats in %lu ms)",
+                     (unsigned long)(test_mc_alive[1] - before1), (unsigned long)watch_ms);
+
+    if (test_mc_alive[1] == before1)
+    {
+        printf("  [INFO] core 1 started fine and then stopped during the run.\r\n");
+        printf("         core 1 last ran at tick %lu; the clock now reads %lu.\r\n",
+               (unsigned long)test_mc_last_tick[1], (unsigned long)os_tick_get());
+        printf("         It managed %lu heartbeats before going quiet, so it survived roughly\r\n",
+               (unsigned long)test_mc_alive[1]);
+        printf("         %lu ms of the run and then stopped - which names the window to look in.\r\n",
+               (unsigned long)(test_mc_alive[1] * TEST_MC_HEARTBEAT_MS));
+        printf("         (core 0, for comparison, last ran at tick %lu)\r\n",
+               (unsigned long)test_mc_last_tick[0]);
+        os_arch_soc_diagnose_cb();
+    }
+}
+
+/*
+ * ***********************************************************************************************************
+ * Multi-core (SMP) stress - cross-core contention and wake integrity
+ * ***********************************************************************************************************
+ *
+ * Everything above proved the kernel one subsystem at a time, on the core each helper was pinned
+ * to. These push the SMP seams specifically, and each is built so a failure is exact rather than
+ * approximate: handshakes make every cross-core wake 1:1, so a lost or duplicated wake shows up
+ * as a miscounted value, and guarded counters come out exact only if the spinlock really excludes
+ * two cores at once.
+ *
+ * These run with OS_CONFIG_MAX_USER_TASKS at 8: the test task, the two heartbeat workers parked
+ * by test_multicore(), and up to five concurrent helpers below.
+ */
+
+#define TEST_SMP_NESTED_ITERATIONS   20000U
+#define TEST_SMP_ATOMIC_ITERATIONS   40000U
+#define TEST_SMP_PINGPONG_ROUNDS     500U
+#define TEST_SMP_EVENT_ROUNDS        300U
+#define TEST_SMP_QUEUE_ITEMS         300U
+#define TEST_SMP_CHURN_CYCLES        40U
+#define TEST_SMP_SUBMIT_EACH         16U
+#define TEST_SMP_SOAK_ITERATIONS     150U
+#define TEST_SMP_MIGRATION_SAMPLES   8U
+
+/* Six dedicated task handles: every helper exits on its own (entry returns), so the handles come
+ * back INACTIVE between sections and are safe to re-create. Never deleted cross-core, which is
+ * OS_ERR_BUSY by design. */
+OS_TASK_DEFINE(test_smp_a, 512U);
+OS_TASK_DEFINE(test_smp_b, 512U);
+OS_TASK_DEFINE(test_smp_c, 512U);
+OS_TASK_DEFINE(test_smp_d, 512U);
+OS_TASK_DEFINE(test_smp_e, 256U);
+OS_TASK_DEFINE(test_smp_f, 256U);
+
+/******************************************************************************************************/
+/**
+ * @brief Nested critical sections on both cores at once: the per-core nesting counters and the
+ *        single cross-core spinlock must agree, or the counter below loses updates.
+ */
+static __IO uint32_t test_smp_nested_counter = 0U;
+static __IO uint32_t test_smp_nested_seen[2] = { 0xFFFFFFFFU, 0xFFFFFFFFU };
+static __IO uint32_t test_smp_nested_done[2] = { 0U, 0U };
+static __IO uint32_t test_smp_nested_gate    = 0U;
+
+static void test_smp_nested_entry(void *context)
+{
+    uint32_t slot = (uint32_t)(uintptr_t)context;
+    uint32_t i;
+
+    test_smp_nested_seen[slot] = os_arch_core_id_get();
+
+    /* Both workers spin here so the two loops below are genuinely simultaneous - the same gate
+     * pattern as test_multicore(). */
+    while (test_smp_nested_gate == 0U)
+    {
+    }
+
+    for (i = 0U; i < TEST_SMP_NESTED_ITERATIONS; i++)
+    {
+        os_critical_enter();
+        os_critical_enter();
+        test_smp_nested_counter = test_smp_nested_counter + 1U;
+        os_critical_exit();
+        os_critical_exit();
+    }
+
+    test_smp_nested_done[slot] = 1U;
+}
+
+static void test_smp_critical_nested(void)
+{
+    uint32_t waited;
+    uint32_t expected = TEST_SMP_NESTED_ITERATIONS * 2U;
+
+    test_print_section("Multi-core (SMP): nested critical sections contend across cores");
+
+    test_smp_nested_counter = 0U;
+    test_smp_nested_seen[0] = 0xFFFFFFFFU;
+    test_smp_nested_seen[1] = 0xFFFFFFFFU;
+    test_smp_nested_done[0] = 0U;
+    test_smp_nested_done[1] = 0U;
+    test_smp_nested_gate    = 0U;
+
+    /* OS_TASK_PRIO_2, NOT TEST_PRIO_HIGH: these workers spin on the gate until it opens, and
+     * the test task is the one that opens it - a higher-priority spinner on core 0 would starve
+     * the very task that releases it. Equal priority round-robins, so both still run. */
+    AHURA_TEST_CHECK(os_task_create(&test_smp_a,
+                     OS_TASK_CONFIG(test_smp_nested_entry, (void *)0U, OS_TASK_PRIO_2,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "core-0 nested-critical worker created");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_b,
+                     OS_TASK_CONFIG(test_smp_nested_entry, (void *)1U, OS_TASK_PRIO_2,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "core-1 nested-critical worker created");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_a) == OS_ERR_NONE, "core-0 worker started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_b) == OS_ERR_NONE, "core-1 worker started");
+
+    for (waited = 0U; (waited < TEST_MC_START_TIMEOUT_MS) &&
+                      ((test_smp_nested_seen[0] == 0xFFFFFFFFU) || (test_smp_nested_seen[1] == 0xFFFFFFFFU)); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    AHURA_TEST_CHECK((test_smp_nested_seen[0] == 0U) && (test_smp_nested_seen[1] == 1U),
+                     "both workers ran on their pinned cores before the gate opened");
+
+    test_smp_nested_gate = 1U;
+
+    for (waited = 0U; (waited < TEST_MC_START_TIMEOUT_MS) &&
+                      ((test_smp_nested_done[0] == 0U) || (test_smp_nested_done[1] == 0U)); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    AHURA_TEST_CHECK((test_smp_nested_done[0] == 1U) && (test_smp_nested_done[1] == 1U),
+                     "both workers finished %u nested guarded increments each",
+                     (unsigned)TEST_SMP_NESTED_ITERATIONS);
+    AHURA_TEST_CHECK(test_smp_nested_counter == expected,
+                     "nested critical sections exclude across cores: counter is %lu, expected %lu",
+                     (unsigned long)test_smp_nested_counter, (unsigned long)expected);
+}
+
+#if (OS_CONFIG_ATOMIC_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief os_atomic_inc on one word from both cores at once. The port's atomics are LDREX/STREX,
+ *        so this also proves the GLOBAL exclusive monitor works on this part - a lost update
+ *        means the interconnect is not excluding between cores, which the kernel cannot fix.
+ */
+static os_atomic_t   test_smp_atomic_word   = OS_ATOMIC_INIT(0);
+static __IO uint32_t test_smp_atomic_done[2] = { 0U, 0U };
+static __IO uint32_t test_smp_atomic_gate    = 0U;
+
+static void test_smp_atomic_entry(void *context)
+{
+    uint32_t slot = (uint32_t)(uintptr_t)context;
+    uint32_t i;
+
+    while (test_smp_atomic_gate == 0U)
+    {
+    }
+
+    for (i = 0U; i < TEST_SMP_ATOMIC_ITERATIONS; i++)
+    {
+        (void)os_atomic_inc(&test_smp_atomic_word);
+    }
+
+    test_smp_atomic_done[slot] = 1U;
+}
+
+static void test_smp_atomic_contention(void)
+{
+    uint32_t waited;
+    uint32_t expected = TEST_SMP_ATOMIC_ITERATIONS * 2U;
+
+    test_print_section("Multi-core (SMP): os_atomic_inc contention across cores");
+
+    test_smp_atomic_done[0] = 0U;
+    test_smp_atomic_done[1] = 0U;
+    test_smp_atomic_gate    = 0U;
+
+    /* OS_TASK_PRIO_2 for the same reason as the nested-critical workers: they spin on the gate,
+     * and only the test task can open it. */
+    AHURA_TEST_CHECK(os_task_create(&test_smp_a,
+                     OS_TASK_CONFIG(test_smp_atomic_entry, (void *)0U, OS_TASK_PRIO_2,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "core-0 atomic worker created");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_b,
+                     OS_TASK_CONFIG(test_smp_atomic_entry, (void *)1U, OS_TASK_PRIO_2,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "core-1 atomic worker created");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_a) == OS_ERR_NONE, "core-0 worker started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_b) == OS_ERR_NONE, "core-1 worker started");
+
+    test_smp_atomic_gate = 1U;
+
+    for (waited = 0U; (waited < TEST_MC_START_TIMEOUT_MS) &&
+                      ((test_smp_atomic_done[0] == 0U) || (test_smp_atomic_done[1] == 0U)); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    AHURA_TEST_CHECK((test_smp_atomic_done[0] == 1U) && (test_smp_atomic_done[1] == 1U),
+                     "both workers finished %u increments each", (unsigned)TEST_SMP_ATOMIC_ITERATIONS);
+    AHURA_TEST_CHECK(os_atomic_get(&test_smp_atomic_word) == (int32_t)expected,
+                     "os_atomic_inc lost nothing across cores (%ld of %lu)",
+                     (long)os_atomic_get(&test_smp_atomic_word), (unsigned long)expected);
+}
+#endif /* OS_CONFIG_ATOMIC_ENABLE */
+
+#if (OS_CONFIG_NOTIFY_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief Task notifications ping-pong between two pinned tasks, one per core. Each side waits for
+ *        its own next value before answering, so every cross-core wake must deliver exactly one
+ *        value: any lost or duplicated wake breaks the sequence the instant it happens.
+ */
+static __IO bool     test_smp_notify_ok     = true;
+static __IO uint32_t test_smp_notify_rounds = 0U;
+
+static void test_smp_notify_a_entry(void *context)
+{
+    uint32_t expected = 1U;
+    uint32_t round;
+    uint32_t value;
+
+    (void)context;
+
+    /* Side A (core 0) receives 1, 3, 5, ... - one per round - and answers with the even value
+     * that follows. */
+    for (round = 0U; round < TEST_SMP_PINGPONG_ROUNDS; round++)
+    {
+        if (os_notify_wait(OS_WAIT_FOREVER, &value) != OS_ERR_NONE)
+        {
+            test_smp_notify_ok = false;
+            return;
+        }
+
+        if (value != expected)
+        {
+            test_smp_notify_ok = false;
+        }
+
+        expected += 2U;
+
+        if (os_notify_give(&test_smp_b, expected - 1U) != OS_ERR_NONE)
+        {
+            test_smp_notify_ok = false;
+            return;
+        }
+
+        test_smp_notify_rounds++;
+    }
+}
+
+static void test_smp_notify_b_entry(void *context)
+{
+    uint32_t expected;
+    uint32_t round;
+    uint32_t value;
+
+    (void)context;
+
+    /* Side B (core 1) opens with the first value, answers every even value with the next odd
+     * one, and makes no trailing give - so neither side is ever left with a value pending after
+     * the other has exited. */
+    if (os_notify_give(&test_smp_a, 1U) != OS_ERR_NONE)
+    {
+        test_smp_notify_ok = false;
+        return;
+    }
+
+    expected = 2U;
+
+    for (round = 0U; round < TEST_SMP_PINGPONG_ROUNDS; round++)
+    {
+        if (os_notify_wait(OS_WAIT_FOREVER, &value) != OS_ERR_NONE)
+        {
+            test_smp_notify_ok = false;
+            return;
+        }
+
+        if (value != expected)
+        {
+            test_smp_notify_ok = false;
+        }
+
+        expected += 2U;
+
+        if (round < (TEST_SMP_PINGPONG_ROUNDS - 1U))
+        {
+            if (os_notify_give(&test_smp_a, expected - 1U) != OS_ERR_NONE)
+            {
+                test_smp_notify_ok = false;
+                return;
+            }
+        }
+    }
+}
+
+static void test_smp_notify_pingpong(void)
+{
+    test_print_section("Multi-core (SMP): task notifications ping-pong across cores");
+
+    test_smp_notify_ok     = true;
+    test_smp_notify_rounds = 0U;
+
+    AHURA_TEST_CHECK(os_task_create(&test_smp_a,
+                     OS_TASK_CONFIG(test_smp_notify_a_entry, NULL, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "notification receiver pinned to core 0 created");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_b,
+                     OS_TASK_CONFIG(test_smp_notify_b_entry, NULL, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "notification sender pinned to core 1 created");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_a) == OS_ERR_NONE, "receiver started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_b) == OS_ERR_NONE, "sender started");
+
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_b, 2000U), "sender finished its rounds");
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_a, 2000U), "receiver finished its rounds");
+
+    AHURA_TEST_CHECK(test_smp_notify_rounds == TEST_SMP_PINGPONG_ROUNDS,
+                     "the receiver consumed every one of the %u rounds exactly once (%lu)",
+                     (unsigned)TEST_SMP_PINGPONG_ROUNDS, (unsigned long)test_smp_notify_rounds);
+    AHURA_TEST_CHECK(test_smp_notify_ok,
+                     "every value arrived exactly once, in order - no lost or duplicated wake");
+}
+#endif /* OS_CONFIG_NOTIFY_ENABLE */
+
+#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief Binary-semaphore ping-pong between two pinned tasks, one per core. Each round is one
+ *        take/give on each side, so the token crosses the IPI path twice - and the final token
+ *        count proves the accounting exactly.
+ */
+static os_semaphore_t test_smp_sem_a;
+static os_semaphore_t test_smp_sem_b;
+static __IO uint32_t  test_smp_sem_rounds = 0U;
+
+static void test_smp_sem_a_entry(void *context)
+{
+    uint32_t round;
+
+    (void)context;
+
+    for (round = 0U; round < TEST_SMP_PINGPONG_ROUNDS; round++)
+    {
+        if (os_semaphore_take(&test_smp_sem_a, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        {
+            return;
+        }
+
+        test_smp_sem_rounds++;
+
+        if (os_semaphore_give(&test_smp_sem_b) != OS_ERR_NONE)
+        {
+            return;
+        }
+    }
+}
+
+static void test_smp_sem_b_entry(void *context)
+{
+    uint32_t round;
+
+    (void)context;
+
+    for (round = 0U; round < TEST_SMP_PINGPONG_ROUNDS; round++)
+    {
+        if (os_semaphore_take(&test_smp_sem_b, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        {
+            return;
+        }
+
+        if (os_semaphore_give(&test_smp_sem_a) != OS_ERR_NONE)
+        {
+            return;
+        }
+    }
+}
+
+static void test_smp_semaphore_pingpong(void)
+{
+    test_print_section("Multi-core (SMP): semaphore tokens ping-pong across cores");
+
+    test_smp_sem_rounds = 0U;
+
+    AHURA_TEST_CHECK(os_semaphore_init(&test_smp_sem_a, 0U, 1U) == OS_ERR_NONE, "semaphore A initialized empty");
+    AHURA_TEST_CHECK(os_semaphore_init(&test_smp_sem_b, 0U, 1U) == OS_ERR_NONE, "semaphore B initialized empty");
+
+    AHURA_TEST_CHECK(os_task_create(&test_smp_a,
+                     OS_TASK_CONFIG(test_smp_sem_a_entry, NULL, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "core-0 taker created");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_b,
+                     OS_TASK_CONFIG(test_smp_sem_b_entry, NULL, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "core-1 taker created");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_a) == OS_ERR_NONE, "core-0 taker started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_b) == OS_ERR_NONE, "core-1 taker started");
+
+    /* The one token that starts the machine. */
+    AHURA_TEST_CHECK(os_semaphore_give(&test_smp_sem_a) == OS_ERR_NONE, "starting token given");
+
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_b, 2000U), "core-1 taker finished its rounds");
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_a, 2000U), "core-0 taker finished its rounds");
+
+    AHURA_TEST_CHECK(test_smp_sem_rounds == TEST_SMP_PINGPONG_ROUNDS,
+                     "every one of the %u rounds happened exactly once (%lu)",
+                     (unsigned)TEST_SMP_PINGPONG_ROUNDS, (unsigned long)test_smp_sem_rounds);
+
+    /* The token ledger must close exactly: A holds the one starting token back (its N-th take
+     * consumed the N-th give, and the starter's token rides along), B is empty. */
+    AHURA_TEST_CHECK(os_semaphore_take(&test_smp_sem_a, OS_WAIT_NOTHING) == OS_ERR_NONE,
+                     "semaphore A ends with exactly the starting token");
+    AHURA_TEST_CHECK(os_semaphore_take(&test_smp_sem_a, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+                     "and no more than that");
+    AHURA_TEST_CHECK(os_semaphore_take(&test_smp_sem_b, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+                     "semaphore B ends empty - no token was lost or duplicated");
+}
+#endif /* OS_CONFIG_SEMAPHORE_ENABLE */
+
+#if (OS_CONFIG_QUEUE_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief Two producers (one per core) feed one consumer with exactly accounted items. Each item
+ *        carries its producer id and per-producer sequence, so the consumer can reject any loss,
+ *        duplication or reordering - and a capacity below the combined send rate forces the FULL
+ *        path and backpressure through the cross-core wake.
+ */
+static uint32_t      test_smp_queue_buf[4];
+OS_QUEUE_DEFINE_BUFFER(test_smp_queue, test_smp_queue_buf);
+
+static __IO uint32_t test_smp_queue_expected[2] = { 1U, 1U };
+static __IO bool     test_smp_queue_ok          = true;
+static __IO uint32_t test_smp_queue_received    = 0U;
+
+static void test_smp_queue_producer_entry(void *context)
+{
+    uint32_t id  = (uint32_t)(uintptr_t)context;
+    uint32_t seq;
+
+    for (seq = 1U; seq <= TEST_SMP_QUEUE_ITEMS; seq++)
+    {
+        uint32_t item = (id << 16) | seq;
+
+        if (os_queue_send(&test_smp_queue, &item, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        {
+            test_smp_queue_ok = false;
+            return;
+        }
+    }
+}
+
+static void test_smp_queue_consumer_entry(void *context)
+{
+    uint32_t total = TEST_SMP_QUEUE_ITEMS * 2U;
+    uint32_t count;
+
+    (void)context;
+
+    for (count = 0U; count < total; count++)
+    {
+        uint32_t item;
+        uint32_t id;
+        uint32_t seq;
+
+        if (os_queue_receive(&test_smp_queue, &item, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        {
+            test_smp_queue_ok = false;
+            return;
+        }
+
+        id  = item >> 16;
+        seq = item & 0xFFFFU;
+
+        if ((id > 1U) || (seq != test_smp_queue_expected[id]))
+        {
+            test_smp_queue_ok = false;
+        }
+
+        test_smp_queue_expected[id]++;
+        test_smp_queue_received++;
+    }
+}
+
+static void test_smp_queue_accounting(void)
+{
+    uint32_t ignored = 0U;
+
+    test_print_section("Multi-core (SMP): two producers, one consumer, exact item accounting");
+
+    test_smp_queue_expected[0] = 1U;
+    test_smp_queue_expected[1] = 1U;
+    test_smp_queue_ok          = true;
+    test_smp_queue_received    = 0U;
+
+    AHURA_TEST_CHECK(os_task_create(&test_smp_a,
+                     OS_TASK_CONFIG(test_smp_queue_producer_entry, (void *)0U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "producer on core 0 created");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_b,
+                     OS_TASK_CONFIG(test_smp_queue_producer_entry, (void *)1U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "producer on core 1 created");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_c,
+                     OS_TASK_CONFIG(test_smp_queue_consumer_entry, NULL, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "consumer on core 0 created");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_a) == OS_ERR_NONE, "core-0 producer started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_b) == OS_ERR_NONE, "core-1 producer started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_c) == OS_ERR_NONE, "consumer started");
+
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_c, 3000U), "consumer drained every item");
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_a, 3000U), "core-0 producer finished");
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_b, 3000U), "core-1 producer finished");
+
+    AHURA_TEST_CHECK(test_smp_queue_received == (TEST_SMP_QUEUE_ITEMS * 2U),
+                     "the consumer received exactly %u items (%lu)",
+                     (unsigned)(TEST_SMP_QUEUE_ITEMS * 2U), (unsigned long)test_smp_queue_received);
+    AHURA_TEST_CHECK(test_smp_queue_ok,
+                     "every item arrived exactly once, per-producer sequences intact across cores");
+    AHURA_TEST_CHECK(os_queue_receive(&test_smp_queue, &ignored, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+                     "the queue ends empty - nothing lost, nothing left behind");
+}
+#endif /* OS_CONFIG_QUEUE_ENABLE */
+
+#if (OS_CONFIG_EVENT_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief Event-bit handshake across cores: the setter on core 1 sets bit 1 and waits for bit 2,
+ *        the waiter on core 0 consumes bit 1 and answers with bit 2. Clear-on-exit makes each
+ *        round 1:1, so a lost wake stalls and a duplicated one breaks the count.
+ */
+static os_event_t    test_smp_event;
+static __IO bool     test_smp_event_ok     = true;
+static __IO uint32_t test_smp_event_rounds = 0U;
+
+static void test_smp_event_waiter_entry(void *context)
+{
+    uint32_t round;
+
+    (void)context;
+
+    for (round = 0U; round < TEST_SMP_EVENT_ROUNDS; round++)
+    {
+        uint32_t matched = 0U;
+
+        if (os_event_wait_bits(&test_smp_event, 0x01U, true, true, &matched,
+                               OS_WAIT_FOREVER) != OS_ERR_NONE)
+        {
+            test_smp_event_ok = false;
+            return;
+        }
+
+        if (matched != 0x01U)
+        {
+            test_smp_event_ok = false;
+        }
+
+        test_smp_event_rounds++;
+
+        if (os_event_set_bits(&test_smp_event, 0x02U) != OS_ERR_NONE)
+        {
+            test_smp_event_ok = false;
+            return;
+        }
+    }
+}
+
+static void test_smp_event_setter_entry(void *context)
+{
+    uint32_t round;
+
+    (void)context;
+
+    for (round = 0U; round < TEST_SMP_EVENT_ROUNDS; round++)
+    {
+        uint32_t matched = 0U;
+
+        if (os_event_wait_bits(&test_smp_event, 0x02U, true, true, &matched,
+                               OS_WAIT_FOREVER) != OS_ERR_NONE)
+        {
+            test_smp_event_ok = false;
+            return;
+        }
+
+        if (matched != 0x02U)
+        {
+            test_smp_event_ok = false;
+        }
+
+        if (os_event_set_bits(&test_smp_event, 0x01U) != OS_ERR_NONE)
+        {
+            test_smp_event_ok = false;
+            return;
+        }
+    }
+}
+
+static void test_smp_event_pingpong(void)
+{
+    test_print_section("Multi-core (SMP): event bits hand off across cores");
+
+    test_smp_event_ok     = true;
+    test_smp_event_rounds = 0U;
+
+    AHURA_TEST_CHECK(os_event_init(&test_smp_event) == OS_ERR_NONE, "event group initialized");
+
+    AHURA_TEST_CHECK(os_task_create(&test_smp_a,
+                     OS_TASK_CONFIG(test_smp_event_waiter_entry, NULL, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "bit waiter pinned to core 0 created");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_b,
+                     OS_TASK_CONFIG(test_smp_event_setter_entry, NULL, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "bit setter pinned to core 1 created");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_a) == OS_ERR_NONE, "waiter started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_b) == OS_ERR_NONE, "setter started");
+
+    /* The setter's first wait needs the opening bit. */
+    AHURA_TEST_CHECK(os_event_set_bits(&test_smp_event, 0x02U) == OS_ERR_NONE, "opening bit set");
+
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_b, 2000U), "setter finished its rounds");
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_a, 2000U), "waiter finished its rounds");
+
+    AHURA_TEST_CHECK(test_smp_event_rounds == TEST_SMP_EVENT_ROUNDS,
+                     "every one of the %u rounds was consumed exactly once (%lu)",
+                     (unsigned)TEST_SMP_EVENT_ROUNDS, (unsigned long)test_smp_event_rounds);
+    AHURA_TEST_CHECK(test_smp_event_ok,
+                     "each wait matched exactly the expected bit - no lost or duplicated wake");
+}
+#endif /* OS_CONFIG_EVENT_ENABLE */
+
+/******************************************************************************************************/
+/**
+ * @brief Affinity migration: a task created pinned to core 1 is re-pinned to core 0 while
+ *        BLOCKED, and its next wake must dispatch it on the core the new mask names.
+ */
+static __IO uint32_t test_smp_migration_phase[2][TEST_SMP_MIGRATION_SAMPLES];
+static __IO uint32_t test_smp_migration_done[2]  = { 0U, 0U };
+
+static void test_smp_migration_entry(void *context)
+{
+    uint32_t value = 0U;
+    uint32_t i;
+
+    (void)context;
+
+    /* Phase 0: created pinned to core 1. */
+    if (os_notify_wait(OS_WAIT_FOREVER, &value) != OS_ERR_NONE)
+    {
+        return;
+    }
+
+    for (i = 0U; i < TEST_SMP_MIGRATION_SAMPLES; i++)
+    {
+        test_smp_migration_phase[0][i] = os_arch_core_id_get();
+    }
+
+    test_smp_migration_done[0] = 1U;
+
+    /* Phase 1: the affinity has been moved while this task was blocked, so this wake must land
+     * on the core the new mask names - that dispatch decision is what is under test. */
+    if (os_notify_wait(OS_WAIT_FOREVER, &value) != OS_ERR_NONE)
+    {
+        return;
+    }
+
+    for (i = 0U; i < TEST_SMP_MIGRATION_SAMPLES; i++)
+    {
+        test_smp_migration_phase[1][i] = os_arch_core_id_get();
+    }
+
+    test_smp_migration_done[1] = 1U;
+}
+
+static void test_smp_migration(void)
+{
+    uint32_t waited;
+    uint32_t i;
+    bool     phase0_ok;
+    bool     phase1_ok;
+
+    test_print_section("Multi-core (SMP): affinity change migrates a blocked task");
+
+    test_smp_migration_done[0] = 0U;
+    test_smp_migration_done[1] = 0U;
+
+    AHURA_TEST_CHECK(os_task_create(&test_smp_a,
+                     OS_TASK_CONFIG(test_smp_migration_entry, NULL, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "migrating task created pinned to core 1");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_a) == OS_ERR_NONE, "migrating task started");
+
+    AHURA_TEST_CHECK(os_notify_give(&test_smp_a, 1U) == OS_ERR_NONE, "phase 0 released");
+
+    for (waited = 0U; (waited < TEST_MC_START_TIMEOUT_MS) && (test_smp_migration_done[0] == 0U); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    phase0_ok = true;
+    for (i = 0U; i < TEST_SMP_MIGRATION_SAMPLES; i++)
+    {
+        if (test_smp_migration_phase[0][i] != 1U) { phase0_ok = false; }
+    }
+    AHURA_TEST_CHECK(phase0_ok, "every phase-0 sample ran on core 1, as pinned");
+
+    AHURA_TEST_CHECK(os_task_core_affinity_set(&test_smp_a, OS_TASK_CORE(0)) == OS_ERR_NONE,
+                     "affinity moved to core 0 while the task was blocked");
+
+    AHURA_TEST_CHECK(os_notify_give(&test_smp_a, 2U) == OS_ERR_NONE, "phase 1 released");
+
+    for (waited = 0U; (waited < TEST_MC_START_TIMEOUT_MS) && (test_smp_migration_done[1] == 0U); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    AHURA_TEST_CHECK(test_wait_inactive(&test_smp_a, 1000U), "migrating task terminated cleanly");
+
+    phase1_ok = true;
+    for (i = 0U; i < TEST_SMP_MIGRATION_SAMPLES; i++)
+    {
+        if (test_smp_migration_phase[1][i] != 0U) { phase1_ok = false; }
+    }
+    AHURA_TEST_CHECK(phase1_ok, "every phase-1 sample ran on core 0 - the wake honoured the new mask");
+}
+
+/******************************************************************************************************/
+/**
+ * @brief os_kernel_lock is per-core by design: core 0 holding it must not delay core 1's own
+ *        scheduler by one tick. The heartbeat workers parked by test_multicore() are the witness.
+ */
+static void test_smp_lock_independent(void)
+{
+    uint32_t before;
+    uint32_t after;
+    uint32_t start;
+
+    test_print_section("Multi-core (SMP): kernel lock on one core never stops the other");
+
+    before = test_mc_alive[1];
+
+    os_kernel_lock();
+    start = os_tick_get();
+    while ((os_tick_get() - start) < 150U)
+    {
+    }
+    os_kernel_unlock();
+
+    after = test_mc_alive[1];
+
+    AHURA_TEST_CHECK(after > before,
+                     "core 1 kept scheduling while core 0 held the kernel lock for 150 ms (%lu beats)",
+                     (unsigned long)(after - before));
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Both cores churn create/start/exit on their own worker tasks at once. Each helper exits
+ *        immediately, so every cycle exercises the shared task table and ready lists from two
+ *        cores against each other.
+ */
+static __IO uint32_t test_smp_churn_done[2] = { 0U, 0U };
+static __IO uint32_t test_smp_churn_errs[2] = { 0U, 0U };
+static __IO uint32_t test_smp_churn_runs    = 0U;
+
+static void test_smp_churn_worker_entry(void *context)
+{
+    (void)context;
+    test_smp_churn_runs++;
+}
+
+static void test_smp_churn_entry(void *context)
+{
+    uint32_t  slot      = (uint32_t)(uintptr_t)context;
+    os_task_t *transient = (slot == 0U) ? &test_smp_e : &test_smp_f;
+    uint32_t  mask      = (slot == 0U) ? OS_TASK_CORE(0) : OS_TASK_CORE(1);
+    uint32_t  i;
+
+    for (i = 0U; i < TEST_SMP_CHURN_CYCLES; i++)
+    {
+        if (os_task_create(transient,
+                           OS_TASK_CONFIG(test_smp_churn_worker_entry, NULL, TEST_PRIO_HIGH,
+                                          mask)) != OS_ERR_NONE)
+        {
+            test_smp_churn_errs[slot]++;
+            return;
+        }
+
+        if (os_task_start(transient) != OS_ERR_NONE)
+        {
+            test_smp_churn_errs[slot]++;
+            return;
+        }
+
+        /* The worker exits on its own the moment it runs; no cross-core delete is ever needed. */
+        while (os_task_state_get(transient) != OS_TASK_STATE_INACTIVE)
+        {
+        }
+    }
+
+    test_smp_churn_done[slot] = 1U;
+}
+
+static void test_smp_task_churn(void)
+{
+    uint32_t waited;
+
+    test_print_section("Multi-core (SMP): task create/start/exit churn on both cores at once");
+
+    test_smp_churn_done[0] = 0U;
+    test_smp_churn_done[1] = 0U;
+    test_smp_churn_errs[0] = 0U;
+    test_smp_churn_errs[1] = 0U;
+    test_smp_churn_runs    = 0U;
+
+    AHURA_TEST_CHECK(os_task_create(&test_smp_c,
+                     OS_TASK_CONFIG(test_smp_churn_entry, (void *)0U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "core-0 churner created");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_d,
+                     OS_TASK_CONFIG(test_smp_churn_entry, (void *)1U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "core-1 churner created");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_c) == OS_ERR_NONE, "core-0 churner started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_d) == OS_ERR_NONE, "core-1 churner started");
+
+    for (waited = 0U; (waited < 3000U) &&
+                      ((test_smp_churn_done[0] == 0U) || (test_smp_churn_done[1] == 0U)); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    AHURA_TEST_CHECK((test_smp_churn_done[0] == 1U) && (test_smp_churn_done[1] == 1U),
+                     "both churners finished %u create/start/exit cycles each",
+                     (unsigned)TEST_SMP_CHURN_CYCLES);
+    AHURA_TEST_CHECK((test_smp_churn_errs[0] == 0U) && (test_smp_churn_errs[1] == 0U),
+                     "no create or start failed on either core");
+    AHURA_TEST_CHECK(test_smp_churn_runs == (TEST_SMP_CHURN_CYCLES * 2U),
+                     "every spawned worker ran exactly once (%lu of %u)",
+                     (unsigned long)test_smp_churn_runs, (unsigned)(TEST_SMP_CHURN_CYCLES * 2U));
+}
+
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief Deferred calls submitted from both cores at once. The timer service task (pinned to
+ *        core 0) delivers every one of them, so the callback itself records which core it ran on.
+ */
+static void test_smp_submit_cb(void *context, uint32_t value);
+
+OS_TIMER_DEFINE_SUBMIT(test_smp_pool, 24U, 0U, test_smp_submit_cb);
+
+static __IO uint32_t test_smp_submit_runs       = 0U;
+static __IO bool     test_smp_submit_ok         = true;
+static __IO uint32_t test_smp_submit_done[2]    = { 0U, 0U };
+
+static void test_smp_submit_cb(void *context, uint32_t value)
+{
+    (void)context;
+
+    if ((os_arch_core_id_get() != 0U) || (value >= (TEST_SMP_SUBMIT_EACH * 2U)))
+    {
+        test_smp_submit_ok = false;
+    }
+
+    test_smp_submit_runs++;
+}
+
+static void test_smp_submit_entry(void *context)
+{
+    uint32_t slot = (uint32_t)(uintptr_t)context;
+    uint32_t i;
+
+    for (i = 0U; i < TEST_SMP_SUBMIT_EACH; i++)
+    {
+        if (os_timer_submit(&test_smp_pool, NULL, (slot * TEST_SMP_SUBMIT_EACH) + i) != OS_ERR_NONE)
+        {
+            test_smp_submit_ok = false;
+            test_smp_submit_done[slot] = 1U;
+            return;
+        }
+
+        /* Let the timer task drain between submissions, so the pool - smaller than the two
+         * sides' combined burst on purpose - rejects nothing through backpressure. */
+        os_task_yield();
+    }
+
+    test_smp_submit_done[slot] = 1U;
+}
+
+static void test_smp_deferred_submit(void)
+{
+    uint32_t waited;
+
+    test_print_section("Multi-core (SMP): deferred calls submitted from both cores");
+
+    test_smp_submit_runs    = 0U;
+    test_smp_submit_ok      = true;
+    test_smp_submit_done[0] = 0U;
+    test_smp_submit_done[1] = 0U;
+
+    AHURA_TEST_CHECK(os_task_create(&test_smp_a,
+                     OS_TASK_CONFIG(test_smp_submit_entry, (void *)0U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "core-0 submitter created");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_b,
+                     OS_TASK_CONFIG(test_smp_submit_entry, (void *)1U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "core-1 submitter created");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_a) == OS_ERR_NONE, "core-0 submitter started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_b) == OS_ERR_NONE, "core-1 submitter started");
+
+    for (waited = 0U; (waited < 3000U) &&
+                      ((test_smp_submit_done[0] == 0U) || (test_smp_submit_done[1] == 0U)); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    os_delay_ms(100U); /* let the last queued calls drain */
+
+    AHURA_TEST_CHECK((test_smp_submit_done[0] == 1U) && (test_smp_submit_done[1] == 1U),
+                     "both submitters queued %u calls each", (unsigned)TEST_SMP_SUBMIT_EACH);
+    AHURA_TEST_CHECK(test_smp_submit_runs == (TEST_SMP_SUBMIT_EACH * 2U),
+                     "every deferred call ran exactly once (%lu of %u)",
+                     (unsigned long)test_smp_submit_runs, (unsigned)(TEST_SMP_SUBMIT_EACH * 2U));
+    AHURA_TEST_CHECK(test_smp_submit_ok,
+                     "and each one ran on the core-0 timer task, carrying its own value");
+}
+#endif /* OS_CONFIG_TIMER_ENABLE */
+
+#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief A mixed workload from four tasks, two per core: guarded increments, atomic increments,
+ *        a semaphore give/take pair and a queue round-trip every iteration, with hard exact
+ *        accounting at the end.
+ */
+static __IO uint32_t test_smp_soak_guarded = 0U;
+static os_atomic_t  test_smp_soak_atomic   = OS_ATOMIC_INIT(0);
+static os_semaphore_t test_smp_soak_sem;
+static uint32_t     test_smp_soak_queue_buf[4];
+OS_QUEUE_DEFINE_BUFFER(test_smp_soak_queue, test_smp_soak_queue_buf);
+static __IO uint32_t test_smp_soak_done[4] = { 0U, 0U, 0U, 0U };
+static __IO uint32_t test_smp_soak_seen[4] = { 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU };
+static __IO bool     test_smp_soak_ok      = true;
+
+static void test_smp_soak_entry(void *context)
+{
+    uint32_t slot = (uint32_t)(uintptr_t)context;
+    uint32_t item = slot + 1U;
+    uint32_t i;
+
+    test_smp_soak_seen[slot] = os_arch_core_id_get();
+
+    for (i = 0U; i < TEST_SMP_SOAK_ITERATIONS; i++)
+    {
+        uint32_t received = 0U;
+
+        os_critical_enter();
+        test_smp_soak_guarded = test_smp_soak_guarded + 1U;
+        os_critical_exit();
+
+        (void)os_atomic_inc(&test_smp_soak_atomic);
+
+        if (os_semaphore_give(&test_smp_soak_sem) != OS_ERR_NONE)
+        {
+            test_smp_soak_ok = false;
+            return;
+        }
+
+        if (os_semaphore_take(&test_smp_soak_sem, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        {
+            test_smp_soak_ok = false;
+            return;
+        }
+
+        if (os_queue_send(&test_smp_soak_queue, &item, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        {
+            test_smp_soak_ok = false;
+            return;
+        }
+
+        if (os_queue_receive(&test_smp_soak_queue, &received, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        {
+            test_smp_soak_ok = false;
+            return;
+        }
+
+        if (received != item)
+        {
+            test_smp_soak_ok = false;
+        }
+    }
+
+    test_smp_soak_done[slot] = 1U;
+}
+
+static void test_smp_soak_mixed(void)
+{
+    uint32_t waited;
+    uint32_t expected = TEST_SMP_SOAK_ITERATIONS * 4U;
+    uint32_t ignored  = 0U;
+
+    test_print_section("Multi-core (SMP): mixed workload soak, four tasks across both cores");
+
+    test_smp_soak_guarded = 0U;
+    test_smp_soak_ok      = true;
+
+    for (waited = 0U; waited < 4U; waited++)
+    {
+        test_smp_soak_done[waited] = 0U;
+        test_smp_soak_seen[waited] = 0xFFFFFFFFU;
+    }
+
+    AHURA_TEST_CHECK(os_semaphore_init(&test_smp_soak_sem, 0U, 1U) == OS_ERR_NONE, "soak semaphore initialized");
+
+    AHURA_TEST_CHECK(os_task_create(&test_smp_a,
+                     OS_TASK_CONFIG(test_smp_soak_entry, (void *)0U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "soak worker 0 created on core 0");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_b,
+                     OS_TASK_CONFIG(test_smp_soak_entry, (void *)1U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(0))) == OS_ERR_NONE,
+                     "soak worker 1 created on core 0");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_c,
+                     OS_TASK_CONFIG(test_smp_soak_entry, (void *)2U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "soak worker 2 created on core 1");
+    AHURA_TEST_CHECK(os_task_create(&test_smp_d,
+                     OS_TASK_CONFIG(test_smp_soak_entry, (void *)3U, TEST_PRIO_HIGH,
+                                    OS_TASK_CORE(1))) == OS_ERR_NONE,
+                     "soak worker 3 created on core 1");
+
+    AHURA_TEST_CHECK(os_task_start(&test_smp_a) == OS_ERR_NONE, "worker 0 started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_b) == OS_ERR_NONE, "worker 1 started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_c) == OS_ERR_NONE, "worker 2 started");
+    AHURA_TEST_CHECK(os_task_start(&test_smp_d) == OS_ERR_NONE, "worker 3 started");
+
+    for (waited = 0U; (waited < 5000U) &&
+                      ((test_smp_soak_done[0] == 0U) || (test_smp_soak_done[1] == 0U) ||
+                       (test_smp_soak_done[2] == 0U) || (test_smp_soak_done[3] == 0U)); waited++)
+    {
+        os_delay_ms(1U);
+    }
+
+    AHURA_TEST_CHECK((test_smp_soak_done[0] == 1U) && (test_smp_soak_done[1] == 1U) &&
+                     (test_smp_soak_done[2] == 1U) && (test_smp_soak_done[3] == 1U),
+                     "all four workers finished %u iterations each", (unsigned)TEST_SMP_SOAK_ITERATIONS);
+    AHURA_TEST_CHECK((test_smp_soak_seen[0] == 0U) && (test_smp_soak_seen[1] == 0U) &&
+                     (test_smp_soak_seen[2] == 1U) && (test_smp_soak_seen[3] == 1U),
+                     "each worker ran on the core it was pinned to");
+    AHURA_TEST_CHECK(test_smp_soak_guarded == expected,
+                     "guarded counter is exact across four tasks on two cores (%lu of %lu)",
+                     (unsigned long)test_smp_soak_guarded, (unsigned long)expected);
+    AHURA_TEST_CHECK(os_atomic_get(&test_smp_soak_atomic) == (int32_t)expected,
+                     "atomic counter is exact too (%ld of %lu)",
+                     (long)os_atomic_get(&test_smp_soak_atomic), (unsigned long)expected);
+    AHURA_TEST_CHECK(os_semaphore_take(&test_smp_soak_sem, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+                     "the semaphore ended empty");
+    AHURA_TEST_CHECK(os_queue_receive(&test_smp_soak_queue, &ignored, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+                     "the queue ended empty");
+    AHURA_TEST_CHECK(test_smp_soak_ok,
+                     "every queue round-trip returned its own item and every call succeeded");
+}
+#endif /* SEMAPHORE && QUEUE && ATOMIC */
+
+#endif /* OS_CONFIG_CORE_COUNT > 1U */
+
 /******************************************************************************************************/
 static void test_unsupported_features(void)
 {
     test_print_section("Multi-core / TrustZone / Tickless (config-gated, informational)");
 
 #if (OS_CONFIG_CORE_COUNT > 1U)
-    printf("  [INFO] multi-core APIs compiled in (OS_CONFIG_CORE_COUNT=%u) - not exercised by this suite\r\n",
+    printf("  [INFO] multi-core APIs compiled in (OS_CONFIG_CORE_COUNT=%u) - exercised above\r\n",
            (unsigned)OS_CONFIG_CORE_COUNT);
 #else
     printf("  [SKIP] multi-core APIs compiled out (OS_CONFIG_CORE_COUNT=1: this build is single-core)\r\n");
@@ -5710,7 +7163,7 @@ static void test_priority_api(void)
 
     test_print_section("Task Priority (get / set)");
 
-    status = os_task_create(&worker, OS_TASK_CONFIG(test_worker_entry, NULL, OS_TASK_PRIO_2));
+    status = os_task_create(&worker, TEST_TASK_CONFIG(test_worker_entry, NULL, OS_TASK_PRIO_2));
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "worker created at priority 2");
 
     AHURA_TEST_CHECK(os_task_priority_get(&worker, &priority) == OS_ERR_NONE, "priority read back");
@@ -5764,7 +7217,7 @@ static void test_priority_api(void)
     /* A change takes effect at once, not at the next dispatch. The helper runs to completion and
      * exits on its own, so it can be raised above this task without being able to starve it. */
     os_test_prio_ran = 0U;
-    (void)os_task_create(&worker, OS_TASK_CONFIG(test_prio_entry, NULL, TEST_PRIO_LOW));
+    (void)os_task_create(&worker, TEST_TASK_CONFIG(test_prio_entry, NULL, TEST_PRIO_LOW));
     (void)os_task_start(&worker);
 
     AHURA_TEST_CHECK(os_test_prio_ran == 0U, "a task below this one stays ready without running");
@@ -5852,9 +7305,9 @@ static void test_regressions(void)
         os_test_reg_b_st = OS_ERR_ERROR;
         (void)os_semaphore_init(&os_test_reg_sem, 0U, 2U);
 
-        (void)os_task_create(&helper, OS_TASK_CONFIG(test_reg_waiter_b, NULL, TEST_PRIO_LOW));
+        (void)os_task_create(&helper, TEST_TASK_CONFIG(test_reg_waiter_b, NULL, TEST_PRIO_LOW));
         (void)os_task_start(&helper);
-        (void)os_task_create(&helper2, OS_TASK_CONFIG(test_reg_waiter_b, NULL, TEST_PRIO_LOW));
+        (void)os_task_create(&helper2, TEST_TASK_CONFIG(test_reg_waiter_b, NULL, TEST_PRIO_LOW));
         (void)os_task_start(&helper2);
         os_delay_ms(20U);   /* both are below this task, so they queue while it sleeps */
 
@@ -5888,17 +7341,17 @@ static void test_regressions(void)
         (void)os_semaphore_init(&os_test_reg_sem, 0U, 2U);
         (void)os_mutex_init(&os_test_reg_mutex);
 
-        (void)os_task_create(&helper, OS_TASK_CONFIG(test_reg_boosted_entry, NULL, OS_TASK_PRIO_1));
+        (void)os_task_create(&helper, TEST_TASK_CONFIG(test_reg_boosted_entry, NULL, OS_TASK_PRIO_1));
         (void)os_task_start(&helper);
         os_delay_ms(20U);   /* holds the mutex, now queued on the semaphore */
 
         /* Higher priority, so the waiter list puts it AHEAD of the low-priority holder. */
-        (void)os_task_create(&helper2, OS_TASK_CONFIG(test_reg_waiter_b, NULL, OS_TASK_PRIO_2));
+        (void)os_task_create(&helper2, TEST_TASK_CONFIG(test_reg_waiter_b, NULL, OS_TASK_PRIO_2));
         (void)os_task_start(&helper2);
         os_delay_ms(20U);
 
         /* Contending the mutex boosts its owner above that waiter. */
-        (void)os_task_create(&helper3, OS_TASK_CONFIG(test_reg_booster_entry, NULL, OS_TASK_PRIO_3));
+        (void)os_task_create(&helper3, TEST_TASK_CONFIG(test_reg_booster_entry, NULL, OS_TASK_PRIO_3));
         (void)os_task_start(&helper3);
         os_delay_ms(20U);
 
@@ -6100,6 +7553,42 @@ void os_test(void)
     test_queue_accounting();
 #endif
     test_regressions();
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    /* Multi-core comes LAST, on purpose. Every section above exercises the kernel one subsystem
+     * at a time, and that is the foundation the SMP questions stand on: once the whole
+     * single-core surface has passed, the suite asks whether a second core starts, reports its
+     * own id, honours affinity and shares the spinlock correctly - and then drives the cross-core
+     * seams hard (contention, wake integrity, migration, churn, a mixed soak) before watching
+     * both parked workers for several heartbeats to prove the second core SURVIVED the whole
+     * run, not just its own section. */
+    test_multicore();
+    test_smp_critical_nested();
+#if (OS_CONFIG_ATOMIC_ENABLE == 1U)
+    test_smp_atomic_contention();
+#endif
+#if (OS_CONFIG_NOTIFY_ENABLE == 1U)
+    test_smp_notify_pingpong();
+#endif
+#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+    test_smp_semaphore_pingpong();
+#endif
+#if (OS_CONFIG_QUEUE_ENABLE == 1U)
+    test_smp_queue_accounting();
+#endif
+#if (OS_CONFIG_EVENT_ENABLE == 1U)
+    test_smp_event_pingpong();
+#endif
+    test_smp_migration();
+    test_smp_lock_independent();
+    test_smp_task_churn();
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+    test_smp_deferred_submit();
+#endif
+#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
+    test_smp_soak_mixed();
+#endif
+    test_multicore_watch(TEST_MC_WATCH_MS, "at the end of the whole run");
+#endif
     test_unsupported_features();
 
     /* Repeated from the banner on purpose: the result block is what gets screenshotted or pasted

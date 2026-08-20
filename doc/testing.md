@@ -70,7 +70,11 @@ The task runs `os_test()` once. It exercises whichever
 `OS_CONFIG_<FEATURE>_ENABLE` switches are on, covering tasks, delays, critical
 sections, the scheduler lock, mutexes and priority inheritance, semaphores,
 queues, events, task notifications, timers, work items, the kernel heap,
-stack watermarks, CPU usage, and the intrusive list. It prints a detailed
+stack watermarks, CPU usage, and the intrusive list. On multi-core builds
+(`OS_CONFIG_CORE_COUNT > 1`) it additionally runs the SMP section LAST - core
+start, core id, affinity, the cross-core spinlock, a dedicated cross-core
+stress tier (see below), and a final watch that both cores survived the whole
+run. It prints a detailed
 PASS/FAIL log via `printf` with a pass/fail summary, then finishes with a
 **benchmark table**: each hot kernel path timed with the CPU cycle counter,
 sampled repeatedly with the minimum kept, and the measurement overhead
@@ -95,6 +99,11 @@ a different class of bug:
 | **Multi-primitive soak** | `test_stress_soak` - 4 tasks at distinct priorities hit a mutex, an under-provisioned semaphore and queue, an event and the heap *simultaneously* for many iterations, then check hard invariants (exact mutex-protected counter, exact token reconciliation, no leak, no corruption) |
 | **Create/destroy churn** | `test_stress_task_churn`, `test_stress_timer_churn` - one create/run/exit or init/start/stop path cycled 500 times, to shake out slot-reuse and list-corruption bugs |
 | **Per-subsystem stress** | Nine tests, one subsystem each, at high volume with exact accounting (below) |
+| **Cross-core SMP stress** | `test_smp_*`, only on multi-core builds and only in the SMP section at the end of the run: nested critical sections and atomics contended across cores, notify/semaphore/event ping-pongs between pinned tasks, two-producer queue accounting, affinity migration of a blocked task, per-core kernel-lock independence, create/start/exit churn on both cores, deferred calls from both cores, and a mixed-workload soak - every count exact, so a lost or duplicated cross-core wake fails it |
+
+The SMP section runs with `OS_CONFIG_MAX_USER_TASKS` at 8: the test task,
+the two heartbeat workers parked by `test_multicore`, and up to five
+concurrent helpers.
 
 The per-subsystem tier:
 

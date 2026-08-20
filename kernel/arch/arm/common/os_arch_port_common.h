@@ -61,8 +61,8 @@
     !defined(OS_CONFIG_MAIN_TASK_STACK_SIZE) || !defined(OS_CONFIG_MAIN_TASK_PRIORITY) ||             \
     !defined(OS_CONFIG_TEST_STACK_SIZE) || !defined(OS_CONFIG_TEST_PRIORITY) ||                       \
     !defined(OS_CONFIG_TRUSTZONE) || !defined(OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY) ||                  \
-    !defined(OS_CONFIG_CORE_COUNT) || !defined(OS_CONFIG_SPINLOCK_SOC_BACKEND) ||                     \
-    !defined(OS_CONFIG_TICKLESS_MIN_IDLE) || !defined(OS_CONFIG_LPTIM_CLOCK_HZ) ||                    \
+    !defined(OS_CONFIG_CORE_COUNT) ||                     \
+    !defined(OS_CONFIG_TICKLESS_MIN_IDLE) ||                    \
     !defined(OS_CONFIG_MAX_SUPPRESSED_TICKS)
 #error "os_config.h is incomplete: it must define every option listed in kernel/template/os_config.h."
 #endif
@@ -102,12 +102,24 @@
  *
  * Everything checked above is mandatory, because a missing sizing or feature
  * switch would read as 0 in an #if and silently disable or misconfigure
- * something. The three below are different in kind: each is a NAME or a
- * yes/no diagnostic that the kernel can default correctly on its own, and a
- * missing one is caught by #ifndef rather than misread as 0. They are
- * documented in template/os_config.h, so a config copied from the template
- * carries them, but an older config that predates them still builds and
- * behaves exactly as it did before.
+ * something. The four below are different in kind: each is a NAME, a yes/no
+ * diagnostic or a property of the silicon that the kernel can default
+ * correctly on its own, and a missing one is caught by #ifndef rather than
+ * misread as 0.
+ *
+ * Two of them are application choices and are documented in
+ * template/os_config.h: OS_CONFIG_TICK_SOURCE and
+ * OS_CONFIG_ARCH_VECTOR_CHECK.
+ *
+ * The other two are facts about the target, owned by the SoC package (see
+ * doc/soc.md) and deliberately absent from the template:
+ * OS_CONFIG_ARCH_PENDSV_HANDLER and OS_CONFIG_SPINLOCK_SOC_BACKEND. The
+ * reason is include order. os_config.h is read BELOW this point, so a stale
+ * copy of either in an application's configuration would be seen after the
+ * SoC package's -D and would silently win - on the PendSV name that means
+ * the kernel traps at os_start(); on the spinlock it means a lock that
+ * excludes nothing. A config that still defines them keeps building, and
+ * keeps that hazard, which is why the template no longer carries them.
 */
 
 /*
@@ -129,6 +141,21 @@
  */
 #ifndef OS_CONFIG_ARCH_PENDSV_HANDLER
 #define OS_CONFIG_ARCH_PENDSV_HANDLER  PendSV_Handler
+#endif
+
+/*
+ * The symbol the startup file gives the SVC exception, on the same terms as the PendSV name
+ * above and for the same reason: it is a property of the vendor's startup code, not of the
+ * architecture. SVC_Handler is the CMSIS-Pack convention; the Pico SDK calls it isr_svcall.
+ *
+ * The KERNEL never uses SVC and claims no handler for it - this exists for code that does. The
+ * self-test suite installs one to reach ISR context, and an application may have its own.
+ * Getting it wrong is not a link error: the vector table keeps pointing at the startup file's
+ * default stub, which on most SDKs is a breakpoint, so the first svc instruction hangs the board
+ * with nothing to indicate why.
+ */
+#ifndef OS_CONFIG_ARCH_SVC_HANDLER
+#define OS_CONFIG_ARCH_SVC_HANDLER     SVC_Handler
 #endif
 
 /*
@@ -180,6 +207,27 @@
 #if (OS_CONFIG_TICK_SOURCE != OS_CONFIG_TICK_SOURCE_SYSTICK) &&                                        \
     (OS_CONFIG_TICK_SOURCE != OS_CONFIG_TICK_SOURCE_EXTERNAL)
 #error "OS_CONFIG_TICK_SOURCE must be OS_CONFIG_TICK_SOURCE_SYSTICK or OS_CONFIG_TICK_SOURCE_EXTERNAL."
+#endif
+
+/*
+ * Which backend the inter-core kernel spinlock uses (0 = the built-in
+ * LDREX/STREX one, the default; 1 = the os_arch_spinlock_*_cb callbacks).
+ *
+ * A property of the silicon rather than of the application, so the SoC
+ * package owns it - see doc/soc.md.
+ *
+ * Set it to 1 when the interconnect implements no GLOBAL exclusive monitor
+ * for the spinlock's memory, or that memory cannot be marked Shareable.
+ * Without both, two cores can complete STREX at once and the lock stops
+ * excluding anything, silently. Routing it to the SoC's own hardware
+ * semaphore through the callbacks is the fix.
+ *
+ * ARMv6-M multi-core parts have no LDREX/STREX at all and use the callback
+ * backend whatever this says (see OS_ARCH_SPINLOCK_USE_CB below). Only
+ * meaningful when OS_CONFIG_CORE_COUNT > 1.
+ */
+#ifndef OS_CONFIG_SPINLOCK_SOC_BACKEND
+#define OS_CONFIG_SPINLOCK_SOC_BACKEND 0U
 #endif
 
 #ifdef __cplusplus
@@ -295,6 +343,7 @@ extern "C"
 
 /* Exception numbers, which - unlike the handler NAMES - are architectural. */
 #define OS_ARCH_VECTOR_PENDSV             14U
+#define OS_ARCH_VECTOR_SVC                11U
 
 /*
  * SysTick. Defined here rather than per port because the block is identical on
@@ -358,6 +407,14 @@ extern "C"
 #define OS_ARCH_IRQ_ENABLE()              do { __asm volatile("cpsie i" ::: "memory"); } while (0)
 #define OS_ARCH_IDLE()                    do { __asm volatile("wfi"); } while (0)
 #define OS_ARCH_SLEEP(ticks)              do { os_arch_sleep_prepare((ticks)); OS_ARCH_DSB(); __asm volatile("wfi"); OS_ARCH_ISB(); } while (0)
+
+/* WFE and the event it waits for. WFE's event register LATCHES, so an SEV that
+ * arrives before the WFE still wakes it - unlike WFI, where the wake can be
+ * lost in the window between deciding to sleep and sleeping. That is what makes
+ * the pair the right instrument for an idle core that another core must be
+ * able to wake: see os_arch_soc_idle_cb in ahura.h. */
+#define OS_ARCH_SEV()                     __asm volatile("sev" ::: "memory")
+#define OS_ARCH_WFE()                     __asm volatile("wfe" ::: "memory")
 
 /*
  * ***********************************************************************************************************
@@ -636,6 +693,24 @@ static inline uint32_t os_arch_clock_hz_get(void)
 */
 
 /******************************************************************************************************/
+/******************************************************************************************************/
+/**
+ * @brief Bring the SoC up far enough for the kernel to start. Called by os_init() before
+ *        anything else, including os_arch_init().
+ *
+ * This is where a SoC package publishes the CPU clock into SystemCoreClock, claims whatever
+ * hardware the kernel will use for its spinlock, and arms this core's inter-core interrupt. All
+ * of it has to happen before os_init() programs the tick from that clock, which is why the call
+ * sits at the very top rather than being left to the application to remember.
+ *
+ * Unlike the rest of the SoC group this one HAS a weak default, an empty body in os_kernel.c, so
+ * a target with no package needs no soc_cb.c to build. A package therefore overrides it with
+ * a STRONG definition: two weak definitions would leave the linker keeping whichever it saw
+ * first, and the kernel's own is always linked.
+ */
+void os_arch_soc_init_cb(void);
+
+/******************************************************************************************************/
 /**
  * @brief Initialize architecture-specific low-level resources.
  */
@@ -861,7 +936,55 @@ uint32_t os_arch_core_id_get_cb(void);
  *        provided: a do-nothing IPI leaves every cross-core wakeup waiting for the next tick.
  */
 void os_arch_core_ipi_request_cb(uint32_t core_id);
+
+/******************************************************************************************************/
+/**
+ * @brief Boot a secondary core so it reaches os_core_start(). Called by os_start() once the
+ *        kernel is complete and running, one call per core from 1 to OS_CONFIG_CORE_COUNT-1.
+ *
+ * REQUIRED when OS_CONFIG_CORE_COUNT is above 1: the kernel ships no default, so a missing one
+ * is a link error rather than a second core that silently never runs - a failure that otherwise
+ * looks exactly like an application whose tasks are merely never scheduled there.
+ *
+ * How a core is started has no architectural form at all - it is a chip-level reset release, a
+ * mailbox handshake, a boot-address register - so the kernel can only say WHEN. The
+ * implementation must point the core at a vector table routing the kernel's context-switch
+ * exception, then have it call os_core_start(), which does not return.
+ *
+ * Called with the kernel running but before core 0 has entered its own first task. The new core
+ * may begin scheduling immediately, so everything it can reach must already be consistent.
+ */
+void os_arch_core_launch_cb(uint32_t core_id);
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: top of the given core's handler (MSP) stack.
+ *
+ * Called from the context-switch handler's first-start path, which resets MSP to a clean top
+ * while abandoning the boot context. The vector table only ever names ONE initial stack pointer
+ * - core 0's - so a secondary core that read it there would reset its MSP into core 0's stack,
+ * and both cores' handler frames would then overwrite each other. No default is provided: a
+ * missing one is a link error rather than a second core silently sharing the first core's stack.
+ *
+ * The value returned must be the address a full stack pointer starts at (the top): the
+ * highest address of the region, not the first usable word below it.
+ */
+uint32_t os_arch_handler_stack_top_cb(uint32_t core_id);
 #endif /* OS_CONFIG_CORE_COUNT > 1U */
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: bottom of the given core's handler (MSP) stack, for the ARMv8-M MSPLIM
+ *        guard. Return 0 to leave that core's guard off.
+ *
+ * Declared outside the multi-core guard because the ARMv8-M port calls it on every build -
+ * MSPLIM guards a single-core handler stack just as usefully as a dual-core one. The kernel ships
+ * a weak default that answers from the linker's single-stack symbols, which can only be right for
+ * core 0. A multi-core SoC package should override it: that layer placed the other cores' stacks
+ * and is the only one that knows where they are. ARMv8-M only; other ports have no MSPLIM and
+ * never call it.
+ */
+uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id);
 
 typedef struct
 {

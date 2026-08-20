@@ -138,10 +138,18 @@ OS_ARCH_STRINGIFY(OS_CONFIG_ARCH_PENDSV_HANDLER) ":\n"
 "    bl      os_arch_tz_context_restore\n" /* load the first task's secure context */
 "    mov     r0, r4\n"
 #endif
-"    ldr     r1, os_arch_vtor_addr\n"      /* reset MSP to the vector-table initial value; the */
-"    ldr     r1, [r1]\n"                   /* boot (main) context is abandoned here, including */
-"    ldr     r1, [r1]\n"                   /* the frame this exception pushed - the return     */
-"    msr     msp, r1\n"                    /* below unstacks from PSP instead                  */
+#if (OS_CONFIG_CORE_COUNT > 1U)
+"    mov     r5, r0\n"                     /* keep the task stack pointer across the calls below */
+"    bl      os_arch_core_id_get_cb\n"     /* r0 = this core's id */
+"    bl      os_arch_handler_stack_top_cb\n" /* r0 = this core's handler stack top */
+"    msr     msp, r0\n"                    /* abandon the boot context, including the frame this  */
+"    mov     r0, r5\n"                     /* exception pushed - the return below unstacks from   */
+#else                                      /* PSP instead. Single-core: the vector-table value    */
+"    ldr     r1, os_arch_vtor_addr\n"      /* is exactly this core's stack, and always was.      */
+"    ldr     r1, [r1]\n"                   /* the boot (main) context is abandoned here, including */
+"    ldr     r1, [r1]\n"                   /* the frame this exception pushed - the return        */
+"    msr     msp, r1\n"                    /* below unstacks from PSP instead                     */
+#endif
 "    b       os_arch_context_restore_asm\n"
 ".align 2\n"
 "os_arch_vtor_addr:\n"                     /* VTOR reads as zero on cores without it, which is */

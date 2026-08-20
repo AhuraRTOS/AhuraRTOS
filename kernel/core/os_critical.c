@@ -76,6 +76,7 @@ void os_critical_enter(void)
     if (os_critical_nesting_count[core] == 0U)
     {
         os_arch_spinlock_acquire(&os_critical_kernel_lock);
+
         os_critical_saved_mask[core] = mask_state;
     }
 

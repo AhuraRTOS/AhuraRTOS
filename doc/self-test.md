@@ -108,7 +108,10 @@ appears within milliseconds of boot:
   [PASS] os_task_create() rejects priority 0 (idle-reserved)
   [PASS] ...
   (one section per subsystem: mutex, semaphore, queue, events, timers,
-   deferred calls, notifications, atomics, heap, logging, stress, ...)
+   deferred calls, notifications, atomics, heap, logging, stress, ...
+   and on multi-core builds the SMP section - core start, affinity, the
+   cross-core spinlock, then a cross-core stress tier - comes LAST, right
+   before the result block)
 
 ========================================
  RESULT: <n> passed, 0 failed (of <n> checks)

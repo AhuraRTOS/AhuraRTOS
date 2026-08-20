@@ -209,7 +209,7 @@ os_err_t os_log_system_init(void)
         os_log_task_entry,
         NULL,
         OS_CONFIG_LOG_TASK_PRIORITY,
-        OS_TASK_CORE_ANY
+        OS_CONFIG_LOG_CORE_AFFINITY
     };
 
     os_log_head    = 0U;

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """
-Install AhuraRTOS into an STM32CubeMX-generated CMake project.
+Install AhuraRTOS into an STM32CubeMX-generated CMake project, over the network.
 
 Run it from the root of your project - the directory holding the top-level
 CMakeLists.txt and the .ioc. Nothing needs to be saved there first; piping the
 script straight into Python leaves no installer file behind:
 
-    curl -fsSL <raw-url>/tools/install_stm32.py | python3 -    # macOS, Linux
-    irm <raw-url>/tools/install_stm32.py | python -            # Windows
+    curl -fsSL <raw-url>/tools/install_stm32_online.py | python3 -    # macOS, Linux
+    irm <raw-url>/tools/install_stm32_online.py | python -            # Windows
 
 Either way it prints the diff and asks before writing. Options go after the `-`:
 
@@ -16,7 +16,10 @@ Either way it prints the diff and asks before writing. Options go after the `-`:
     ... | python - --yes         # apply without asking
     ... | python - --uninstall   # take the integration back out
 
-A saved copy works the same way (`python install_stm32.py --dry-run`).
+A saved copy works the same way (`python install_stm32_online.py --dry-run`).
+
+For a machine with no route out, use install_stm32_offline.py instead: same six
+steps, byte-identical result, and it only ever reads a copy already on disk.
 
 What it does, which is exactly the six steps of doc/installation.md:
 
@@ -26,6 +29,12 @@ What it does, which is exactly the six steps of doc/installation.md:
     4. route the tick: os_tick_handler() in SysTick_Handler
     5. disable a CubeMX-generated PendSV_Handler, which the port defines
     6. boot it: os_init() / os_start() in main()
+
+Note what is NOT copied: kernel/template/soc_cb.c. That file is the SoC
+half of the callback contract, and STM32 needs none of it - CMSIS-Pack startup
+already gives the kernel its vector name and SystemCoreClock, and single-core
+parts have no core id, IPI or spinlock. Copying it anyway would put empty weak
+stubs in the build; doc/soc.md explains why that is worse than it sounds.
 
 Rules it follows, in order of importance:
 
@@ -57,27 +66,18 @@ install, no shell commands. Runs the same on Windows, macOS and Linux.
 
 import argparse
 import contextlib
-import difflib
-import io
-import os
 import re
-import shutil
 import sys
-import tarfile
-import tempfile
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-REPO = "AhuraRTOS/AhuraRTOS"
-TARBALL = "https://codeload.github.com/{repo}/tar.gz/{ref}"
+from install_common import (
+    BEGIN_TEXT, Fatal, SourceFile, add_common_arguments, apply, drop_managed,
+    finish, function_body, function_span, looks_like_ahura, managed_block,
+    refuse_unmanaged, relative, repo_source, strip_comments, walk_sources,
+)
 
-BEGIN_TEXT = ">>> AhuraRTOS BEGIN - managed block, changes here are overwritten"
-END_TEXT = "<<< AhuraRTOS END"
+SOC = "st/stm32"
 
-# Directories never searched for project sources. "cmake" holds the CubeMX
-# sub-build and the toolchain files, which are read for the MCU identity but are
-# never edit targets.
 PRUNE = {
     ".git", ".vscode", ".settings", "__pycache__",
     "build", "Build", "Debug", "Release", "cmake-build-debug", "cmake-build-release",
@@ -85,210 +85,9 @@ PRUNE = {
 }
 
 
-class Fatal(Exception):
-    """A problem the user has to fix before anything can be written."""
-
-
-# ---------------------------------------------------------------------------
-# Text files that survive a round trip
-# ---------------------------------------------------------------------------
-
-class SourceFile:
-    """A text file whose byte-level identity survives editing.
-
-    CubeMX writes CRLF on Windows and sometimes leaves a UTF-8 BOM or a stray
-    cp1252 byte in a comment. A naive read/write cycle would rewrite every line
-    ending in the file and bury the real change in a whole-file diff, so
-    encoding, BOM and newline style are captured on load and restored on save.
-    Internally the text always uses '\\n'.
-    """
-
-    def __init__(self, path: Path):
-        self.path = path
-        raw = path.read_bytes()
-
-        self.bom = raw.startswith(b"\xef\xbb\xbf")
-        if self.bom:
-            raw = raw[3:]
-
-        for encoding in ("utf-8", "cp1252"):
-            try:
-                text = raw.decode(encoding)
-            except UnicodeDecodeError:
-                continue
-            self.encoding = encoding
-            break
-        else:
-            raise Fatal("cannot decode {} as UTF-8 or cp1252".format(path))
-
-        self.newline = "\r\n" if "\r\n" in text else "\n"
-        self.text = text.replace("\r\n", "\n")
-        self.original = self.text
-
-    def to_bytes(self) -> bytes:
-        out = self.text.replace("\n", self.newline).encode(self.encoding)
-        return b"\xef\xbb\xbf" + out if self.bom else out
-
-    @property
-    def changed(self) -> bool:
-        return self.text != self.original
-
-    def diff(self, root: Path) -> str:
-        rel = relative(self.path, root)
-        return "".join(difflib.unified_diff(
-            self.original.splitlines(keepends=True),
-            self.text.splitlines(keepends=True),
-            fromfile=rel, tofile=rel, n=3,
-        ))
-
-
-def ask(prompt: str):
-    """Read one line from the user, or None if there is no terminal to ask at.
-
-    input() is not enough. In the one-line install the script itself arrives on
-    stdin - `curl ... | python -` - so stdin is the source code, already read to
-    EOF, and input() would raise immediately. The controlling terminal is still
-    open in that case, so ask it directly: /dev/tty on POSIX, CONIN$ on Windows.
-    """
-    if sys.stdin.isatty():
-        try:
-            return input(prompt)
-        except EOFError:
-            return None
-
-    # stdin is the script itself, so ask the terminal directly - but only when
-    # something is likely to answer. That /dev/tty opens proves a terminal
-    # device exists, not that a human is watching it: Git Bash and CI runners
-    # both provide one, and a blocking read there hangs the install forever.
-    # An unredirected stdout is the usable signal - that is where the prompt
-    # goes, so if it is not a terminal, nobody is reading the question either.
-    if not sys.stdout.isatty():
-        return None
-
-    try:
-        terminal = open("CONIN$" if os.name == "nt" else "/dev/tty")
-    except OSError:
-        return None
-    with terminal:
-        sys.stdout.write(prompt)
-        sys.stdout.flush()
-        line = terminal.readline()
-    return line or None
-
-
-def relative(path: Path, root: Path) -> str:
-    """Project-relative POSIX path, for messages and for CMake."""
-    try:
-        return path.resolve().relative_to(root.resolve()).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
-def strip_comments(text: str) -> str:
-    """Blank out comments and string literals so a search sees code, not prose.
-
-    Length-preserving - every removed character becomes a space and newlines
-    stay - so offsets into the result still index the original text. Without
-    this, a commented-out HAL_IncTick() reads as a live call, and the word
-    "os_init()" inside our own explanatory comment would satisfy a placement
-    check that nothing actually calls it.
-    """
-    return re.sub(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\])*\"",
-                  lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S)
-
-
-def function_span(text: str, name: str):
-    """(start, end) of a whole `<type> name(void) { ... }`, or None.
-
-    Brace-matched over comment-stripped text, so a brace inside a comment or a
-    string cannot end the function early.
-    """
-    code = strip_comments(text)
-    m = re.search(r"^[ \t]*(?:__weak[ \t]+)?(?:void|int)[ \t]+" + re.escape(name) +
-                  r"[ \t]*\([ \t]*void[ \t]*\)[ \t]*\n?[ \t]*\{", code, re.M)
-    if not m:
-        return None
-    depth, i = 1, m.end()
-    while i < len(code) and depth:
-        if code[i] == "{":
-            depth += 1
-        elif code[i] == "}":
-            depth -= 1
-        i += 1
-    if depth:
-        return None
-    while i < len(text) and text[i] == "\n":
-        i += 1
-    return m.start(), i
-
-
-def function_body(text: str, name: str):
-    """The inside of a function, or None."""
-    span = function_span(text, name)
-    if span is None:
-        return None
-    start, end = span
-    return text[text.index("{", start) + 1:text.rindex("}", start, end)]
-
-
 # ---------------------------------------------------------------------------
 # Managed regions
 # ---------------------------------------------------------------------------
-
-def managed_block(payload: str, indent: str, comment: str = "c") -> str:
-    """Wrap `payload` in the sentinel markers, indented to match its context."""
-    if comment == "cmake":
-        begin, end = "# " + BEGIN_TEXT, "# " + END_TEXT
-    else:
-        begin, end = "/* " + BEGIN_TEXT + " */", "/* " + END_TEXT + " */"
-
-    lines = [indent + begin]
-    lines += [(indent + line).rstrip() for line in payload.strip("\n").split("\n")]
-    lines.append(indent + end)
-    return "\n".join(lines) + "\n"
-
-
-def find_managed(text: str, start: int = 0, stop: int = None):
-    """Offsets of the whole managed region (markers included), or None."""
-    window = text[start:stop if stop is not None else len(text)]
-
-    b = re.search(r"^[ \t]*(?:/\*|#)[ \t]*" + re.escape(BEGIN_TEXT), window, re.M)
-    if not b:
-        return None
-    e = re.search(r"^[ \t]*(?:/\*|#)[ \t]*" + re.escape(END_TEXT) + r".*$\n?",
-                  window[b.start():], re.M)
-    if not e:
-        raise Fatal("found an unterminated AhuraRTOS block - remove it by hand and re-run")
-
-    return start + b.start(), start + b.start() + e.end()
-
-
-def drop_managed(src: SourceFile) -> int:
-    """Remove every managed region from the file. Returns how many went.
-
-    A region that only added code is deleted. A region that *disabled* code
-    carries the original verbatim inside `#if 0 ... #endif`, and removing it
-    means putting that code back - deleting it would throw away generated code
-    this script does not own.
-    """
-    removed = 0
-    while True:
-        span = find_managed(src.text)
-        if not span:
-            return removed
-        start, end = span
-
-        restored = re.search(r"^#if 0\n(.*?)^#endif\n", src.text[start:end], re.S | re.M)
-        if restored:
-            replacement = restored.group(1)
-        else:
-            replacement = ""
-            # Take the blank line we added ahead of the block back out with it.
-            while start >= 2 and src.text[start - 2:start] == "\n\n":
-                start -= 1
-
-        src.text = src.text[:start] + replacement + src.text[end:]
-        removed += 1
 
 
 def user_code_span(text: str, tag: str):
@@ -389,13 +188,6 @@ def disable_pendsv(src: SourceFile) -> bool:
 # Reading the generated project
 # ---------------------------------------------------------------------------
 
-def walk_sources(root: Path):
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in PRUNE and not d.startswith(".")]
-        for name in filenames:
-            if name.endswith((".c", ".h")):
-                yield Path(dirpath) / name
-
 
 class Project:
     """Everything the installer needs to know, all of it read from generated
@@ -415,7 +207,7 @@ class Project:
                 "  doc/installation.md.")
         self.cmake = SourceFile(top)
 
-        sources = list(walk_sources(root))
+        sources = list(walk_sources(root, PRUNE))
         if app_dir:
             wanted = (root / app_dir).resolve()
             sources = [p for p in sources
@@ -487,6 +279,10 @@ class Project:
     def check(self, tick: str):
         """Everything that would make the build fail or the board hang, checked
         before a single byte is written."""
+        # Before anything else: an integration this installer did not write cannot be
+        # reconciled, only duplicated. See install_common.refuse_unmanaged().
+        refuse_unmanaged(self.cmake, self.root)
+
         it_text = self.it_c.read_text(errors="replace")
 
         # Two RTOSes on one PendSV cannot both win.
@@ -522,77 +318,6 @@ class Project:
 
 
 # ---------------------------------------------------------------------------
-# Getting the source
-# ---------------------------------------------------------------------------
-
-def looks_like_ahura(path: Path) -> bool:
-    """A usable AhuraRTOS tree: the kernel and the three templates to copy."""
-    return ((path / "kernel" / "ahura.h").is_file()
-            and (path / "kernel" / "template" / "os_config.h").is_file())
-
-
-@contextlib.contextmanager
-def repo_source(source: str, ref: str):
-    """Yield a directory that is the AhuraRTOS repository root."""
-    if source:
-        given = Path(source).expanduser().resolve()
-        if looks_like_ahura(given):
-            yield given
-            return
-        raise Fatal("--source {} is not an AhuraRTOS checkout "
-                    "(no kernel/ahura.h in it)".format(source))
-
-    # Running from inside a checkout - tools/install_stm32.py beside kernel/.
-    #
-    # __file__ is not a reliable signal on its own: piped in as `python -` it is
-    # set to the literal string "<stdin>", which resolves against the working
-    # directory and would point two levels above the project. Requiring it to be
-    # an existing file rules that out.
-    here = globals().get("__file__")
-    if here and Path(here).is_file():
-        local = Path(here).resolve().parent.parent
-        if looks_like_ahura(local):
-            yield local
-            return
-
-    url = TARBALL.format(repo=REPO, ref=ref)
-    print("  downloading {} ...".format(url))
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            payload = response.read()
-    except (urllib.error.URLError, OSError) as exc:
-        raise Fatal(
-            "could not download AhuraRTOS: {}\n"
-            "  Clone it yourself and point the script at the clone instead:\n"
-            "      git clone https://github.com/{}.git\n"
-            "      python install_stm32.py --source AhuraRTOS".format(exc, REPO))
-
-    with tempfile.TemporaryDirectory() as tmp:
-        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
-            # A GitHub tarball has no absolute or parent paths, no symlinks and
-            # no hardlinks, but this is archive extraction: check rather than
-            # trust. The link check matters specifically for the fallback
-            # below - filter="data" rejects escaping links itself, but on
-            # Python < 3.12 there is no filter, and a link member whose
-            # linkname points outside the directory is the one way a member
-            # with a perfectly innocent name still writes outside tmp.
-            for member in tar.getmembers():
-                if member.name.startswith("/") or ".." in Path(member.name).parts:
-                    raise Fatal("refusing to extract unsafe path from tarball: " + member.name)
-                if member.issym() or member.islnk():
-                    raise Fatal("refusing to extract link member from tarball: {} -> {}"
-                                .format(member.name, member.linkname))
-            try:
-                tar.extractall(tmp, filter="data")   # filter= is 3.12+
-            except TypeError:
-                tar.extractall(tmp)
-        roots = [p for p in Path(tmp).iterdir() if p.is_dir()]
-        if len(roots) != 1 or not looks_like_ahura(roots[0]):
-            raise Fatal("downloaded archive does not look like the AhuraRTOS repository")
-        yield roots[0]
-
-
-# ---------------------------------------------------------------------------
 # The plan
 # ---------------------------------------------------------------------------
 
@@ -606,6 +331,12 @@ CMAKE_BLOCK = """\
 # project's os_config.h lives. The kernel and the application have to compile against the same
 # configuration - if only the application saw the file, their structure sizes would silently
 # disagree.
+# Selects the SoC package under kernel/soc/. On STM32 that package contributes no code - the
+# CMSIS-Pack startup files already give the kernel the PendSV vector name and SystemCoreClock,
+# and single-core parts need no core id, IPI or spinlock - so this line records the choice
+# rather than changing the build. See AhuraRTOS/doc/soc.md.
+set(AHURA_SOC {soc})
+
 set(OS_CONFIG_DIR ${{CMAKE_CURRENT_SOURCE_DIR}}/{cfg})
 add_subdirectory({kernel})
 
@@ -701,17 +432,27 @@ def plan(project: Project, repo_dir: Path, tick: str, force: bool, copy_tree: bo
 
     # The three files become yours the moment they exist. Each is checked for
     # individually, so a project missing just one gets just that one.
-    for name, dest_dir in (("os_config.h", project.inc_dir),
-                           ("os_cb.c", project.src_dir),
-                           ("os_main.c", project.src_dir)):
-        dest = dest_dir / name
+    templates = [(repo_dir / "kernel" / "template" / "os_config.h", project.inc_dir),
+                 (repo_dir / "kernel" / "template" / "os_cb.c", project.src_dir),
+                 (repo_dir / "kernel" / "template" / "os_main.c", project.src_dir)]
+
+    # The SoC package's own options, if it has any. Optional in a way os_config.h is not - the
+    # package defaults every one of them - so a package without the file contributes nothing here
+    # rather than failing.
+    soc_config = repo_dir / "kernel" / "soc" / SOC / "template" / "soc_config.h"
+    if soc_config.is_file():
+        templates.append((soc_config, project.inc_dir))
+
+    for source, dest_dir in templates:
+        dest = dest_dir / source.name
         if dest.is_file() and not force:
             notes.append("{} is already there - kept as it is "
                          "(--force-templates replaces it)".format(relative(dest, project.root)))
         else:
-            copies.append(("template", repo_dir / "kernel" / "template" / name, dest))
+            copies.append(("template", source, dest))
 
     body = CMAKE_BLOCK.format(
+        soc=SOC,
         cfg=relative(project.inc_dir, project.root),
         src=relative(project.src_dir, project.root),
         kernel=relative(ahura_dest / "kernel", project.root),
@@ -764,84 +505,21 @@ def plan_uninstall(project: Project):
 
 
 # ---------------------------------------------------------------------------
-# Applying, with rollback
-# ---------------------------------------------------------------------------
-
-def apply(edits, copies, root: Path):
-    """Write everything, or put it all back. Originals are held in memory, so a
-    failure halfway - a read-only file, a full disk - leaves no half-install."""
-    written, created = [], []
-    try:
-        for kind, src, dest in copies:
-            if kind == "repo":
-                if dest.exists():
-                    if not looks_like_ahura(dest):
-                        raise Fatal(
-                            "{} exists but is not an AhuraRTOS checkout (no\n"
-                            "  kernel/ahura.h in it). Refusing to delete it - move it aside\n"
-                            "  and re-run.".format(relative(dest, root)))
-                    # Updating is a replacement, never a merge: a file dropped
-                    # upstream would otherwise linger and keep compiling.
-                    shutil.rmtree(dest)
-                shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
-                created.append(dest)
-                print("  tree    -> {}".format(relative(dest, root)))
-            else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, dest)
-                created.append(dest)
-                print("  copied  -> {}".format(relative(dest, root)))
-
-        for src in edits:
-            tmp = src.path.with_suffix(src.path.suffix + ".ahura-tmp")
-            tmp.write_bytes(src.to_bytes())
-            os.replace(tmp, src.path)
-            written.append(src)
-            print("  patched -> {}".format(relative(src.path, root)))
-
-    except Exception:
-        print("\n! failed - rolling back", file=sys.stderr)
-        for src in written:
-            src.path.write_bytes(
-                src.original.replace("\n", src.newline).encode(src.encoding))
-        for path in created:
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
-        raise
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        prog="install_stm32.py",
+        prog="install_stm32_online.py",
         description="Install AhuraRTOS into an STM32CubeMX-generated CMake project. "
                     "Run it from the project root. It never touches the .ioc.")
-    parser.add_argument("--project", default=".", metavar="DIR",
-                        help="project root (default: the current directory)")
+    add_common_arguments(parser)
     parser.add_argument("--app-dir", metavar="DIR",
                         help="which source tree to install into, on a dual-core part")
-    parser.add_argument("--source", metavar="PATH",
-                        help="use this AhuraRTOS checkout instead of downloading")
     parser.add_argument("--ref", default="main", metavar="REF",
                         help="branch or tag to download (default: main)")
     parser.add_argument("--tick", choices=("systick", "external"), default="systick",
                         help="tick source (default: systick)")
-    parser.add_argument("--update", action="store_true",
-                        help="replace an AhuraRTOS/ already in the project with the "
-                             "current version (otherwise it is left alone)")
-    parser.add_argument("--force-templates", action="store_true",
-                        help="overwrite an existing os_config.h / os_cb.c / os_main.c")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="show the diff and exit without writing")
-    parser.add_argument("-y", "--yes", action="store_true",
-                        help="do not ask for confirmation")
-    parser.add_argument("--uninstall", action="store_true",
-                        help="remove the managed blocks and the AhuraRTOS directory")
     args = parser.parse_args(argv)
 
     root = Path(args.project).expanduser().resolve()
@@ -897,52 +575,6 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         print("\ncancelled", file=sys.stderr)
         return 130
-
-
-def finish(args, project, root, edits, copies, notes):
-    for src in edits:
-        print(src.diff(root))
-
-    for kind, src, dest in copies:
-        print("  {}  {} -> {}".format("tree  " if kind == "repo" else "copy  ",
-                                      "AhuraRTOS" if kind == "repo" else src.name,
-                                      relative(dest, root)))
-    for note in notes:
-        print("  note: {}".format(note))
-    print()
-
-    if args.dry_run:
-        print("Dry run - nothing was written.")
-        return 0
-
-    if not args.yes:
-        answer = ask("Apply these changes? [y/N] ")
-        if answer is None:
-            print("Nothing written: there is no terminal to confirm at.\n"
-                  "Add --yes to apply, or --dry-run to see this diff again.")
-            return 1
-        if answer.strip().lower() not in ("y", "yes"):
-            print("Cancelled - nothing was written.")
-            return 0
-
-    if args.uninstall:
-        apply(edits, [], root)
-        ahura = root / "AhuraRTOS"
-        if ahura.is_dir() and looks_like_ahura(ahura):
-            shutil.rmtree(ahura)
-            print("  removed -> {}".format(relative(ahura, root)))
-        print("\nUninstalled. os_config.h, os_cb.c and os_main.c were left in place,")
-        print("and any PendSV_Handler that was disabled is back exactly as it was.")
-        return 0
-
-    apply(edits, copies, root)
-    print("\nInstalled. Next:")
-    print("  1. build - the kernel prints the port it chose: 'Ahura kernel arch: ...'")
-    print("  2. write your code in {}".format(relative(project.src_dir / "os_main.c", root)))
-    print("  3. to prove the port on this board first, set OS_CONFIG_TEST_ENABLE to 1")
-    print("     in {} and rebuild (doc/self-test.md)"
-          .format(relative(project.inc_dir / "os_config.h", root)))
-    return 0
 
 
 if __name__ == "__main__":

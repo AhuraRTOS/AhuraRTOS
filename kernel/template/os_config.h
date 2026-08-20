@@ -13,10 +13,11 @@
  *   PART 1  CORE - always compiled in. Set these first.
  *   PART 2  OPTIONAL FEATURES - one section per feature, each holding its _ENABLE switch with the
  *           sizing that switch controls. Same order as PART 2 of ahura.h.
- *   PART 3  PLATFORM - target properties (vector name, TrustZone, core count, tickless).
+ *   PART 3  PLATFORM - target properties (TrustZone, core count, tickless). The target's own
+ *           facts - PendSV vector name, spinlock backend - belong to the SoC package instead.
  *
- * Three options are marked OPTIONAL where they appear - OS_CONFIG_TICK_SOURCE,
- * OS_CONFIG_ARCH_PENDSV_HANDLER and OS_CONFIG_ARCH_VECTOR_CHECK. Each is a name or a yes/no
+ * Two options are marked OPTIONAL where they appear - OS_CONFIG_TICK_SOURCE and
+ * OS_CONFIG_ARCH_VECTOR_CHECK. Each is a name or a yes/no
  * diagnostic the kernel can default correctly on its own, so a config predating them still builds
  * and behaves identically. Everything else is mandatory: a missing sizing or feature switch would
  * read as 0 in an #if and silently disable or misconfigure something, which is why the kernel
@@ -116,8 +117,14 @@
  * NOT counted here: it reserves their slots on top of this number, so enabling
  * the log or the timer service never costs the application a task, and this value
  * is exactly what os_task_create() will accept before returning
- * OS_ERR_FULL. */
-#define OS_CONFIG_MAX_USER_TASKS            6U
+ * OS_ERR_FULL.
+ *
+ * 8 rather than something smaller because the self-test suite's multi-core
+ * section runs on it: the test task, the two heartbeat workers it parks, and up
+ * to five concurrent stress helpers (see doc/testing.md). A smaller value is
+ * fine for an application that never runs the suite, and then the suite simply
+ * fails its SMP section with OS_ERR_FULL. */
+#define OS_CONFIG_MAX_USER_TASKS            8U
 
 /**
  * Minimum stack size in bytes. Must leave room for one hardware exception
@@ -360,12 +367,16 @@
  *              lines are truncated, never overflowed.
  * TASK_*       tsk_log, which drains the ring and calls os_log_output_cb(). Its stack must hold
  *              that callback. Keep the priority low: logging must never preempt real work.
+ *              CORE_AFFINITY places the drain task on multi-core builds; OS_TASK_CORE_ANY lets
+ *              it follow the work, a fixed core keeps its priority relationship to one core's
+ *              tasks meaningful.
  */
 #define OS_CONFIG_LOG_LEVEL                 OS_LOG_LEVEL_INFO
 #define OS_CONFIG_LOG_BUFFER_SIZE           1024U
 #define OS_CONFIG_LOG_LINE_MAX              128U
 #define OS_CONFIG_LOG_TASK_STACK_SIZE       512U
 #define OS_CONFIG_LOG_TASK_PRIORITY         OS_TASK_PRIO_1
+#define OS_CONFIG_LOG_CORE_AFFINITY         OS_TASK_CORE_ANY
 
 /*
  * ***********************************************************************************************************
@@ -394,32 +405,15 @@
 /*
  * ***********************************************************************************************************
  * Exception vector the kernel owns
+ *
+ * The NAME of that vector is not here: it is a fact about the target's
+ * startup code, so the SoC package sets it (OS_CONFIG_ARCH_PENDSV_HANDLER,
+ * see doc/soc.md). It defaults to the CMSIS-Pack name PendSV_Handler, which
+ * is what essentially every vendor startup file uses. Defining it here as
+ * well would override the SoC package silently, because this file is read
+ * after the build system's -D.
  * ***********************************************************************************************************
 */
-
-/**
- * The symbol name the kernel gives its PendSV handler.
- *
- * PendSV is the ONE vector the kernel must own, because a context switch has to
- * BE the exception entry point - it manipulates the frame the hardware pushed
- * and returns through EXC_RETURN, neither of which survives an ordinary C call.
- * SysTick is routed by the application (or replaced entirely, see
- * OS_CONFIG_TICK_SOURCE in PART 1), and SVC is left completely alone.
- *
- * PendSV_Handler is the CMSIS-Pack convention, which is what essentially every
- * vendor startup file uses - ST, Nordic, NXP, TI, Silicon Labs, Renesas,
- * Microchip, Infineon - so the default is correct on all of them and the vast
- * majority of projects never touch this. Change it only when the vector table
- * calls the entry something else: a hand-written startup file, a non-CMSIS
- * environment, or a bootloader's own table.
- *
- * Whatever name is set here, exactly one definition of it may exist in the
- * link. If a vendor IDE also generates one (STM32CubeMX does), stop it doing
- * so or delete it - see the kernel README, "Integration".
- *
- * This option is OPTIONAL: leaving it out selects PendSV_Handler.
- */
-#define OS_CONFIG_ARCH_PENDSV_HANDLER       PendSV_Handler
 
 /**
  * Check at boot that the live vector table really routes PendSV to the kernel
@@ -479,15 +473,16 @@
  * Number of cores that schedule tasks (max 31). Each runs its own PendSV and idle task and pulls
  * from the shared ready lists honoring core_affinity; core 0 owns the time base, and secondary
  * cores enter through os_core_start(). The SoC layer must supply os_arch_core_id_get_cb(), the IPI
- * callback, and - on cores without LDREX/STREX - the spinlock callbacks. See os_cb.c.
+ * callback, and - on cores without LDREX/STREX - the spinlock callbacks. A SoC
+ * package under kernel/soc/ supplies all three; see doc/soc.md.
  *
  * Two preconditions the kernel cannot verify, both SoC properties, before setting this above 1:
  *
  *   1. Global exclusive monitor. The inter-core spinlock uses LDREX/STREX, which only excludes
  *      another core when the interconnect implements a GLOBAL monitor for that address AND the
  *      address is Shareable-mapped. Without both, two cores can succeed at once and the lock
- *      silently stops excluding anything. OS_CONFIG_SPINLOCK_SOC_BACKEND routes it
- *      through your own hardware semaphore instead.
+ *      silently stops excluding anything. The SoC package's
+ *      OS_CONFIG_SPINLOCK_SOC_BACKEND routes it through a hardware semaphore instead.
  *   2. Cache coherency. Cortex-M has none between cores, and DSB is not cache maintenance. Every
  *      shared kernel object (ready/delay lists, the registries, os_task_current[], the spinlock
  *      word) must sit in a non-cacheable or coherent region - typically the whole kernel's shared
@@ -498,21 +493,6 @@
 
 #define OS_CONFIG_CORE_COUNT                1U
 
-/**
- * 0 (default): the kernel spinlock uses the built-in LDREX/STREX backend on
- * cores that have it (all v7-M/v8-M cores); ARMv6-M multi-core SoCs (no
- * LDREX/STREX) always use the callback backend regardless of this setting.
- * 1: force the callback backend even on an exclusives-capable core - set
- * this when your SoC's interconnect has no GLOBAL exclusive monitor for the
- * spinlock's memory, or that memory cannot be marked Shareable (see the
- * OS_CONFIG_CORE_COUNT precondition notes above); implement
- * os_arch_spinlock_acquire_cb/_release_cb (os_cb.c) against your
- * SoC's hardware semaphore in that case. Only meaningful when
- * OS_CONFIG_CORE_COUNT > 1; keep 0 on single-core builds.
- */
-
-#define OS_CONFIG_SPINLOCK_SOC_BACKEND      0U
-
 /*
  * ***********************************************************************************************************
  * Tickless idle (experimental scaffold, not functional yet)
@@ -521,7 +501,6 @@
 
 #define OS_CONFIG_TICKLESS_ENABLE           0U
 #define OS_CONFIG_TICKLESS_MIN_IDLE         2U
-#define OS_CONFIG_LPTIM_CLOCK_HZ            32768U
 #define OS_CONFIG_MAX_SUPPRESSED_TICKS      0x00FFFFFFUL
 
 #endif /* OS_CONFIG_H */

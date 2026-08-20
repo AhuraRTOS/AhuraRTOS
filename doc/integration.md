@@ -202,8 +202,8 @@ feature off shows exactly which values stop mattering. PART 3 is the platform.
 | `OS_CONFIG_ARCH_PENDSV_HANDLER` | `PendSV_Handler` | Name of the context-switch vector |
 | `OS_CONFIG_ARCH_VECTOR_CHECK` | `1U` | Boot-time check that the vector table routes PendSV to the kernel |
 | `OS_CONFIG_TRUSTZONE` | `..._DISABLED` | Security state on ARMv8-M |
-| `OS_CONFIG_CORE_COUNT` + `SPINLOCK_SOC_BACKEND` | `1U` | SMP scheduling (experimental) |
-| `OS_CONFIG_TICKLESS_ENABLE` + `TICKLESS_MIN_IDLE`, `MAX_SUPPRESSED_TICKS`, `LPTIM_CLOCK_HZ` | `0U` | Tick suppression while idle (experimental) |
+| `OS_CONFIG_CORE_COUNT` + `SPINLOCK_SOC_BACKEND` | `1U` | SMP scheduling (verified on RP2350; RP2040 path not yet on silicon) |
+| `OS_CONFIG_TICKLESS_ENABLE` + `TICKLESS_MIN_IDLE`, `MAX_SUPPRESSED_TICKS` | `0U` | Tick suppression while idle (experimental) |
 
 Three options are **optional** and may be left out, in which case the kernel
 supplies the default shown: `OS_CONFIG_TICK_SOURCE`,

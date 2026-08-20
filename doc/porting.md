@@ -3,7 +3,7 @@
 [← Back to the documentation index](README.md) · [Kernel reference](kernel.md)
 
 What the kernel asks of a platform: the callbacks it needs, the clock, TrustZone,
-and the experimental multi-core and tickless paths. For which cores and
+the multi-core (SMP) paths and the experimental tickless path. For which cores and
 toolchains are supported see [Platforms](platforms.md).
 
 
@@ -51,6 +51,15 @@ files under `arch/arm/common/`. Nothing in `core/` would change.
 
 ### Application callbacks
 
+> **A SoC package may already supply half of these.** The callbacks below split
+> into two groups: what the *product* decides (log output, assertions, stack
+> overflow) and what the *silicon* dictates (core id, IPI, spinlocks, an
+> external tick, TrustZone banking, tickless sleep). An optional package under
+> `kernel/soc/<vendor>/<family>/` supplies the second group, selected with one
+> CMake variable. Copying `template/os_cb.c` covers the first group either way.
+> See **[SoC packages](soc.md)**, which also explains why copying the SoC group
+> as well would silently displace the package.
+
 Application hooks carry the `_cb` suffix. Most are weak, so overriding them is
 optional and the kernel's default applies otherwise; a few have no default at all
 because a silent one would hide the very thing the hook exists to report, and
@@ -76,6 +85,10 @@ template is deliberately absent from the CMakeLists), and adapt:
 - `os_arch_core_id_get_cb` and `os_arch_core_ipi_request_cb` are multi-core SoC
   glue, along with `os_arch_spinlock_acquire_cb` and `os_arch_spinlock_release_cb`
   on ARMv6-M multi-core SoCs, where they are mandatory.
+
+Everything in that list from `os_arch_tick_init_cb` down is the SoC group: on a
+packaged part it is already written, and `template/soc_cb.c` is the starting
+point on an unpackaged one.
 
 ### Platform clock
 
@@ -143,7 +156,7 @@ chosen mode.
   task that never calls secure functions still reaches the callback; it is the
   application's place to return immediately for those ids.
 
-### Multi-core (experimental)
+### Multi-core (SMP)
 
 `OS_CONFIG_CORE_COUNT` (default 1, max 31) declares how many cores schedule
 tasks. Every scheduling core runs its own PendSV and its own idle task, and
@@ -179,6 +192,15 @@ task may run:
 - The SoC layer supplies `os_arch_core_id_get_cb()`, since Cortex-M has no
   architectural core-id register. It has no default: every core reporting 0
   would leave them sharing one current-task slot.
+- The SoC layer also supplies `os_arch_handler_stack_top_cb(core_id)`: the top
+  of that core's handler (MSP) stack. The context switch's first-start path
+  resets MSP to a clean top when it abandons the boot context, and the vector
+  table only ever names core 0's initial stack pointer - a secondary core that
+  read it there would park its MSP inside core 0's stack and both cores would
+  overwrite each other's handler frames. No default is provided, on the same
+  link-error terms as the core id above. On ARMv8-M the matching
+  `os_arch_handler_stack_limit_cb()` sets the per-core MSPLIM guard and has a
+  weak default that answers for core 0 only.
 - A task that is mid-switch-out on another core (its context not yet saved) is
   skipped by this core's pick rather than dispatched from a stale stack pointer.
   That is what `running_core` in the TCB tracks.
@@ -186,8 +208,11 @@ task may run:
 There is one constraint worth knowing: a task currently executing on another
 core cannot be paused or deleted from this one, and the call returns
 `OS_ERR_BUSY`. Suspend it from its own core first. The SMP paths compile in
-the CI matrix but have not run on real multi-core silicon yet, so treat them as
-experimental.
+the CI matrix and have been exercised end-to-end on the RP2350's dual
+Cortex-M33 (raspberrypi/rp235x_arm package), including a dedicated cross-core
+stress section in the self-test; the RP2040's ARMv6-M glue compiles and is
+exercised in CI but has not run on multi-core silicon. Treat a new multi-core
+port as experimental until it has run the self-test on silicon.
 
 ### Tickless idle (experimental)
 
@@ -288,6 +313,10 @@ Remaining work:
   ahead of the wiring landing.
 - A deeper-sleep path, such as STOP mode where SysTick itself stops, would need
   an always-running wake and measurement source instead.
-  `OS_CONFIG_LPTIM_CLOCK_HZ` is reserved for that but unused so far.
+  The clock rate of that source is a property of the board rather than of the
+  kernel, so it belongs to a SoC package's `soc_config.h` when the path lands.
+  `OS_CONFIG_LPTIM_CLOCK_HZ` used to sit in `os_config.h` reserved for it and
+  has been removed: the kernel demanded a value it never read, and named it
+  after one vendor's peripheral in a configuration that names no vendor.
 
 ---

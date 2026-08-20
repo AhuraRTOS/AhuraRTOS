@@ -67,8 +67,48 @@ OS_TASK_DEFINE(tsk_test, OS_CONFIG_TEST_STACK_SIZE);
  *
  * @return None.
  */
+/******************************************************************************************************/
+/**
+ * @brief Weak default for the SoC start-up hook: a target with no SoC package has nothing to do
+ *        here, so this stays empty and costs one call.
+ *
+ * A package under kernel/soc/ replaces it with a strong definition - strong beats weak whatever
+ * order the linker sees them in, which two weak definitions would not.
+ */
+OS_WEAK void os_arch_soc_init_cb(void)
+{
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Weak default for the SoC bring-up diagnosis hook: a target with no SoC package, or one
+ *        with nothing to add, does nothing here.
+ *
+ * A package replaces it with a strong definition, exactly as with os_arch_soc_init_cb above.
+ */
+OS_WEAK void os_arch_soc_diagnose_cb(void)
+{
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Weak default for the idle wait: a plain WFI, which is correct on parts whose timers
+ *        keep running through it.
+ *
+ * A SoC package replaces it where that is not true - see the declaration in ahura.h.
+ */
+OS_WEAK void os_arch_soc_idle_cb(void)
+{
+    OS_ARCH_IDLE();
+}
+
+/******************************************************************************************************/
 void os_init(void)
 {
+    /* First, before os_arch_init() and long before os_tick_init(): a SoC package publishes the
+     * CPU clock here, and the tick period is computed from it. */
+    os_arch_soc_init_cb();
+
     os_arch_init();
     os_task_system_init();
     (void)os_task_idle_create();
@@ -115,6 +155,26 @@ void os_start(void)
     OS_ASSERT(os_task_idle_is_created());
 
     os_kernel_running = true;
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    /* Secondary cores start HERE, not in os_init(), and the difference is not cosmetic: a core
+     * that enters os_core_start() early begins dispatching immediately, while core 0 is still
+     * inside os_init() creating the idle task and the service tasks. It would pick from ready
+     * lists that are half-built, against TCBs mid-initialisation, possibly before an idle task
+     * exists at all - which is the very thing the assert above exists to catch on this core.
+     *
+     * By this line os_init() has returned, every kernel task exists, and os_kernel_running is
+     * already true, so a secondary core sees a complete kernel the instant it looks. The launch
+     * precedes os_arch_start_first_task() only because that call never returns.
+     *
+     * The SoC layer supplies the callback because booting a core is chip hardware with no
+     * architectural form: the kernel can say WHEN, never HOW. */
+    for (uint32_t core = 1U; core < OS_CONFIG_CORE_COUNT; core++)
+    {
+        os_arch_core_launch_cb(core);
+    }
+#endif
+
     os_arch_start_first_task();
 
     /* Never reached. */
@@ -138,6 +198,15 @@ void os_start(void)
  */
 void os_core_start(void)
 {
+
+    /* Same precondition as os_start(): without an idle task this core's first switch restores
+     * through a NULL stack_ptr and hard faults. Cheap, and it turns a secondary core started too
+     * early into a named assertion rather than a fault with no history. */
+    OS_ASSERT(os_task_idle_is_created());
+
+    /* Getting past this means the vector check inside os_arch_init() agreed that THIS core's
+     * table routes the context switch - the single most likely thing to be wrong on a fresh SoC
+     * port, and silent when it is. */
     os_arch_init();
     os_arch_tick_init();
     os_arch_start_first_task();
@@ -147,6 +216,7 @@ void os_core_start(void)
     {
     }
 }
+
 #endif /* OS_CONFIG_CORE_COUNT > 1U */
 
 /******************************************************************************************************/
@@ -344,7 +414,16 @@ static os_err_t os_test_system_init(void)
         os_test_task_entry,
         NULL,
         OS_CONFIG_TEST_PRIORITY,
+#if (OS_CONFIG_CORE_COUNT > 1U)
+        /* Pinned to core 0, matching the suite's own helpers (TEST_TASK_CONFIG in os_test.c).
+         * The checks for priority inheritance, the timer stop race and the notification storm
+         * all assume sender, waiter and service task share one core - with OS_TASK_CORE_ANY the
+         * suite task migrates to core 1 and those checks fail on SMP even though the kernel
+         * behaves as specified. */
+        OS_TASK_CORE(0)
+#else
         OS_TASK_CORE_ANY
+#endif
     };
 
     status = os_task_create(&tsk_test, &config);

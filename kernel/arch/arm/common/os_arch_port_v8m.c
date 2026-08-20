@@ -127,6 +127,13 @@ static bool     os_arch_dwt_available           = false;
  * equivalent block for why SVC is deliberately left to the application - a
  * point that matters most on exactly this core, where secure firmware
  * (TF-M and the like) routinely uses SVC for its own gateway calls.
+ *
+ * The first-start path also resets MSP to a clean top, abandoning the boot
+ * context it was entered with. The vector table only names ONE initial stack
+ * pointer - core 0's - so on a multi-core build the top comes from
+ * os_arch_handler_stack_top_cb(), which the SoC layer answers per core. A
+ * secondary core that reset from the table instead would park its MSP inside
+ * core 0's handler stack and both cores would overwrite each other's frames.
 */
 
 __asm(
@@ -167,11 +174,19 @@ OS_ARCH_STRINGIFY(OS_CONFIG_ARCH_PENDSV_HANDLER) ":\n"
 "    bl      os_arch_tz_context_restore\n" /* load the first task's secure context */
 "    mov     r0, r4\n"
 #endif
-"    movw    r1, #0xED08\n"                /* reset MSP to the vector-table initial value; */
-"    movt    r1, #0xE000\n"                /* the boot (main) context is abandoned here,   */
-"    ldr     r1, [r1]\n"                   /* including the frame this exception pushed -  */
-"    ldr     r1, [r1]\n"                   /* the return below unstacks from PSP instead   */
+#if (OS_CONFIG_CORE_COUNT > 1U)
+"    mov     r5, r0\n"                     /* keep the task stack pointer across the calls below */
+"    bl      os_arch_core_id_get_cb\n"     /* r0 = this core's id */
+"    bl      os_arch_handler_stack_top_cb\n" /* r0 = this core's handler stack top */
+"    msr     msp, r0\n"                    /* abandon the boot context, including the frame this  */
+"    mov     r0, r5\n"                     /* exception pushed - the return below unstacks from   */
+#else                                      /* PSP instead. Single-core: the vector-table value    */
+"    movw    r1, #0xED08\n"                /* is exactly this core's stack, and always was.      */
+"    movt    r1, #0xE000\n"
+"    ldr     r1, [r1]\n"
+"    ldr     r1, [r1]\n"
 "    msr     msp, r1\n"
+#endif
 "    b       os_arch_context_restore_asm\n"
 
 ".global os_arch_context_restore_asm\n"
@@ -320,21 +335,68 @@ void os_arch_init(void)
      * UsageFault instead of corrupting whatever sits below the stack.
      * MSPLIM ignores its low 3 bits, so round the limit up. Skipped (MSPLIM
      * keeps its reset value 0 = no checking) when no known symbol exists. */
+    /* The limit comes from os_arch_handler_stack_limit_cb, per core, because only the SoC layer
+     * knows where each core's handler stack really is. Zero means "not known here", and the guard
+     * is then left at its reset value rather than pointed somewhere arbitrary. */
     {
-        uint32_t *stack_limit = &__StackLimit;
+        uint32_t limit = os_arch_handler_stack_limit_cb(os_arch_core_id_get());
 
-        if (stack_limit == NULL)
+        if (limit != 0U)
         {
-            stack_limit = &_sstack;
-        }
-
-        if (stack_limit != NULL)
-        {
-            uint32_t msp_limit = ((uint32_t)(uintptr_t)stack_limit + 7U) & ~(uint32_t)0x7U;
+            /* MSPLIM ignores its low 3 bits, so round up rather than down: a limit rounded the
+             * other way sits BELOW the stack it guards and lets the first overflowing push
+             * through. */
+            uint32_t msp_limit = (limit + 7U) & ~(uint32_t)0x7U;
 
             __asm volatile("msr msplim, %0" :: "r"(msp_limit));
         }
     }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Bottom of the calling core's handler (MSP) stack, or 0 when the port cannot know it.
+ *
+ * WEAK: this default answers from the linker, which can only describe a single stack, so it
+ * answers for core 0 and declines for every other core. A multi-core SoC package overrides it -
+ * that layer placed the secondary stacks and is the only one that knows where they are.
+ *
+ * Getting this wrong is worse than declining, which is why the zero case exists. An MSPLIM set
+ * below the stack it is meant to guard does not protect it and does not fail either: the overflow
+ * runs on, silently, through whatever lives underneath, and only faults once it has passed the
+ * wrong limit too - by which time the memory that explains it is gone. That is not hypothetical.
+ * On the RP2350 the Pico SDK's __StackLimit is the bottom of the LOWEST stack, which on a
+ * dual-core build is core 1's, six kilobytes under core 0's - so core 0's handler overflow used
+ * to run straight through core 1's entire stack before tripping anything, and presented as core 1
+ * dying at random points for no visible reason.
+ *
+ * @param[in] core_id  Core asking about its own stack.
+ * @return uint32_t  Lowest address the MSP may reach, or 0 for "unknown, leave the guard off".
+ */
+OS_WEAK uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id)
+{
+    uint32_t *stack_limit;
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    if (core_id != 0U)
+    {
+        return 0U;
+    }
+#else
+    (void)core_id;
+#endif
+
+    /* Two names for the same thing: __StackLimit in CMSIS-style scripts, _sstack in several
+     * vendor-generated ones. Both weak, so either naming works unmodified and neither existing
+     * resolves to 0. */
+    stack_limit = &__StackLimit;
+
+    if (stack_limit == NULL)
+    {
+        stack_limit = &_sstack;
+    }
+
+    return (uint32_t)(uintptr_t)stack_limit;
 }
 
 /******************************************************************************************************/

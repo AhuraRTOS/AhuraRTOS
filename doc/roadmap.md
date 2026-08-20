@@ -18,8 +18,10 @@ Tracked deliberately, and stated here rather than discovered later:
   tick (`OS_CONFIG_TICK_SOURCE_EXTERNAL`) currently degrades to a plain WFI too,
   because the callback pair cannot yet express suppressing a timer the kernel
   does not own.
-- **Multi-core (SMP) scheduling has not run on real multi-core silicon.** It
-  compiles and is exercised in CI, but treat it as experimental.
+- **Multi-core (SMP) on the RP2040 has not run on real silicon.** The ARMv6-M
+  SMP glue compiles and is exercised in CI, but treat it as experimental. The
+  same kernel paths ARE verified on the RP2350's dual Cortex-M33, including a
+  dedicated cross-core stress section in the self-test.
 - **Mutex priority inheritance is single-level.** It does not propagate through
   a chain of nested mutexes held by different tasks.
 - **IAR EWARM is not supported.** The port layer needs GCC-style inline
