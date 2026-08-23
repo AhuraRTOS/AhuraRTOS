@@ -287,6 +287,7 @@ step 2. Swap one in, build, read the console, swap the next.
 | `No os_config.h found` | Step 2 missed, or `OS_CONFIG_DIR` does not point at it |
 | `os_config.h is incomplete` | An option was deleted from the copy - start again from the template |
 | `multiple definition of 'PendSV_Handler'` | Step 5: something else defines it, usually a vendor IDE stub |
+| `multiple definition of 'SVC_Handler'` | Only with the self-test suite enabled: it installs an `SVC` handler to reach ISR context, and a vendor IDE generated one too. The kernel itself never uses `SVC` - on STM32 see [vendor notes](vendor-notes.md) |
 | `undefined reference to 'os_main'` | `os_main.c` is not in the application build (step 2) |
 | `undefined reference to 'os_assert_failed_cb'` (or `os_stack_overflow_cb`, `os_log_output_cb`) | `os_cb.c` is not in the application build, or that callback was deleted from it |
 | Duplicate symbols from the port | `arch/arm/common/*.c` was added to the build (step 3) - remove it |

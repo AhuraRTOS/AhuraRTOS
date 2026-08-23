@@ -115,7 +115,9 @@ apply and waits for a `y` before touching anything - Python 3.8 or newer and
 nothing else, no `pip install`, and no installer file left behind.
 
 **Raspberry Pi Pico SDK** - RP2040, RP2350, RP2354. The chip is read out of
-`PICO_BOARD` / `PICO_PLATFORM`:
+`PICO_BOARD` / `PICO_PLATFORM`. No project yet? The Pico page lists the
+[*New C/C++ Project* wizard settings](doc/pico-sdk.md#starting-from-a-new-project)
+the kernel is verified against:
 
 ```powershell
 irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_rpi_online.py | python -

@@ -22,9 +22,13 @@ generation overwrites the file, so turn it off at the source instead:
 > handler" for *Pendable request for system service*.**
 
 That setting is stored in the `.ioc`, so regeneration keeps honouring it. Leave
-*System tick timer* generating, since that is where `os_tick_handler()` goes,
-and leave *System service call via SWI instruction* (`SVC_Handler`) alone - the
-kernel does not use it.
+*System tick timer* generating, since that is where `os_tick_handler()` goes.
+
+Clear *System service call via SWI instruction* (`SVC_Handler`) as well if you
+intend to run the [self-test suite](self-test.md). The kernel never uses `SVC`,
+but the suite installs its own handler to reach ISR context from a task, and on
+CMSIS-Pack that handler carries the same name - so a generated one collides
+exactly like `PendSV_Handler`.
 
 Then move the HAL off SysTick, or the HAL and the kernel will fight over it:
 

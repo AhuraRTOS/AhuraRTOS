@@ -14,7 +14,9 @@ pick one:**
 | **B** | **[Offline](#offline---no-internet-on-the-machine)** - one command, no network | The same project on a machine with no route out: an air-gapped lab, a locked-down corporate network, a CI agent |
 | **C** | **[Manual](#manual---step-by-step)** - five steps by hand | When you want to make every edit yourself, or your project does not look like the SDK's template |
 
-All three end in the same place.
+All three end in the same place. **No project yet?**
+[Starting from a new project](#starting-from-a-new-project) lists the
+*New C/C++ Project* wizard settings the kernel is verified against.
 
 ## Which chip, which package
 
@@ -33,6 +35,75 @@ board some other way.
 
 The commands below were run end to end on a **Pico 2** (RP2350) with Pico SDK
 2.3.0 and `arm-none-eabi-gcc` 15.2.
+
+## Starting from a new project
+
+If you are creating the project rather than adding the kernel to one you
+already have, the **Raspberry Pi Pico** VS Code extension's *New C/C++ Project*
+wizard is the shortest route. These are the settings the kernel was verified
+against - the defaults, with two deliberate choices:
+
+**Basic Settings**
+
+| Setting | Value | Why |
+|---|---|---|
+| Name | anything | It becomes the `add_executable()` target, which is what the installer links `ahura_kernel` to |
+| Board type | **Pico 2** | Sets `PICO_BOARD`, which is where the installer reads the chip from. **Pico** gives an RP2040 and the `raspberrypi/rp2040` package instead |
+| Architecture (Pico 2) | **RISC-V unchecked** | The kernel has no RISC-V port. Ticking it selects the Hazard3 cores, and the package stops the build with a message saying so - see [below](#the-two-that-are-not-optional) |
+| Pico SDK version | **v2.3.0** | What the kernel is tested against |
+
+**Features** - leave all nine unchecked (SPI, I2C, UART, PIO, DMA, HW
+interpolation, HW watchdog, HW timer, HW clocks). They only paste example
+snippets into `main.c`, and the installer has to brace-match `main()` to place
+the boot calls. Add the peripherals you need afterwards, the ordinary way.
+
+**Stdio support** - tick **Console over UART**. Nothing in the kernel needs it,
+but `printf` is how `OS_LOG_*` and the whole [self-test suite](self-test.md)
+report, so a project without a console has no way to tell you it is working.
+Console over USB works just as well; it is `pico_enable_stdio_usb()` instead,
+and it disables other USB use.
+
+**Code generation options** - leave all five unchecked:
+
+| Option | Leave off because |
+|---|---|
+| Run the program from RAM rather than flash | Nothing in the kernel cares. Either works |
+| Use project name as entry point file name | Off gives you `main.c`, which is what every path in this page names. On gives `<project>.c`, and the installer still finds it - it searches for the `.c` that defines `main()`, not for a file name |
+| Generate C++ code | Nothing stops you - `ahura.h` carries `extern "C"` and its compile-time assertions and type checks are spelled both ways, so a C++ translation unit including it compiles and links against the C kernel. C is simply what the templates and examples are written in |
+| Enable C++ RTTI / exceptions | Only meaningful with the above, and both cost memory |
+
+**Debugger** - **DebugProbe (CMSIS-DAP)**, the default. The kernel does not care
+which probe you use; this only decides what the extension writes into
+`launch.json`.
+
+**CMake Tools** - leave *Enable CMake-Tools extension integration* unchecked.
+The kernel block goes at the end of the top-level `CMakeLists.txt` either way,
+but the plain layout is the one the installer's anchors were written against.
+
+That gives you exactly the project this page assumes: `CMakeLists.txt`,
+`pico_sdk_import.cmake` and `main.c` in one directory, `PICO_BOARD` set to
+`pico2`, and a `printf` that comes out of UART0 at 115200 8N1. Now run the
+[one command](#automatic---one-command).
+
+### The two that are not optional
+
+Everything above is a preference except these:
+
+- **RISC-V must stay off.** `raspberrypi/rp235x_arm` is the Arm side of the
+  chip, and almost everything the kernel touches would change on Hazard3 -
+  `isr_pendsv` and `isr_systick` are Cortex-M vectors with no RISC-V
+  counterpart, and the IPI is armed through the NVIC. The package refuses the
+  build rather than producing one that misbehaves:
+
+  ```text
+  CMake Error: AHURA_SOC=raspberrypi/rp235x_arm selected with PICO_PLATFORM='rp2350-riscv'.
+  This package is the Arm side of the RP235x, and the kernel has no RISC-V port yet in any case.
+  Build for the Cortex-M33 side instead (PICO_PLATFORM=rp2350-arm-s).
+  ```
+
+- **The board type has to match the chip.** Selecting `Pico` and then forcing
+  `--soc raspberrypi/rp235x_arm` (or the reverse) is caught the same way, at
+  configure time, because the two packages arm different inter-core hardware.
 
 ---
 

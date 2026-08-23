@@ -260,27 +260,76 @@ date](installation.md#keeping-the-kernel-up-to-date) for later.
 > *Pendable request for system service*.**
 
 CubeMX otherwise writes a non-weak empty `PendSV_Handler` into
-`Core/Src/stm32h5xx_it.c`, which collides with the kernel's at link time.
-Deleting it by hand works until the next code generation puts it back; the
-checkbox is stored in the `.ioc`, so regeneration keeps honouring it.
+`Core/Src/stm32h5xx_it.c`, which collides with the kernel's at link time:
 
-Leave *System tick timer* generating - that is where `os_tick_handler()` goes in
-step 6 - and leave *System service call via SWI instruction* (`SVC_Handler`)
-alone, the kernel does not use it.
+```text
+multiple definition of `PendSV_Handler'
+```
+
+Deleting the function by hand works until the next code generation puts it
+back. The checkbox is stored in the `.ioc`, so regeneration keeps honouring it.
+
+**Clear *System service call via SWI instruction* as well** if you are going to
+run the [self-test suite](self-test.md). The kernel itself never uses `SVC` -
+that is deliberate, and it is what keeps it compatible with SoftDevice, TF-M and
+vendor ROM APIs - but the suite installs its own handler to reach ISR context
+from a task, and on CMSIS-Pack that handler is named `SVC_Handler` too. A
+generated one collides exactly the same way. Turning it off costs an application
+that does not use `SVC` nothing.
+
+This is what the *Code generation* tab should look like when you are done -
+everything at its default except the two cleared rows:
+
+| Row | Generate IRQ handler |
+|---|---|
+| Non maskable interrupt, Hard fault, Memory management fault, Pre-fetch fault, Undefined instruction, Debug monitor | ✔ default |
+| **System service call via SWI instruction** (`SVC_Handler`) | ☐ **clear it** - see above |
+| **Pendable request for system service** (`PendSV_Handler`) | ☐ **clear it** - the kernel owns this vector |
+| **System tick timer** (`SysTick_Handler`) | ✔ **keep it** - `os_tick_handler()` goes in it, step 6 |
+| Time base: *<your timer>* global interrupt | ✔ appears once step 3 is done - CubeMX ticks it for you |
+
+The *Select for init sequence ordering* and *Call HAL handler* columns are not
+involved; leave them as they are.
+
+> **On the installer route?** It disables a generated `PendSV_Handler` for you
+> by wrapping it in `#if 0`, but it cannot touch `SVC_Handler` - nothing in the
+> generated sources says whether you intend to run the self-test. If you enable
+> the suite later and the link fails on `SVC_Handler`, this checkbox is the fix.
 
 ### 3. CubeMX: move the HAL time base off SysTick
 
-> **System Core → SYS → Timebase Source → TIM7** (TIM6 and TIM17 are equally
-> good on parts that have them).
+> **System Core → SYS → Timebase Source → any spare timer.**
 
 `HAL_Init()` otherwise claims SysTick for `HAL_GetTick()`, and the kernel needs
-it. CubeMX adds `Core/Src/stm32h5xx_hal_timebase_tim.c` to the project, and from
-then on `HAL_Delay()` / `HAL_GetTick()` run off TIM7 while SysTick belongs to
-the kernel. Do **not** call `HAL_IncTick()` from `SysTick_Handler` afterwards.
+it. Two time bases sharing one interrupt drift against each other, so move one
+rather than sharing the handler.
 
-Regenerate the code once both checkboxes are set (**Project → Generate Code**),
-then confirm in `Core/Src/stm32h5xx_it.c` that `PendSV_Handler` is gone and
-`SysTick_Handler` is still there.
+**Which timer does not matter.** The kernel never touches it - it belongs to the
+HAL from here on, and the only requirement is that nothing else in your design
+already wants it. `TIM7` is what the rest of this page names because it is what
+the NUCLEO-H503RB was verified with; `TIM6` and `TIM17` are the other usual
+picks, and on a part that has none of those any spare timer in the dropdown does
+the same job. Substitute your own everywhere `TIM7` appears below.
+
+Whichever you pick, CubeMX does three things by itself: it adds
+`Core/Src/stm32h5xx_hal_timebase_tim.c` to the project, it writes that timer's
+`IRQHandler` into `stm32h5xx_it.c`, and it ticks *Time base: <timer> global
+interrupt* in the NVIC table from step 2. From then on `HAL_Delay()` and
+`HAL_GetTick()` run off it while SysTick belongs to the kernel. Do **not** call
+`HAL_IncTick()` from `SysTick_Handler` afterwards.
+
+You can confirm it landed in the `.ioc` without opening CubeMX again - these two
+lines name whichever timer you chose:
+
+```text
+NVIC.TimeBase=TIM7_IRQn
+NVIC.TimeBaseIP=TIM7
+```
+
+Regenerate the code once the checkboxes are set (**Project → Generate Code**),
+then confirm in `Core/Src/stm32h5xx_it.c` that `PendSV_Handler` is gone (and
+`SVC_Handler` with it, if you cleared that too), while `SysTick_Handler` is
+still there and the time-base timer's `IRQHandler` has appeared.
 
 `HAL_Delay()` still busy-waits - it does not yield. Use `os_delay_ms()` in task
 code and keep `HAL_Delay()` for driver init that runs before `os_start()`.
@@ -486,7 +535,7 @@ whatever `OS_LOG_*` emits.
 | `Core/Inc/os_config.h`, `Core/Src/os_cb.c`, `Core/Src/os_main.c` | you | yes - CubeMX does not know they exist |
 | `CMakeLists.txt` | you, after the first generation | yes - generated once only |
 | `Core/Src/stm32h5xx_it.c`, `Core/Src/main.c` | CubeMX | yes, **if** the edits are inside `USER CODE` markers |
-| `PendSV_Handler` staying absent, TIM7 time base | the `.ioc` | yes - both are stored settings, not hand edits |
+| `PendSV_Handler` and `SVC_Handler` staying absent, TIM7 time base | the `.ioc` | yes - all three are stored settings, not hand edits |
 
 If a regeneration does lose something, the
 [automatic installer](#automatic---one-command) puts it back - running it again

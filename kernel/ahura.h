@@ -34,6 +34,26 @@ extern "C"
 
 /*
  * ***********************************************************************************************************
+ * Portability
+ * ***********************************************************************************************************
+*/
+
+/* The compile-time assertion, spelled the way the language in use spells it.
+ *
+ * The kernel is C11, where it is _Static_assert. C++ has had static_assert as a keyword since
+ * C++11 and does not declare _Static_assert at all, so a C++ application including this header
+ * would fail on the assertions below and inside OS_QUEUE_DEFINE_BUFFER, OS_TIMER_DEFINE and
+ * OS_DEFERRED_POOL_DEFINE. The extern "C" block above keeps the LINKAGE right and says nothing
+ * about the syntax, which is why the guard alone was not enough. Both forms take the same two
+ * arguments, so this is a rename and nothing more. */
+#ifdef __cplusplus
+#define OS_STATIC_ASSERT(condition, message)    static_assert(condition, message)
+#else
+#define OS_STATIC_ASSERT(condition, message)    _Static_assert(condition, message)
+#endif
+
+/*
+ * ***********************************************************************************************************
  * Kernel version
  * ***********************************************************************************************************
 */
@@ -250,12 +270,12 @@ typedef enum
  * A gap would mean a level no task could ever occupy - wasted ready-list and bitmap space - and an
  * overlap would put a user task where the idle fallback or a service task belongs. Checked rather
  * than derived so that renumbering one end without the other fails to build. */
-_Static_assert(((uint32_t)OS_TASK_PRIO_1_LOWEST == ((uint32_t)OS_TASK_PRIO_IDLE + 1U)) &&
+OS_STATIC_ASSERT(((uint32_t)OS_TASK_PRIO_1_LOWEST == ((uint32_t)OS_TASK_PRIO_IDLE + 1U)) &&
                ((uint32_t)OS_TASK_PRIO_30_HIGHEST == ((uint32_t)OS_TASK_PRIO_MAX - 1U)),
                "the user priority range must be contiguous with OS_TASK_PRIO_IDLE and OS_TASK_PRIO_MAX");
 
 /* The ready bitmap is one 32-bit word, one bit per level, so the top level has to fit in it. */
-_Static_assert((uint32_t)OS_TASK_PRIO_MAX < 32U,
+OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
                "OS_TASK_PRIO_MAX must fit the 32-bit ready bitmap");
 
 /** Core affinity: the task may run on any core - the empty mask, so no core is
@@ -848,10 +868,12 @@ typedef struct
  *  the end of the storage - the exact failure deriving the geometry exists to prevent, so it is
  *  worth refusing to build over. Evaluates to a permitted 1 on compilers without the builtin,
  *  where the check simply does not run. */
-#if defined(__GNUC__) || defined(__clang__)
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__cplusplus)
 #define OS_QUEUE_IS_ARRAY(array) \
     (!__builtin_types_compatible_p(__typeof__(array), __typeof__(&(array)[0])))
 #else
+/* C++ lands here too: __builtin_types_compatible_p is a C-only builtin, so the check does not run
+ * there and the macro permits the definition, exactly as on a non-GNU compiler. */
 #define OS_QUEUE_IS_ARRAY(array) 1
 #endif
 
@@ -886,7 +908,7 @@ typedef struct
  *  pointer to one - the line below refuses to compile otherwise. Item size and capacity come from
  *  it, so there is nothing to keep in step by hand. */
 #define OS_QUEUE_DEFINE_BUFFER(name, array)                                                 \
-    _Static_assert(OS_QUEUE_IS_ARRAY(array),                                                \
+    OS_STATIC_ASSERT(OS_QUEUE_IS_ARRAY(array),                                                \
                    "OS_QUEUE_DEFINE_BUFFER needs the item array itself, not a pointer");    \
     static os_queue_t name = OS_QUEUE_INITIALIZER(array)
 
@@ -1133,7 +1155,7 @@ struct os_timer_pool_s
 
 /** Reloads and fires every period_ms until stopped. */
 #define OS_TIMER_DEFINE_PERIODIC(timer_name, timer_period_ms, timer_callback)             \
-    _Static_assert(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
+    OS_STATIC_ASSERT(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
                    "OS_TIMER_DEFINE_PERIODIC: the period is in milliseconds and cannot "  \
                    "be 0 or OS_WAIT_FOREVER");                                            \
     static os_timer_t timer_name = {                                                      \
@@ -1145,7 +1167,7 @@ struct os_timer_pool_s
 
 /** Fires once, period_ms after it is started, then stops. */
 #define OS_TIMER_DEFINE_ONESHOT(timer_name, timer_period_ms, timer_callback)              \
-    _Static_assert(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
+    OS_STATIC_ASSERT(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
                    "OS_TIMER_DEFINE_ONESHOT: the period is in milliseconds and cannot "   \
                    "be 0 or OS_WAIT_FOREVER");                                            \
     static os_timer_t timer_name = {                                                      \
@@ -1177,10 +1199,10 @@ struct os_timer_pool_s
  *  pool_depth slots cost pool_depth * sizeof(os_timer_entry_t), threaded on first use.
  */
 #define OS_TIMER_DEFINE_SUBMIT(pool_name, pool_depth, pool_delay_ms, pool_callback)       \
-    _Static_assert((pool_depth) > 0U,                                                     \
+    OS_STATIC_ASSERT((pool_depth) > 0U,                                                     \
                    "OS_TIMER_DEFINE_SUBMIT: the depth is how many calls may be in "       \
                    "flight at once and cannot be 0");                                     \
-    _Static_assert((pool_delay_ms) != OS_WAIT_FOREVER,                                    \
+    OS_STATIC_ASSERT((pool_delay_ms) != OS_WAIT_FOREVER,                                    \
                    "OS_TIMER_DEFINE_SUBMIT: the delay is in milliseconds; use 0 for "     \
                    "as soon as possible");                                                \
     static os_timer_entry_t pool_name##_entries[(pool_depth)];                            \
