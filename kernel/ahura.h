@@ -311,15 +311,23 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
  * ***********************************************************************************************************
 */
 
-/* 8-byte task stack alignment. Order matters: armclang also defines __clang__,
- * and clang also defines __GNUC__, so the most specific test has to come first
- * or the later branches are dead code. */
+/* Task stack alignment, taken from the port rather than fixed here.
+ *
+ * It was 8 for every compiler, which is the ARM AAPCS requirement and was correct while ARM was
+ * the only architecture. It is not universal: the RISC-V ilp32 ABI requires 16 at every procedure
+ * call boundary, and os_task_create validates the stack against OS_ARCH_STACK_ALIGNMENT_BYTES - so
+ * a hardcoded 8 there produces a task the kernel then refuses to create, with OS_ERR_INVALID_ARG
+ * and no clue that alignment was the reason.
+ *
+ * os_arch_port.h is included at the top of this file, so the port's value is already known here.
+ * Order matters below: armclang also defines __clang__, and clang also defines __GNUC__, so the
+ * most specific test has to come first or the later branches are dead code. */
 #if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6000000)
-#define OS_STACK_ALIGNED        __attribute__((aligned(8)))   /* Arm Compiler 6 (armclang) */
+#define OS_STACK_ALIGNED        __attribute__((aligned(OS_ARCH_STACK_ALIGNMENT_BYTES)))  /* armclang */
 #elif defined(__clang__)
-#define OS_STACK_ALIGNED        __attribute__((aligned(8)))   /* LLVM clang                */
+#define OS_STACK_ALIGNED        __attribute__((aligned(OS_ARCH_STACK_ALIGNMENT_BYTES)))  /* clang    */
 #elif defined(__GNUC__)
-#define OS_STACK_ALIGNED        __attribute__((aligned(8)))   /* GNU GCC                   */
+#define OS_STACK_ALIGNED        __attribute__((aligned(OS_ARCH_STACK_ALIGNMENT_BYTES)))  /* GCC      */
 #else
 #define OS_STACK_ALIGNED
 #endif
@@ -338,7 +346,7 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *  stack_size, not name and stack_bytes: a parameter named after a struct field would be
  *  substituted inside the initializers below.) */
 #define OS_TASK_DEFINE(task_name, stack_size)                                        \
-    static uint8_t task_name##_STACK[(((stack_size) + 7U) & ~7U)] OS_STACK_ALIGNED;  \
+    static uint8_t task_name##_STACK[(((stack_size) + (OS_ARCH_STACK_ALIGNMENT_BYTES - 1U)) & ~(OS_ARCH_STACK_ALIGNMENT_BYTES - 1U))] OS_STACK_ALIGNED;  \
     static const os_task_storage_t task_name##_STORAGE = {                           \
         .name         = #task_name,                                                  \
         .stack_memory = (void *)(task_name##_STACK),                                 \
@@ -363,7 +371,7 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *  (__attribute__((aligned(32))) __attribute__((section(".noinit")))) whatever commas they
  *  contain. */
 #define OS_TASK_DEFINE_ATTR(task_name, stack_size, ...)                              \
-    static uint8_t task_name##_STACK[(((stack_size) + 7U) & ~7U)]                    \
+    static uint8_t task_name##_STACK[(((stack_size) + (OS_ARCH_STACK_ALIGNMENT_BYTES - 1U)) & ~(OS_ARCH_STACK_ALIGNMENT_BYTES - 1U))]                    \
         OS_STACK_ALIGNED __VA_ARGS__;                                                \
     static const os_task_storage_t task_name##_STORAGE = {                           \
         .name         = #task_name,                                                  \

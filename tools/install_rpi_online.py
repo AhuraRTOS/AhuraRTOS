@@ -554,6 +554,23 @@ PRUNE = {
 # rather than asking the user to know which chip is on theirs.
 SOC_RP2040 = "raspberrypi/rp2040"
 SOC_RP235X = "raspberrypi/rp235x_arm"
+SOC_RP235X_RISCV = "raspberrypi/rp235x_riscv"
+
+# What the CMake block says about the package it selected. Written into the user's CMakeLists.txt,
+# so it has to describe the core that was actually chosen: the two halves of the RP2350 own
+# different vectors and are told about them in different ways.
+SOC_NOTE_ARM = """# The SoC package for this chip. This is what tells the kernel that the SDK's vector table calls
+# entry 14 isr_pendsv rather than PendSV_Handler - without it the build links cleanly and then
+# traps at os_start(). It also supplies isr_systick, SystemCoreClock, the core id, the inter-core
+# doorbell and the SIO hardware spinlocks. See AhuraRTOS/doc/soc.md."""
+
+SOC_NOTE_RISCV = """# The SoC package for this chip's Hazard3 RISC-V cores. There is no PendSV on RISC-V: the vector
+# the kernel owns is the machine software interrupt (trap cause 3), which the SDK's crt0_riscv.S
+# names isr_riscv_machine_soft_irq and declares weak so exactly this can replace it. The package
+# also supplies the tick off SIO_MTIMECMP, the CPU clock, the core id, the SIO_RISCV_SOFTIRQ
+# register that serves as both yield and inter-core interrupt, and the hardware spinlocks. It also
+# places the context-switch handler in RAM, which on this chip is a link-time requirement rather
+# than a preference. See AhuraRTOS/doc/soc.md.""" 
 
 # Matched against PICO_PLATFORM first, then PICO_BOARD, as substrings and in this order - so
 # "pico2_w" hits the RP2350 rule before the "pico" one could claim it.
@@ -673,6 +690,25 @@ class Project:
         """PICO_BOARD, for the summary and for choosing the SoC package. Absent is fine."""
         return self._cmake_string("PICO_BOARD")
 
+    def _is_riscv(self) -> bool:
+        """Whether this project targets the RP2350's Hazard3 RISC-V cores rather than its M33s.
+
+        Two places say so, and the second is the one that usually does. A project may set
+        PICO_PLATFORM=rp2350-riscv itself; far more often it does not, because the VS Code extension
+        writes only a toolchain name and lets pico-vscode.cmake derive the platform from it:
+
+            if(PICO_TOOLCHAIN_PATH MATCHES "RISCV")
+                set(PICO_PLATFORM rp2350-riscv CACHE STRING "Pico Platform")
+
+        Reading the toolchain name here the same way is what stops a perfectly unambiguous project
+        being told the installer cannot tell which chip it targets.
+        """
+        for value in (self.platform, self._cmake_string("toolchainVersion")):
+            if value and ("riscv" in value.lower()):
+                return True
+
+        return False
+
     def _detect_soc(self) -> str:
         """Which SoC package this project needs, from PICO_PLATFORM then PICO_BOARD.
 
@@ -681,22 +717,36 @@ class Project:
         inter-core interrupt and build against the wrong core. Guessing is therefore not on:
         an unrecognised board is an error naming both choices.
         """
+        riscv = self._is_riscv()
+
         for source in (self.platform, self.board):
             if not source:
                 continue
             lowered = source.lower()
             for token, soc in SOC_RULES:
                 if token in lowered:
-                    return soc
+                    if not riscv:
+                        return soc
+
+                    # Same chip, other core. The RP235x packages are siblings and the toolchain has
+                    # already decided between them.
+                    if soc == SOC_RP235X:
+                        return SOC_RP235X_RISCV
+
+                    raise Fatal(
+                        "this project builds for RISC-V, but its board names an RP2040." + "\n" +
+                        "  The RP2040 is Cortex-M0+ only and has no RISC-V cores, so there is no" + "\n" +
+                        "  package for that combination. Check PICO_BOARD and the toolchain.")
 
         raise Fatal(
             "cannot tell which chip this project targets.\n"
             "  PICO_PLATFORM={}, PICO_BOARD={}\n"
             "  Pass the package explicitly:\n"
-            "      --soc {}     (RP2040)\n"
-            "      --soc {}     (RP2350, RP2354)"
+            "      --soc {}           (RP2040)\n"
+            "      --soc {}      (RP2350, RP2354 - Arm cores)\n"
+            "      --soc {}    (RP2350, RP2354 - RISC-V cores)"
             .format(self.platform or "<unset>", self.board or "<unset>",
-                    SOC_RP2040, SOC_RP235X))
+                    SOC_RP2040, SOC_RP235X, SOC_RP235X_RISCV))
 
     def check(self):
         """Anything that would make the build fail, checked before writing."""
@@ -726,10 +776,7 @@ CMAKE_BLOCK = """\
 # APPEND, so a later call adds to what is already there. It also has to come after
 # pico_sdk_init(), which it does by sitting at the end of the file.
 
-# The SoC package for the RP2040, RP2350 and RP2354. This is what tells the kernel that the SDK's
-# vector table calls entry 14 isr_pendsv rather than PendSV_Handler - without it the build links
-# cleanly and then traps at os_start(). It also supplies isr_systick, SystemCoreClock, the core
-# id, the inter-core doorbell and the SIO hardware spinlocks. See AhuraRTOS/doc/soc.md.
+{soc_note}
 set(AHURA_SOC {soc})
 
 # OS_CONFIG_DIR must be set BEFORE add_subdirectory: it tells the kernel library where this
@@ -889,6 +936,7 @@ def plan(project: Project, repo_dir: Path, force: bool, copy_tree: bool):
 
     body = CMAKE_BLOCK.format(
         soc=project.soc,
+        soc_note=SOC_NOTE_RISCV if project.soc == SOC_RP235X_RISCV else SOC_NOTE_ARM,
         cfg="${CMAKE_CURRENT_SOURCE_DIR}" + ("" if cfg == "." else "/" + cfg),
         src="" if src == "." else src + "/",
         kernel=relative(ahura_dest / "kernel", project.root),
@@ -910,8 +958,13 @@ def plan(project: Project, repo_dir: Path, force: bool, copy_tree: bool):
     if mc.changed:
         edits.append(mc)
 
-    notes.append("the tick and the PendSV vector need no edits here - the {} package "
-                 "supplies isr_systick and names isr_pendsv for the kernel".format(project.soc))
+    if project.soc == SOC_RP235X_RISCV:
+        notes.append("the tick and the context-switch vector need no edits here - the {} package "
+                     "drives the tick off SIO_MTIMECMP and the kernel replaces the SDK's weak "
+                     "isr_riscv_machine_soft_irq".format(project.soc))
+    else:
+        notes.append("the tick and the PendSV vector need no edits here - the {} package "
+                     "supplies isr_systick and names isr_pendsv for the kernel".format(project.soc))
 
     return edits, copies, notes
 
@@ -938,8 +991,9 @@ def main(argv=None) -> int:
     parser.add_argument("--ref", default="main", metavar="REF",
                         help="branch or tag to download (default: main)")
     parser.add_argument("--soc", metavar="PKG",
-                        help="SoC package to install (default: chosen from PICO_PLATFORM / "
-                             "PICO_BOARD); raspberrypi/rp2040 or raspberrypi/rp235x_arm")
+                        help="SoC package to install (default: chosen from PICO_PLATFORM, "
+                             "the toolchain name and PICO_BOARD); raspberrypi/rp2040, "
+                             "raspberrypi/rp235x_arm or raspberrypi/rp235x_riscv")
     args = parser.parse_args(argv)
 
     root = Path(args.project).expanduser().resolve()

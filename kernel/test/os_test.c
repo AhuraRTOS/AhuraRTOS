@@ -633,9 +633,38 @@ void os_log_output_cb(const uint8_t *data, size_t length)
  */
 static bool test_log_capture_contains(const char *needle)
 {
+    const char *haystack;
+
     os_test_log_capture[TEST_LOG_CAPTURE_SIZE - 1U] = '\0';
 
-    return (strstr((const char *)os_test_log_capture, needle) != NULL);
+    /* Searched byte by byte rather than with strstr(), which is not the micro-optimisation it
+     * looks like.
+     *
+     * newlib's strstr() switches to a two-way algorithm for longer needles and compares with
+     * memcmp(), whose RISC-V build loads a WORD at a time from pointers it assumes are aligned.
+     * They are not: both sides here are arbitrary offsets into a char buffer. Cortex-M lets that
+     * through because its loads tolerate misalignment; Hazard3 traps it, and the suite dies
+     * partway through the log section with a load-address-misaligned exception.
+     *
+     * The suite is meant to depend on nothing but ahura.h and printf, so the fix is to stop
+     * depending on libc's string search rather than to argue with its alignment assumptions. The
+     * captured buffer is a few KB and this runs a handful of times. */
+    for (haystack = (const char *)os_test_log_capture; *haystack != '\0'; haystack++)
+    {
+        size_t index = 0U;
+
+        while ((needle[index] != '\0') && (haystack[index] == needle[index]))
+        {
+            index++;
+        }
+
+        if (needle[index] == '\0')
+        {
+            return true;
+        }
+    }
+
+    return (*needle == '\0');
 }
 #endif /* OS_CONFIG_LOG_ENABLE */
 
@@ -2156,6 +2185,24 @@ void OS_CONFIG_ARCH_SVC_HANDLER(void)
 /******************************************************************************************************/
 static void test_timer_isr(void)
 {
+    /* This section synthesises ISR context with `svc #0`, and confirms the vector first by
+     * reading the table through VTOR. Both are Cortex-M: RISC-V has no SVC exception, no VTOR,
+     * and its vector table holds jump instructions rather than addresses, so there is nothing
+     * here to translate one-for-one.
+     *
+     * Skipped loudly rather than quietly compiled out, because "Timer API from an ISR" simply
+     * absent from the report would read as a suite that passed everything it should have run.
+     *
+     * The natural equivalent on this platform is a spare IRQ raised with irq_set_pending(),
+     * which would exercise these same paths through the real external-interrupt route that
+     * os_arch_in_isr() actually watches. That needs SDK calls the suite currently does without,
+     * so it is a deliberate gap rather than an oversight. */
+#if !defined(OS_ARCH_REG_VTOR) || !defined(OS_ARCH_VECTOR_SVC)
+    test_print_section("Timer API from an ISR");
+    printf("  [SKIP] this port has no SVC exception to raise ISR context with\r\n");
+    printf("         Cortex-M specific; see the comment at test_timer_isr().\r\n");
+    return;
+#else
     /* SHPR2: SVCall's priority byte is the top one. Written as a WORD - byte access to this bank is
      * not architecturally guaranteed on ARMv6-M - and 0xFF saturates to the lowest priority
      * whatever the implemented bits are. SVCall resets to 0, which is above any
@@ -2239,6 +2286,7 @@ static void test_timer_isr(void)
                       (unsigned long)os_test_isr_timer_fired);
     AHURA_TEST_CHECK(os_test_isr_entered == 2U, "both handler entries accounted for (%lu)",
                       (unsigned long)os_test_isr_entered);
+#endif /* OS_ARCH_REG_VTOR && OS_ARCH_VECTOR_SVC */
 }
 #endif /* OS_CONFIG_TIMER_ENABLE */
 
@@ -5419,10 +5467,30 @@ static void test_benchmarks(void)
     printf("ARMv8-M mainline (Cortex-M33/M35P)");
 #elif defined(__ARM_ARCH_8_1M_MAIN__)
     printf("ARMv8.1-M mainline (Cortex-M52/M55/M85)");
-#else
-    printf("unknown ARM profile");
+#elif defined(__riscv)
+    /* RISC-V names its features individually rather than as a profile, so the line is assembled
+     * from the extension macros the compiler defines - which is also exactly what the port
+     * branches on, so this cannot disagree with the code that was built. */
+    printf("RV%d", (int)__riscv_xlen);
+    printf("I");
+#if defined(__riscv_mul)
+    printf("M");
 #endif
-#if defined(__ARM_FP)
+#if defined(__riscv_atomic)
+    printf("A");
+#endif
+#if defined(__riscv_compressed)
+    printf("C");
+#endif
+#if defined(__riscv_zbb)
+    printf(" +Zbb");
+#endif
+#else
+    printf("unknown architecture");
+#endif
+
+    /* Floating point, asked the way each architecture answers it. */
+#if defined(__ARM_FP) || (defined(__riscv) && defined(__riscv_flen))
     printf(", FPU");
 #else
     printf(", no FPU");
@@ -5432,10 +5500,16 @@ static void test_benchmarks(void)
 #elif defined(__ARM_FEATURE_DSP)
     printf(", DSP");
 #endif
+
+    /* TrustZone is an Arm feature. Guarded on the PORT capability rather than only on the config
+     * value, because a port that does not define the OS_CONFIG_TRUSTZONE_* encodings would make
+     * both sides of that comparison 0 and print "TrustZone secure" on a core that has none. */
+#if (OS_ARCH_HAS_TRUSTZONE == 1)
 #if (OS_CONFIG_TRUSTZONE == OS_CONFIG_TRUSTZONE_SECURE)
     printf(", TrustZone secure");
 #elif (OS_CONFIG_TRUSTZONE == OS_CONFIG_TRUSTZONE_NON_SECURE)
     printf(", TrustZone non-secure");
+#endif
 #endif
     printf("\r\n");
 
