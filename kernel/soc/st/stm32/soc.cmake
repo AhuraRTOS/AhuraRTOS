@@ -31,6 +31,18 @@ set(AHURA_SOC_SOURCES "${CMAKE_CURRENT_LIST_DIR}/soc_cb.c")
 # application to call. Every entry point it has is a _cb the kernel invokes itself, declared by
 # the kernel in ahura.h and os_arch_port_common.h. A header here could only have restated that.
 #
-# No AHURA_SOC_LINK_LIBRARIES either: soc_cb.c reaches the HAL through the header named by
-# SOC_CONFIG_HAL_HEADER, which is already on the include path OS_CONFIG_DIR provides, and the HAL
-# itself is linked by the CubeMX-generated target the application already has.
+# soc_cb.c reaches the HAL through the header named by SOC_CONFIG_HAL_HEADER. OS_CONFIG_DIR already
+# puts THAT header's own directory on the kernel's include path - but not the HAL tree behind it,
+# and on a CubeMX project that header is main.h, which includes stm32<family>_hal.h. Without the
+# rest of the chain the kernel library fails with 'stm32xxxx_hal.h: No such file or directory',
+# naming a header the application itself can see perfectly well.
+#
+# CubeMX generates an INTERFACE target carrying exactly those include directories, and adds it
+# before the kernel block, so it is already defined by the time this file is read.
+#
+# Guarded on TARGET rather than assumed: a hand-written or non-CubeMX STM32 project has no such
+# target and names its HAL include paths some other way, and referring to a target that does not
+# exist is a CMake error rather than a no-op.
+if(TARGET stm32cubemx)
+	set(AHURA_SOC_LINK_LIBRARIES stm32cubemx)
+endif()

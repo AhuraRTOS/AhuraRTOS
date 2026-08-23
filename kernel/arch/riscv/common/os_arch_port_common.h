@@ -48,6 +48,22 @@
 #define OS_CONFIG_TICK_SOURCE_SYSTICK   0U
 #define OS_CONFIG_TICK_SOURCE_EXTERNAL  1U
 
+/* TrustZone mode.
+ *
+ * REQUIRED by the ARM port and deliberately NOT required here. Every other option in the list
+ * above is mandatory because a missing one would read as 0 in an #if and silently change
+ * behaviour; this one cannot, because DISABLED is the only answer a RISC-V core can give. Making
+ * an application state it anyway would be asking it to describe a feature its CPU does not have.
+ *
+ * It keeps its home in os_config.h rather than moving to a SoC package, because the mode is a
+ * PRODUCT decision - two boards built on one STM32 may legitimately differ - and doc/soc.md draws
+ * the line exactly there: what the core HAS is arch (OS_ARCH_HAS_TRUSTZONE), which state the
+ * kernel runs in is os_config.h. A config that still carries it keeps building; one that has
+ * dropped it gets DISABLED, and either way the #error below rejects an actual request. */
+#ifndef OS_CONFIG_TRUSTZONE
+#define OS_CONFIG_TRUSTZONE            OS_CONFIG_TRUSTZONE_DISABLED
+#endif
+
 /* Reject incomplete configurations: a missing option would otherwise read
  * as 0 in #if directives and silently disable or misconfigure features.
  * Start from template/os_config.h, which lists every required option. */
@@ -61,7 +77,7 @@
     !defined(OS_CONFIG_TICKLESS_ENABLE) ||                                                            \
     !defined(OS_CONFIG_LOG_LEVEL) || !defined(OS_CONFIG_LOG_BUFFER_SIZE) ||                           \
     !defined(OS_CONFIG_LOG_LINE_MAX) || !defined(OS_CONFIG_LOG_TASK_STACK_SIZE) ||                    \
-    !defined(OS_CONFIG_LOG_TASK_PRIORITY) ||                                                          \
+    !defined(OS_CONFIG_LOG_TASK_PRIORITY) || !defined(OS_CONFIG_LOG_CORE_AFFINITY) ||                                                          \
     !defined(OS_CONFIG_TICK_HZ) || !defined(OS_CONFIG_TIME_SLICE_TICKS) ||                            \
     !defined(OS_CONFIG_MAX_USER_TASKS) || !defined(OS_CONFIG_MIN_STACK_SIZE) ||                       \
     !defined(OS_CONFIG_HEAP_SIZE) ||                                                                  \
@@ -69,7 +85,7 @@
     !defined(OS_CONFIG_TIMER_CORE_AFFINITY) ||                                                        \
     !defined(OS_CONFIG_MAIN_TASK_STACK_SIZE) || !defined(OS_CONFIG_MAIN_TASK_PRIORITY) ||             \
     !defined(OS_CONFIG_TEST_STACK_SIZE) || !defined(OS_CONFIG_TEST_PRIORITY) ||                       \
-    !defined(OS_CONFIG_TRUSTZONE) || !defined(OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY) ||                  \
+    !defined(OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY) ||                  \
     !defined(OS_CONFIG_CORE_COUNT) ||                     \
     !defined(OS_CONFIG_TICKLESS_MIN_IDLE) ||                    \
     !defined(OS_CONFIG_MAX_SUPPRESSED_TICKS)

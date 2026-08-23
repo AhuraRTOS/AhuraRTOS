@@ -243,6 +243,36 @@ static void     os_arch_task_exit_trap(void);
  *
  * @return None.
  */
+/******************************************************************************************************/
+/**
+ * @brief Default: the chip cannot be asked. Overridden by a SoC package that knows where its
+ *        security-enable bit lives. OS_WEAK, so a package's strong definition wins whatever order
+ *        the linker sees them in - the same rule as every other SoC callback (doc/soc.md).
+ */
+OS_WEAK uint32_t os_arch_soc_trustzone_state_cb(void)
+{
+    return OS_CONFIG_TRUSTZONE_UNKNOWN;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Trap if the silicon's actual security state contradicts OS_CONFIG_TRUSTZONE.
+ *
+ * Compiles to nothing where no package answers, which is every unpackaged part.
+ */
+static inline void os_arch_trustzone_state_check(void)
+{
+    uint32_t actual = os_arch_soc_trustzone_state_cb();
+
+    if ((actual != OS_CONFIG_TRUSTZONE_UNKNOWN) && (actual != (uint32_t)OS_CONFIG_TRUSTZONE))
+    {
+        /* Stopping here is the whole point. A secure-built kernel on a device whose security
+         * extension was never armed does not fault at the mismatch - it faults later, somewhere
+         * unrelated, on the first banked operation. */
+        os_arch_config_fault_trap();
+    }
+}
+
 void os_arch_init(void)
 {
     uint32_t shpr3 = OS_ARCH_REG_SHPR3;
@@ -251,6 +281,10 @@ void os_arch_init(void)
      * here. Everything below assumes the kernel owns that exception, and a
      * table that does not is a silent hang rather than a fault. */
     os_arch_vector_check(OS_CONFIG_ARCH_PENDSV_HANDLER);
+
+    /* Same spirit as the vector check above: confirm the device agrees with the build.
+     * Costs nothing unless a SoC package can actually answer. */
+    os_arch_trustzone_state_check();
 
     /* PSP == 0 is the sentinel the PendSV handler uses to recognize "no task
      * context yet" (see the context-switch block above). Primed here - the

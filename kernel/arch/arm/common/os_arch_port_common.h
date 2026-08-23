@@ -20,6 +20,11 @@
 #define OS_CONFIG_TRUSTZONE_NON_SECURE  1U
 #define OS_CONFIG_TRUSTZONE_SECURE      2U
 
+/* What os_arch_soc_trustzone_state_cb() returns when the chip cannot be asked - the default, and
+ * the answer for every part whose package does not implement it. Distinct from the three modes
+ * above so "do not know" can never be mistaken for "disabled". */
+#define OS_CONFIG_TRUSTZONE_UNKNOWN     0xFFFFFFFFU
+
 /* Tick source values for OS_CONFIG_TICK_SOURCE, kernel-owned on the same terms
  * as the TrustZone modes above. See the "Tick source" block further down. */
 #define OS_CONFIG_TICK_SOURCE_SYSTICK   0U
@@ -52,7 +57,7 @@
     !defined(OS_CONFIG_TICKLESS_ENABLE) ||                                                            \
     !defined(OS_CONFIG_LOG_LEVEL) || !defined(OS_CONFIG_LOG_BUFFER_SIZE) ||                           \
     !defined(OS_CONFIG_LOG_LINE_MAX) || !defined(OS_CONFIG_LOG_TASK_STACK_SIZE) ||                    \
-    !defined(OS_CONFIG_LOG_TASK_PRIORITY) ||                                                          \
+    !defined(OS_CONFIG_LOG_TASK_PRIORITY) || !defined(OS_CONFIG_LOG_CORE_AFFINITY) ||                                                          \
     !defined(OS_CONFIG_TICK_HZ) || !defined(OS_CONFIG_TIME_SLICE_TICKS) ||                            \
     !defined(OS_CONFIG_MAX_USER_TASKS) || !defined(OS_CONFIG_MIN_STACK_SIZE) ||                       \
     !defined(OS_CONFIG_HEAP_SIZE) ||                                                                  \
@@ -1093,6 +1098,25 @@ static inline void os_arch_spinlock_release(os_arch_spinlock_t *lock)
  *        context). REQUIRED in this mode: the kernel ships no default, so a missing one is a
  *        link error rather than a task switched without its secure state.
  */
+/******************************************************************************************************/
+/**
+ * @brief The security state the SILICON is actually in, or OS_CONFIG_TRUSTZONE_UNKNOWN.
+ *
+ * OS_CONFIG_TRUSTZONE says which state the product intends to run in, and the compile-time checks
+ * further up already confirm that intent against the core and against -mcmse. What none of them can
+ * see is the device itself: on STM32 TrustZone is armed by the TZEN option byte, programmed into
+ * flash rather than compiled in, and other vendors gate it their own way. A build that says SECURE
+ * on a device where that bit was never set is consistent with everything the compiler can check and
+ * still wrong.
+ *
+ * Where that bit lives is a fact about the chip, so reading it belongs to a SoC package - which is
+ * also why the kernel asks rather than looks. The default returns UNKNOWN and the check below does
+ * nothing, so an unpackaged part behaves exactly as it always has.
+ *
+ * @return One of OS_CONFIG_TRUSTZONE_DISABLED / _NON_SECURE / _SECURE, or _UNKNOWN.
+ */
+uint32_t os_arch_soc_trustzone_state_cb(void);
+
 void os_arch_tz_context_save_cb(uint32_t task_id);
 
 /******************************************************************************************************/
