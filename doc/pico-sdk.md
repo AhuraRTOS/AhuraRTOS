@@ -28,7 +28,7 @@ both names if it cannot tell:
 | `PICO_BOARD` / `PICO_PLATFORM` contains | Chip | `AHURA_SOC` | Status |
 |---|---|---|---|
 | `pico2`, `pico_2`, `rp2350`, `rp2354` | RP2350, RP2354 (Cortex-M33) | `raspberrypi/rp235x_arm` | Verified on silicon, single-core **and** dual-core SMP |
-| `pico`, `rp2040` | RP2040 (Cortex-M0+) | `raspberrypi/rp2040` | Compiles and is exercised in CI; **not yet run on hardware** |
+| `pico`, `rp2040` | RP2040 (Cortex-M0+) | `raspberrypi/rp2040` | Verified on silicon, single-core and dual-core SMP |
 
 `--soc raspberrypi/rp235x_arm` overrides the detection if your project names its
 board some other way.

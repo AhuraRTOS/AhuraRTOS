@@ -195,18 +195,18 @@ The path is deliberately the same work twice rather than two jobs:
 Step 1 alone is a complete, supported port - step 2 only makes it reusable.
 
 Be honest on that page about what has run on silicon and what has only
-compiled. The RP2 pages do this: on the RP2350 both
-single-core and dual-core SMP have run the full self-test on silicon, while
-the RP2040's ARMv6-M glue is written against the SDK's documented API and has
-not run on hardware.
+compiled, and treat "it builds" as saying nothing about the second. Every RP2
+package now states which it is, and the RP2040's page is worth reading as a
+warning: four bugs sat in it for as long as it had never been run, one of them
+an assembler error, because nothing had ever asked a compiler to look at it.
 
 ## Packaged today
 
 | `AHURA_SOC` | Parts | Notes |
 |---|---|---|
 | [`raspberrypi/rp235x_arm`](soc-rp235x-arm.md) | RP2350, RP2354 - Arm cores (Pico 2) | `isr_pendsv`, `isr_systick`, `SystemCoreClock`, core id, doorbell IPI, SIO spinlocks. Verified on silicon, single-core and dual-core SMP |
-| [`raspberrypi/rp235x_riscv`](soc-rp235x-riscv.md) | RP2350, RP2354 - Hazard3 RISC-V cores | The same chip, the other core: the machine software interrupt instead of PendSV, the tick off `SIO_MTIMECMP`, SIO spinlocks, and the context-switch handler placed in RAM - a link-time requirement on this part, not a preference |
-| [`raspberrypi/rp2040`](soc-rp2040.md) | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO. Compiles and runs in CI; not yet run on hardware |
+| [`raspberrypi/rp235x_riscv`](soc-rp235x-riscv.md) | RP2350, RP2354 - Hazard3 RISC-V cores | The same chip, the other core: the machine software interrupt instead of PendSV, the tick off `SIO_MTIMECMP`, SIO spinlocks, and the context-switch handler placed in RAM - a link-time requirement on this part, not a preference. Verified on silicon, single-core and dual-core SMP |
+| [`raspberrypi/rp2040`](soc-rp2040.md) | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO. Verified on silicon, single-core and dual-core SMP |
 | [`st/stm32`](soc-stm32.md) | Every STM32 | Contributes no code. CMSIS-Pack startup already satisfies the kernel |
 
 Installing either `raspberrypi` package is one command - see

@@ -63,11 +63,27 @@ a compile error, never a silent default.
 
 ## Status
 
-Single-core has run the full self-test on silicon. The multi-core glue is
-written against the SDK's documented API but **has not run on real silicon**
-(the RP2350 package has - see [its page](soc-rp235x-arm.md)), which matches the kernel's own
-position: the ARMv6-M SMP paths compile and are exercised in CI, and are
-documented as experimental.
+The full self-test passes on silicon, single-core and dual-core.
+
+Getting there cost four bugs, all of them in code that had compiled for years
+and never executed - which is worth recording, because "it builds" was doing a
+lot of unearned work in this package's favour:
+
+- The shared HardFault vector was written in Thumb-2. It cannot assemble for
+  ARMv6-M at all, so this package had never been through a compiler.
+- The cycle counter synthesized from SysTick only advanced when somebody polled
+  it, so a period that elapsed unobserved was lost for good. It ran at a
+  hundredth of the CPU clock and could step backwards.
+- Core 0 armed its inter-core interrupt before `multicore_launch_core1()`. On
+  this chip the IPI shares the FIFO the launch handshake uses, so the handler
+  ate the words the launch was still reading and pended a context switch on a
+  core with no first task.
+- Core 1 armed its own before the kernel had primed PSP, so the first interrupt
+  it took drove a context switch through a stack pointer that had never been
+  one.
+
+The last two are the same mistake from opposite ends, and neither could appear
+on the RP2350: its IPI is a doorbell, entirely separate from the launch FIFO.
 
 Cache coherency is not a concern here - these chips have no data cache between
 the cores and SRAM - so the second `OS_CONFIG_CORE_COUNT` precondition in

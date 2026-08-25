@@ -96,6 +96,8 @@ typedef struct
     uint32_t cfsr;    /**< Configurable Fault Status: says WHICH fault. */
     uint32_t hfsr;    /**< HardFault Status: usually FORCED, meaning escalated from CFSR. */
     uint32_t sp;      /**< Stack pointer at the fault, so the words below can be located. */
+    uint32_t psp;     /**< Process stack pointer: the RUNNING TASK's stack. */
+    uint32_t msp;     /**< Main stack pointer: the handler stack of the core that faulted. */
 
     /* A slice of the faulting stack, above the exception frame. On a jump-to-zero the stacked LR
      * names only the innermost call, which is rarely the culprit - the return addresses further up
@@ -105,7 +107,7 @@ typedef struct
 
 } soc_fault_t;
 
-static __IO soc_fault_t soc_fault = { 0U, 0U, 0U, 0U, 0U, 0U, 0U };
+static __IO soc_fault_t soc_fault = { 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U };
 #endif
 
 /*
@@ -265,9 +267,9 @@ void os_arch_soc_init_cb(void)
      * must NOT repeat it, or it would release a lock core 0 may be holding. */
     soc_lock = spin_lock_init(SOC_CONFIG_SPINLOCK_ID);
 
-#if (OS_CONFIG_CORE_COUNT > 1U)
-    soc_ipi_arm();
-#endif
+    /* This core's IPI is deliberately NOT armed here. It is armed in os_arch_core_launch_cb(),
+     * after the secondary core has been launched - see the comment there for why the order is
+     * load-bearing on one of these chips and merely harmless on the other. */
 }
 
 #if (OS_CONFIG_TICK_SOURCE == OS_CONFIG_TICK_SOURCE_SYSTICK) && (SOC_CONFIG_SYSTICK_VECTOR != 0U)
@@ -331,6 +333,27 @@ void os_arch_core_launch_cb(uint32_t core_id)
     }
 
     multicore_launch_core1(soc_core1_entry);
+
+    /* Core 0's own IPI is armed HERE, and not a line earlier.
+     *
+     * On the RP2040 the IPI rides the SIO FIFO, and so does multicore_launch_core1(): the launch is
+     * a handshake in which core 0 pushes six words and core 1 echoes each one back. Those echoes
+     * land in core 0's RX FIFO and raise SIO_IRQ_PROC0 - the very interrupt the kernel uses for
+     * "come and reschedule". Armed before the launch, the handler therefore runs during the
+     * handshake and does two damaging things: multicore_fifo_drain() eats the words the launch is
+     * still waiting to read, and the switch request pends PendSV on a core that has not started its
+     * first task yet. It faulted in the context switch, reading a process stack pointer no task had
+     * ever set.
+     *
+     * The RP2350 never showed this because its IPI is a doorbell, an entirely separate mechanism
+     * from the FIFO the launch uses - which is why both of its packages ran dual-core cleanly and
+     * only the RP2040 did not. Arming after the launch is correct on both: core 1 cannot send an
+     * IPI before it exists, and multicore_launch_core1() does not return until the handshake is
+     * complete. Core 1 arms its own on the way in, in soc_core1_entry().
+     *
+     * A reschedule request that arrives in the remaining sliver - after the launch returns, before
+     * this line - is not lost so much as deferred: the next tick re-evaluates scheduling anyway. */
+    soc_ipi_arm();
 }
 
 /******************************************************************************************************/
@@ -356,9 +379,19 @@ void os_arch_soc_diagnose_cb(void)
         printf("               pc=0x%08lX  lr=0x%08lX  psr=0x%08lX\r\n",
                (unsigned long)soc_fault.pc, (unsigned long)soc_fault.lr,
                (unsigned long)soc_fault.psr);
-        printf("               CFSR=0x%08lX  HFSR=0x%08lX  sp=0x%08lX\r\n",
-               (unsigned long)soc_fault.cfsr, (unsigned long)soc_fault.hfsr,
-               (unsigned long)soc_fault.sp);
+        printf("               sp=0x%08lX  psp=0x%08lX  msp=0x%08lX\r\n",
+               (unsigned long)soc_fault.sp, (unsigned long)soc_fault.psp,
+               (unsigned long)soc_fault.msp);
+
+        /* ARMv6-M has neither register. Printing them there is worse than printing nothing: two
+         * zeros read as "no fault bits set", which is a statement about the fault rather than
+         * about the architecture, and it sends the reader looking in the wrong place. */
+#if defined(__ARM_ARCH_6M__)
+        printf("               (CFSR/HFSR do not exist on ARMv6-M - no fault status to read)\r\n");
+#else
+        printf("               CFSR=0x%08lX  HFSR=0x%08lX\r\n",
+               (unsigned long)soc_fault.cfsr, (unsigned long)soc_fault.hfsr);
+#endif
 
         printf("               stack above the frame:\r\n");
         for (uint32_t i = 0U; i < 8U; i++)
@@ -515,6 +548,24 @@ void soc_fault_report(const uint32_t *frame)
      * stack, so they are always safe and they are the two that say WHICH fault it was. */
     soc_fault.core = (uint32_t)get_core_num();
     soc_fault.sp   = sp;
+
+    /* Both stack pointers, straight out of the CPU. They are registers, so reading them cannot
+     * fault however bad the stack is - which is exactly why they belong in this first group.
+     *
+     * PSP earns its place: a context switch saves the outgoing task's registers by storing THROUGH
+     * it, so a PSP that does not point at a writable stack faults on the first store with nothing
+     * else to show for it. Without this field that fault says only "somewhere in isr_pendsv". */
+    {
+        uint32_t psp_value;
+        uint32_t msp_value;
+
+        __asm volatile("mrs %0, psp" : "=r"(psp_value));
+        __asm volatile("mrs %0, msp" : "=r"(msp_value));
+
+        soc_fault.psp = psp_value;
+        soc_fault.msp = msp_value;
+    }
+
     soc_fault.cfsr = *(volatile uint32_t *)0xE000ED28UL;
     soc_fault.hfsr = *(volatile uint32_t *)0xE000ED2CUL;
     soc_fault.taken = 1U;
@@ -568,20 +619,53 @@ void soc_fault_report(const uint32_t *frame)
          *
          * Polling the UART needs no lock and no state, so it works from fault context by
          * construction. */
+        /* The core number is READ, not assumed. It used to be a literal "core 0" inside these
+         * strings, which is wrong on the one build where the question matters: a fault on core 1
+         * reported itself as core 0 and sent the search to the wrong half of the system. */
+        soc_panic_puts("\r\n*** HARD FAULT on core 0x");
+        soc_panic_hex(soc_fault.core);
         soc_panic_puts((soc_fault.taken == 1U)
-                       ? "\r\n*** core 0 HARD FAULT *** (frame unreadable - bad stack pointer)\r\n    pc=0x"
-                       : "\r\n*** core 0 HARD FAULT *** pc=0x");
+                       ? " *** (frame unreadable - bad stack pointer)\r\n    pc=0x"
+                       : " ***\r\n    pc=0x");
         soc_panic_hex(soc_fault.pc);
         soc_panic_puts(" lr=0x");
         soc_panic_hex(soc_fault.lr);
         soc_panic_puts(" psr=0x");
         soc_panic_hex(soc_fault.psr);
+        soc_panic_puts("\r\n    sp=0x");
+        soc_panic_hex(soc_fault.sp);
+        soc_panic_puts(" psp=0x");
+        soc_panic_hex(soc_fault.psp);
+        soc_panic_puts(" msp=0x");
+        soc_panic_hex(soc_fault.msp);
+
+        /* ARMv6-M has neither register, and two zeros there read as "no fault bits set" - a claim
+         * about the fault rather than about the architecture, which sends the reader looking in
+         * the wrong place. Say what is actually true instead. */
+#if defined(__ARM_ARCH_6M__)
+        soc_panic_puts("\r\n    (no CFSR/HFSR on ARMv6-M)");
+#else
         soc_panic_puts("\r\n    CFSR=0x");
         soc_panic_hex(soc_fault.cfsr);
         soc_panic_puts(" HFSR=0x");
         soc_panic_hex(soc_fault.hfsr);
-        soc_panic_puts(" sp=0x");
-        soc_panic_hex(soc_fault.sp);
+#endif
+
+        /* The eight words above the exception frame. They were already captured and never shown,
+         * which wasted them: the stacked LR names only the innermost call, while these are the
+         * return addresses further up - the path that actually got there. */
+        {
+            uint32_t index;
+
+            soc_panic_puts("\r\n    stack:");
+
+            for (index = 0U; index < 8U; index++)
+            {
+                soc_panic_puts(" 0x");
+                soc_panic_hex(soc_fault.stack[index]);
+            }
+        }
+
         soc_panic_puts("\r\n");
     }
 
@@ -599,17 +683,29 @@ void soc_fault_report(const uint32_t *frame)
  * mode (MSP), set means thread mode (PSP). Reading the wrong one prints whatever happens to sit
  * under the other pointer, which is worse than printing nothing.
  *
+ * Written in the ARMv6-M subset, and deliberately so: this file is shared by every RP2 package, and
+ * the RP2040's Cortex-M0+ has none of what the obvious version of this needs. "tst lr, #4" is the
+ * immediate form, which is Thumb-2; IT blocks (ite) do not exist on ARMv6-M at all; and neither
+ * does the conditional execution that mrseq/mrsne rely on. A branch around the other case costs two
+ * instructions in a handler that runs once and then halts, and it assembles identically on the M33,
+ * so there is one version here rather than an #if per profile.
+ *
  * STRONG, like isr_systick: crt0.S's own stub is weak and always linked, and between two weak
  * definitions the linker keeps whichever it saw first.
  */
 __attribute__((naked)) void isr_hardfault(void)
 {
     __asm volatile (
-        "tst lr, #4          \n"
-        "ite eq              \n"
-        "mrseq r0, msp       \n"
-        "mrsne r0, psp       \n"
-        "b soc_fault_report  \n"
+        "movs r0, #4           \n"   /* the EXC_RETURN bit that names the stack     */
+        "mov  r1, lr           \n"   /* TST on ARMv6-M takes registers only         */
+        "tst  r1, r0           \n"
+        "beq  1f               \n"   /* clear -> handler mode -> the frame is on MSP */
+        "mrs  r0, psp          \n"
+        "b    2f               \n"
+        "1:                    \n"
+        "mrs  r0, msp          \n"
+        "2:                    \n"
+        "b    soc_fault_report \n"   /* r0 is its const uint32_t *frame argument     */
     );
 }
 
@@ -636,9 +732,27 @@ static void soc_core1_entry(void)
     soc_core_reached = (uint8_t)get_core_num();
 #endif
 
+    /* Nothing may interrupt this core until the kernel says so.
+     *
+     * The SDK hands core 1 over with interrupts enabled, and soc_ipi_arm() below opens one more.
+     * But PSP on this core still holds its reset value - the architecture says it is UNKNOWN - and
+     * the kernel's context switch reads it as "the outgoing task's stack", storing sixteen
+     * registers through it. Nothing has told this core there is no outgoing task yet; that is
+     * os_arch_init()'s job, inside os_core_start() below, and it has not run.
+     *
+     * So an interrupt landing in this window is not a scheduling nudge, it is a fault: the handler
+     * pends PendSV, PendSV stores through a PSP that was never a stack, and the core dies before it
+     * has run a single instruction of any task. On the RP2040 that is not a remote possibility -
+     * the IPI shares the FIFO the launch handshake just used, so the interrupt is already waiting.
+     *
+     * os_arch_start_first_task() ends with the matching enable, after PSP is primed and the first
+     * switch is pended, which is exactly the moment this core is ready to take one. Nothing between
+     * here and there needs interrupts: it is all register programming. */
+    OS_ARCH_IRQ_DISABLE();
+
     soc_ipi_arm();
 
-    /* Does not return. */
+    /* Does not return, and re-enables interrupts on the way in. */
     os_core_start();
 }
 

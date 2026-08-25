@@ -246,7 +246,15 @@ One tick is deliberately short. `os_tick_handler()` does this and nothing else:
 5. `os_task_tick_update(1)` - walk the delay list, decrement, and make ready
    whatever reached zero.
 6. `os_task_slice_tick(1)` - count down this core's quantum.
-7. Pend PendSV **only if** `os_task_reschedule_possible()` says a switch would
+7. `os_arch_cycle_tick()` - tell the port that THIS core's tick timer just
+   wrapped. A port whose cycle counter is real hardware (RISC-V `mcycle`, ARM
+   DWT `CYCCNT`) defines it as an inline no-op; a port that has to synthesize
+   one from the tick timer counts the period here. It has to be the interrupt
+   rather than a flag read by whoever happens to call: a period that elapses
+   while nobody is looking is otherwise lost, and the counter then runs slow and
+   can even step backwards. Per core, because each core runs its own tick timer
+   on its own phase while `os_tick_count` belongs to core 0 alone.
+8. Pend PendSV **only if** `os_task_reschedule_possible()` says a switch would
    really happen.
 
 Step 5 costs O(sleeping tasks), not O(task table), because only finite-delay

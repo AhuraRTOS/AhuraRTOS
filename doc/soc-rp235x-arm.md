@@ -69,7 +69,7 @@ a compile error, never a silent default.
 Both paths have run the full self-test on real silicon: single-core, and
 dual-core SMP including the suite's dedicated cross-core stress section
 (contention, wake integrity, migration, churn). The RP2040's ARMv6-M glue
-has not run on hardware - see [its page](soc-rp2040.md).
+has also run on hardware now - see [its page](soc-rp2040.md).
 
 Cache coherency is not a concern here - these chips have no data cache between
 the cores and SRAM - so the second `OS_CONFIG_CORE_COUNT` precondition in

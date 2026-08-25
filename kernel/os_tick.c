@@ -104,6 +104,13 @@ void os_tick_handler(void)
      * only the kernel time base belongs exclusively to core 0. */
     os_task_slice_tick(1U);
 
+    /* Same reasoning, for the port's cycle counter. A port that synthesizes one from SysTick needs
+     * to know how many times THIS core's timer has wrapped, and os_tick_count cannot tell it -
+     * that belongs to core 0 alone, while every core runs its own SysTick on its own phase. This
+     * call is the one moment each core knows its own timer just wrapped. Compiles to nothing on
+     * ports with a real cycle counter in hardware. */
+    os_arch_cycle_tick();
+
     /* Pend PendSV only when it would actually do something: a wake this tick
      * (timer/delay expiry) or an equal-priority peer whose turn has come
      * both show up in os_task_reschedule_possible, which also answers false

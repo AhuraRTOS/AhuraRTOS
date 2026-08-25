@@ -675,6 +675,15 @@ uint32_t os_arch_cycle_count_get(void);
 
 /******************************************************************************************************/
 /**
+ * @brief Told by the kernel that this core's tick just fired, so a counter synthesized from the
+ *        tick timer can close the period. Nothing to do where the counter is real hardware.
+ */
+static inline void os_arch_cycle_tick(void)
+{
+}
+
+/******************************************************************************************************/
+/**
  * @brief Whole ticks elapsed since the last tick interrupt (tickless accounting).
  */
 uint32_t os_arch_elapsed_ticks_get(void);

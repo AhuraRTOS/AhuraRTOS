@@ -104,10 +104,15 @@ implements; there is no call for the application to make, and none to forget.
 
 ## Status
 
-The self-test suite builds and runs on this package on a single core. The
-dual-core path has NOT yet been confirmed on silicon: core 1's entry point and
-the shared tick-handler registration were both wrong until recently, and the
-suite's SMP section is the thing to run first on a board.
+The full self-test passes on silicon, single-core and dual-core, including the
+suite's cross-core stress section.
+
+Two bugs stood between it and that, both in code that had never executed: core 1
+was launched into `os_start()` - core 0's entry point - instead of
+`os_core_start()`, so it never ran `os_arch_init()` and its context-switch
+interrupt stayed masked forever; and the tick handler was registered from both
+cores into one shared vector table, which would have halved the real tick rate
+the moment core 1 did come up.
 
 Cache coherency is not a
 concern on these chips - there is no data cache between the cores and SRAM - so

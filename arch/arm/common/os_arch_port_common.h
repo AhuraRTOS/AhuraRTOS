@@ -342,6 +342,11 @@ extern "C"
 
 #define OS_ARCH_REG_ICSR                  (*(__IO uint32_t *)0xE000ED04UL)
 #define OS_ARCH_ICSR_PENDSVSET_MSK        (1UL << 28)
+/* SysTick exception pending. Set by the hardware when the down-counter wraps and cleared
+ * when the handler is entered, so it reads as "a tick has happened that has not been
+ * counted yet" - which is what the synthesized cycle counter needs and what COUNTFLAG,
+ * despite appearances, does not say. */
+#define OS_ARCH_ICSR_PENDSTSET_MSK        (1UL << 26)
 
 /* Vector Table Offset Register. Writable on ARMv7-M/ARMv8-M and on most ARMv6-M
  * implementations; where it is not implemented it reads as zero, which is also
@@ -750,6 +755,13 @@ uint32_t* os_arch_task_stack_initialize(uint8_t *stack_base, size_t stack_bytes,
  * @brief Read the free-running core cycle counter (DWT, or SysTick-derived when absent).
  */
 uint32_t os_arch_cycle_count_get(void);
+
+/******************************************************************************************************/
+/**
+ * @brief Told by the kernel that this core's tick just fired, so a counter synthesized from the
+ *        tick timer can close the period. Nothing to do where the counter is real hardware.
+ */
+void os_arch_cycle_tick(void);
 
 /******************************************************************************************************/
 /**
