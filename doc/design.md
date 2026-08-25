@@ -490,6 +490,11 @@ Every kernel object is statically sized, so a build's RAM cost is a sum of
 Turning a feature off removes its code, its API **and** its RAM - including the
 service task and stack for timer, work and log.
 
+`OS_CONFIG_TASK_NAME_ENABLE` at `0` is the one that shrinks the task table
+itself: the name pointer leaves `os_task_tcb_t`, so the saving is one pointer
+per slot, and the task-name strings lose their last reference and leave flash
+with it. See [Task names](api.md#diagnostics).
+
 ---
 
 
@@ -528,7 +533,7 @@ service task and stack for timer, work and log.
   module with the target `os_test` and its own `CMakeLists.txt`. See [Self-test
   suite](testing.md#self-test-suite).
 
-#### `core/` portable kernel modules
+#### `kernel/` portable kernel modules
 
 All filenames are `os_`-prefixed:
 
@@ -562,6 +567,13 @@ All filenames are `os_`-prefixed:
   and IPC primitives with `timeout_ms` waits, all built on the shared
   wait/wake machinery in `os_task.c`. See [Blocking and
   waking](#blocking-and-waking).
+- `os_msg.c` is the variable-length sibling of `os_queue.c`, and a separate
+  module rather than a mode of it because it is a ring of BYTES rather than of
+  slots: each message is stored as a length header plus exactly its own bytes,
+  so the capacity is one shared byte budget instead of a slot count. It uses the
+  same wait/wake machinery and the same timeout rules; what it cannot share is
+  the queue's slot arithmetic, which is the whole of what makes a queue cheap.
+  See [Message buffers](api.md#message-buffers).
 - `os_timer.c` holds the software timers. Expiry is detected by the tick and
   callbacks run on the kernel timer task `tsk_timer`, at
   `OS_CONFIG_TIMER_PRIORITY`.
@@ -641,7 +653,7 @@ application routes to `os_tick_handler()`.
 - The build selects the variant from `-mcpu`, falling back to `-march`, so
   `armv8.1-m.main` maps to `cortex_m55` and so on. All folders of one profile
   include the same shared port, so any core of the right architecture is
-  equivalent. See `AhuraRTOS/kernel/CMakeLists.txt`. Override the choice with
+  equivalent. See `AhuraRTOS/CMakeLists.txt`. Override the choice with
   `-DOS_ARCH_VARIANT=cortex_m4`. Note that GCC learned `-mcpu=cortex-m52` in GCC
   14, so older toolchains build that core with `-march=armv8.1-m.main+mve.fp`,
   which the fallback resolves automatically.

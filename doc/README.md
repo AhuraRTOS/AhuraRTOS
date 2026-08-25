@@ -67,7 +67,9 @@ python3 AhuraRTOS/tools/install_stm32_offline.py    # STM32CubeMX
 
 ## The kernel itself
 
-The source is in this repository under [`kernel/`](../kernel/), and this is the
+The source is in this repository - the portable core under [`kernel/`](../kernel/),
+the ports under [`arch/`](../arch/), the public header at [`ahura.h`](../ahura.h),
+mapped file by file in **[Source layout](source.md)** - and this is the
 authoritative reference for everything the kernel *does*:
 
 Start at the **[Kernel reference](kernel.md)** - it says what the kernel is and
@@ -79,8 +81,22 @@ points at the five pages below.
 | **[Using the kernel](api.md)** | Every API: tasks, priorities, mutexes, queues, notifications, atomics, timers, deferred calls, the heap, diagnostics and debugging |
 | **[How the kernel works](design.md)** | Boot, the scheduler, the context switch, the tick, blocking and waking, priority inheritance, where the RAM goes, and the source layout |
 | **[Platform support](porting.md)** | The callbacks a platform must supply, the clock, TrustZone, multi-core and tickless idle |
-| **[SoC packages](soc.md)** | The optional per-silicon layer under `kernel/soc/`: who owns which callback, the two configuration values that moved out of `os_config.h`, and how to write a package |
+| **[SoC packages](soc.md)** | The optional per-silicon layer under `soc/`: who owns which callback, the two configuration values that moved out of `os_config.h`, and how to write a package |
 | **[Testing and examples](testing.md)** | The self-test suite and the runnable examples |
 
-- **[Examples](../examples/README.md)** - one runnable
-  `os_main.c` per kernel feature, with a README on how to run them.
+- **[Source layout](source.md)** - what each directory and each `kernel/`
+  source file is, and why `os_internal.h` is reachable from none of them.
+- **[Examples](examples.md)** - one runnable `os_main.c` per kernel feature,
+  and how to run them.
+
+### The SoC packages, one page each
+
+Every packaged part has its own page here; the layer itself is
+[SoC packages](soc.md).
+
+| Page | Parts |
+|---|---|
+| **[RP2350 / RP2354, Arm](soc-rp235x-arm.md)** | `raspberrypi/rp235x_arm` - Pico 2 and every other RP235x board, Cortex-M33 |
+| **[RP2350 / RP2354, RISC-V](soc-rp235x-riscv.md)** | `raspberrypi/rp235x_riscv` - the same boards booting their Hazard3 cores instead |
+| **[RP2040](soc-rp2040.md)** | `raspberrypi/rp2040` - Pico, Pico W, Cortex-M0+ |
+| **[STM32](soc-stm32.md)** | `st/stm32` - every STM32, and why the package contributes no code |

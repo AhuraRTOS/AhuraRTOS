@@ -25,7 +25,7 @@ and run it:
     |- pico_sdk_import.cmake
     |- main.c
     |- AhuraRTOS/              <- the repository you copied in
-       |- kernel/
+       |- ahura.h  kernel/  arch/  soc/  template/
        |- tools/install_rpi_offline.py
 
     cd MyProject
@@ -107,8 +107,8 @@ def looks_like_ahura(path: Path) -> bool:
     to import from - and it is two lines that cannot drift meaningfully.
     """
     return (path.is_dir()
-            and (path / "kernel" / "ahura.h").is_file()
-            and (path / "kernel" / "template" / "os_config.h").is_file())
+            and (path / "ahura.h").is_file()
+            and (path / "template" / "os_config.h").is_file())
 
 
 def find_repo(source: str, root: Path, script: Path) -> Path:
@@ -133,9 +133,9 @@ def find_repo(source: str, root: Path, script: Path) -> Path:
             raise Fatal("--source {} does not exist".format(source))
         if not looks_like_ahura(given):
             raise Fatal(
-                "--source {} is not an AhuraRTOS checkout (no kernel/ahura.h and\n"
-                "  kernel/template/os_config.h in it). If you unpacked a ZIP, point at\n"
-                "  the directory that CONTAINS kernel/, not at the one above it."
+                "--source {} is not an AhuraRTOS checkout (no ahura.h and\n"
+                "  template/os_config.h in it). If you unpacked a ZIP, point at\n"
+                "  the directory that CONTAINS ahura.h and kernel/, not at the one above it."
                 .format(source))
         return given
 

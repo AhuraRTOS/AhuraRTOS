@@ -36,8 +36,8 @@ usually forced:
 
 | Home | The question | The test |
 |---|---|---|
-| `kernel/arch/` | **What instruction set?** | It changes when you swap a Cortex-M33 for a Hazard3, on the same chip |
-| `kernel/soc/` | **What chip?** | It changes when you swap an RP2350 for an STM32H5, with the same core |
+| `arch/` | **What instruction set?** | It changes when you swap a Cortex-M33 for a Hazard3, on the same chip |
+| `soc/` | **What chip?** | It changes when you swap an RP2350 for an STM32H5, with the same core |
 | `os_config.h` | **What does this product need?** | It changes between two products built on the same chip |
 
 Worked examples, because the boundaries are not always where they first look:
@@ -138,15 +138,18 @@ Hence:
 ## Layout
 
 ```
-kernel/soc/<vendor>/<family>/
+soc/<vendor>/<family>/
 ├── soc.cmake        # required
 ├── soc.h            # only if the package exposes something to call; most do not
 │
 └── ../common/       # optional: code shared by sibling packages of one vendor,
                      # compiled into whichever one the build selected
-├── soc_cb.c         # optional: the SoC-owned callbacks
-└── README.md
+└── soc_cb.c         # optional: the SoC-owned callbacks
 ```
+
+The package's own page - what it assumes, what it claims, what has run on
+silicon - lives in [`doc/`](README.md#the-soc-packages-one-page-each) with the
+rest of the documentation, not beside the sources.
 
 Vendor names use the standard vendor prefixes - `raspberrypi`, `infineon`,
 `nordic`, `silabs` - the same list Zephyr's `soc/` tree uses, so anyone arriving
@@ -160,7 +163,7 @@ starts to sprawl.
 
 ## `soc.cmake`
 
-Read by `kernel/CMakeLists.txt` **before** the `ahura_kernel` target is
+Read by `CMakeLists.txt` **before** the `ahura_kernel` target is
 finished, which is why the dispatch lives inside the kernel rather than beside
 it: the PendSV name has to be known while the port's `.c` files compile, since
 they paste it into naked assembly. The application never has to get an
@@ -183,16 +186,16 @@ Every variable is optional except the name. Unset means "the kernel's default".
 
 The path is deliberately the same work twice rather than two jobs:
 
-1. Copy `kernel/template/soc_cb.c` into an application as `soc_cb.c` and
+1. Copy `template/soc_cb.c` into an application as `soc_cb.c` and
    fill in the bodies against the target's registers. Get the board running.
-2. Move the finished file to `kernel/soc/<vendor>/<family>/soc_cb.c`, add a
-   `soc.cmake` stating the build facts, and write a README saying what it
-   assumes and what it claims.
+2. Move the finished file to `soc/<vendor>/<family>/soc_cb.c`, add a
+   `soc.cmake` stating the build facts, and write `doc/soc-<family>.md` saying
+   what it assumes and what it claims.
 
 Step 1 alone is a complete, supported port - step 2 only makes it reusable.
 
-Be honest in the README about what has run on silicon and what has only
-compiled. The RP2 package's own README does this: on the RP2350 both
+Be honest on that page about what has run on silicon and what has only
+compiled. The RP2 pages do this: on the RP2350 both
 single-core and dual-core SMP have run the full self-test on silicon, while
 the RP2040's ARMv6-M glue is written against the SDK's documented API and has
 not run on hardware.
@@ -201,9 +204,10 @@ not run on hardware.
 
 | `AHURA_SOC` | Parts | Notes |
 |---|---|---|
-| `raspberrypi/rp235x_arm` | RP2350, RP2354 - Arm cores (Pico 2) | `isr_pendsv`, `isr_systick`, `SystemCoreClock`, core id, doorbell IPI, SIO spinlocks. Verified on silicon, single-core and dual-core SMP |
-| `raspberrypi/rp2040` | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO. Compiles and runs in CI; not yet run on hardware |
-| `st/stm32` | Every STM32 | Contributes no code. CMSIS-Pack startup already satisfies the kernel |
+| [`raspberrypi/rp235x_arm`](soc-rp235x-arm.md) | RP2350, RP2354 - Arm cores (Pico 2) | `isr_pendsv`, `isr_systick`, `SystemCoreClock`, core id, doorbell IPI, SIO spinlocks. Verified on silicon, single-core and dual-core SMP |
+| [`raspberrypi/rp235x_riscv`](soc-rp235x-riscv.md) | RP2350, RP2354 - Hazard3 RISC-V cores | The same chip, the other core: the machine software interrupt instead of PendSV, the tick off `SIO_MTIMECMP`, SIO spinlocks, and the context-switch handler placed in RAM - a link-time requirement on this part, not a preference |
+| [`raspberrypi/rp2040`](soc-rp2040.md) | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO. Compiles and runs in CI; not yet run on hardware |
+| [`st/stm32`](soc-stm32.md) | Every STM32 | Contributes no code. CMSIS-Pack startup already satisfies the kernel |
 
 Installing either `raspberrypi` package is one command - see
 **[Raspberry Pi Pico SDK](pico-sdk.md)**.

@@ -24,13 +24,13 @@ steps, byte-identical result, and it only ever reads a copy already on disk.
 What it does, which is exactly the six steps of doc/installation.md:
 
     1. put the AhuraRTOS repository at AhuraRTOS/ in the project
-    2. copy AhuraRTOS/kernel/template/{os_config.h,os_cb.c,os_main.c} into it
+    2. copy AhuraRTOS/template/{os_config.h,os_cb.c,os_main.c} into it
     3. append the kernel block to the top-level CMakeLists.txt
     4. route the tick: os_tick_handler() in SysTick_Handler
     5. disable a CubeMX-generated PendSV_Handler, which the port defines
     6. boot it: os_init() / os_start() in main()
 
-Note what is NOT copied: kernel/template/soc_cb.c. That file is the SoC
+Note what is NOT copied: template/soc_cb.c. That file is the SoC
 half of the callback contract, and STM32 needs none of it - CMSIS-Pack startup
 already gives the kernel its vector name and SystemCoreClock, and single-core
 parts have no core id, IPI or spinlock. Copying it anyway would put empty weak
@@ -383,8 +383,8 @@ def walk_sources(root: Path, prune=frozenset()):
 
 def looks_like_ahura(path: Path) -> bool:
     """A usable AhuraRTOS tree: the kernel and the three templates to copy."""
-    return ((path / "kernel" / "ahura.h").is_file()
-            and (path / "kernel" / "template" / "os_config.h").is_file())
+    return ((path / "ahura.h").is_file()
+            and (path / "template" / "os_config.h").is_file())
 
 
 @contextlib.contextmanager
@@ -396,9 +396,9 @@ def repo_source(source: str, ref: str):
             yield given
             return
         raise Fatal("--source {} is not an AhuraRTOS checkout "
-                    "(no kernel/ahura.h in it)".format(source))
+                    "(no ahura.h in it)".format(source))
 
-    # Running from inside a checkout - tools/install_stm32.py beside kernel/.
+    # Running from inside a checkout - tools/install_stm32.py beside ahura.h and kernel/.
     #
     # __file__ is not a reliable signal on its own: piped in as `python -` it is
     # set to the literal string "<stdin>", which resolves against the working
@@ -459,7 +459,7 @@ def apply(edits, copies, root: Path):
                     if not looks_like_ahura(dest):
                         raise Fatal(
                             "{} exists but is not an AhuraRTOS checkout (no\n"
-                            "  kernel/ahura.h in it). Refusing to delete it - move it aside\n"
+                            "  ahura.h in it). Refusing to delete it - move it aside\n"
                             "  and re-run.".format(relative(dest, root)))
                     # Updating is a replacement, never a merge: a file dropped
                     # upstream would otherwise linger and keep compiling.
@@ -793,14 +793,14 @@ CMAKE_BLOCK = """\
 # project's os_config.h lives. The kernel and the application have to compile against the same
 # configuration - if only the application saw the file, their structure sizes would silently
 # disagree.
-# Selects the SoC package under kernel/soc/. On STM32 that package contributes no code - the
+# Selects the SoC package under soc/. On STM32 that package contributes no code - the
 # CMSIS-Pack startup files already give the kernel the PendSV vector name and SystemCoreClock,
 # and single-core parts need no core id, IPI or spinlock - so this line records the choice
 # rather than changing the build. See AhuraRTOS/doc/soc.md.
 set(AHURA_SOC {soc})
 
 set(OS_CONFIG_DIR ${{CMAKE_CURRENT_SOURCE_DIR}}/{cfg})
-add_subdirectory({kernel})
+add_subdirectory({ahura})
 
 # A header is not normally a configure-time dependency, so CMake would not notice a changed
 # os_config.h until the next manual re-run. Listing it here makes editing it re-run CMake.
@@ -813,7 +813,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${{OS_CONFIG_DIR}
 file(READ ${{OS_CONFIG_DIR}}/os_config.h _os_config_contents)
 if(_os_config_contents MATCHES "#define[ \\t]+OS_CONFIG_TEST_ENABLE[ \\t]+1")
     message(STATUS "Ahura self-test suite: ENABLED (os_main() is not run in this build)")
-    add_subdirectory({kernel}/test)
+    add_subdirectory({ahura}/test)
     set(AHURA_TEST_LIB os_test)
 else()
     set(AHURA_TEST_LIB "")
@@ -894,14 +894,14 @@ def plan(project: Project, repo_dir: Path, tick: str, force: bool, copy_tree: bo
 
     # The three files become yours the moment they exist. Each is checked for
     # individually, so a project missing just one gets just that one.
-    templates = [(repo_dir / "kernel" / "template" / "os_config.h", project.inc_dir),
-                 (repo_dir / "kernel" / "template" / "os_cb.c", project.src_dir),
-                 (repo_dir / "kernel" / "template" / "os_main.c", project.src_dir)]
+    templates = [(repo_dir / "template" / "os_config.h", project.inc_dir),
+                 (repo_dir / "template" / "os_cb.c", project.src_dir),
+                 (repo_dir / "template" / "os_main.c", project.src_dir)]
 
     # The SoC package's own options, if it has any. Optional in a way os_config.h is not - the
     # package defaults every one of them - so a package without the file contributes nothing here
     # rather than failing.
-    soc_config = repo_dir / "kernel" / "soc" / SOC / "template" / "soc_config.h"
+    soc_config = repo_dir / "soc" / SOC / "template" / "soc_config.h"
     if soc_config.is_file():
         templates.append((soc_config, project.inc_dir))
 
@@ -917,7 +917,7 @@ def plan(project: Project, repo_dir: Path, tick: str, force: bool, copy_tree: bo
         soc=SOC,
         cfg=relative(project.inc_dir, project.root),
         src=relative(project.src_dir, project.root),
-        kernel=relative(ahura_dest / "kernel", project.root),
+        ahura=relative(ahura_dest, project.root),
         target=project.target,
     )
     drop_managed(project.cmake)

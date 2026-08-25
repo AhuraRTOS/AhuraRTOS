@@ -40,7 +40,7 @@ code generator emits a competing `PendSV_Handler` - and
 
 Parts that genuinely need silicon-specific glue - a non-CMSIS vector name,
 inter-core signalling, hardware spinlocks - can have it packaged under
-`kernel/soc/<vendor>/<family>/` instead of hand-written into every project. That
+`soc/<vendor>/<family>/` instead of hand-written into every project. That
 layer is optional and additive: with no package the kernel builds exactly as it
 always has, which is what keeps the claim above true. See
 [SoC packages](soc.md).
@@ -79,7 +79,7 @@ rest - are already covered by the ARM ports today: what a new port adds is a new
   spinlocks, the FIFO IPI) compiles and is exercised in CI, but has not run on
   real multi-core silicon. The same kernel paths ARE verified on the RP2350's
   dual Cortex-M33 - see the
-  [RP2350 package](../kernel/soc/raspberrypi/rp235x_arm/README.md), and
+  [RP2350 package](soc-rp235x-arm.md), and
   [Pico SDK → running both cores](pico-sdk.md#running-both-cores) for how to
   turn it on.
 - **Tickless idle.** Real SysTick suppression is implemented on the ARMv8-M

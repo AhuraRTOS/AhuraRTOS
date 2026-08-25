@@ -14,7 +14,7 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | Group | Functions |
 |---|---|
 | **Lifecycle** | `os_init` · `os_start` · `os_kernel_is_running` · `os_core_start` |
-| **Tasks** | `os_task_create` · `os_task_start` · `os_task_pause` · `os_task_delete` · `os_task_yield` · `os_task_state_get` · `os_task_priority_get` · `os_task_priority_set` · `os_task_core_affinity_set` |
+| **Tasks** | `os_task_create` · `os_task_start` · `os_task_pause` · `os_task_delete` · `os_task_yield` · `os_task_state_get` · `os_task_name_get` · `os_task_priority_get` · `os_task_priority_set` · `os_task_core_affinity_set` |
 | **Delays and time** | `os_delay_ms` · `os_delay_us` · `os_tick_get` |
 | **Critical sections** | `os_critical_enter` · `os_critical_exit` |
 | **Scheduler lock** | `os_kernel_lock` · `os_kernel_unlock` · `os_kernel_is_locked` |
@@ -22,6 +22,7 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | **Mutex** | `os_mutex_init` · `os_mutex_lock` · `os_mutex_unlock` |
 | **Semaphore** | `os_semaphore_init` · `os_semaphore_give` · `os_semaphore_take` |
 | **Queue** | `OS_QUEUE_DEFINE_STATIC` · `OS_QUEUE_DEFINE_BUFFER` · `OS_QUEUE_DEFINE_DYNAMIC` · `os_queue_init_dynamic` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
+| **Message buffer** | `OS_MSG_DEFINE_STATIC` · `OS_MSG_DEFINE_BUFFER` · `OS_MSG_SPACE` · `os_msg_send` · `os_msg_receive` · `os_msg_count_get` · `os_msg_free_get` · `os_msg_peek_size` · `os_msg_reset` |
 | **Event** | `os_event_init` · `os_event_set_bits` · `os_event_clear_bits` · `os_event_wait_bits` |
 | **Task notifications** | `os_notify_give` · `os_notify_wait` |
 | **Software timers** | `OS_TIMER_DEFINE_PERIODIC` / `OS_TIMER_DEFINE_ONESHOT` · `os_timer_start` · `os_timer_restart` · `os_timer_pause` · `os_timer_stop` · `os_timer_period_set` · `os_timer_callback_set` · `os_timer_value_set` |
@@ -104,7 +105,7 @@ function: this is where the application's own code runs, not a kernel query for
 platform behavior.
 
 Override it with its own template, separate from `template/os_cb.c`. Copy
-`AhuraRTOS/kernel/template/os_main.c` into the project as `os_main.c`, add it to the
+`AhuraRTOS/template/os_main.c` into the project as `os_main.c`, add it to the
 **application** build (never to the kernel, where it is deliberately absent from
 the CMakeLists, just like `template/os_cb.c`), and replace `os_main()`'s body
 with the application's own code. That can be a plain `while (1)` loop, or it can
@@ -454,6 +455,103 @@ task is still blocked on the queue, because freeing underneath waiters would
 leave them parked on list nodes inside memory the heap can hand out again. Drain
 the queue and let the waiters time out first.
 
+### Message buffers
+
+A queue carries N items of one fixed size. A message buffer carries **whole
+messages whose length varies**, out of one byte budget you choose. Enabled with
+`OS_CONFIG_MSG_ENABLE`, independent of `OS_CONFIG_QUEUE_ENABLE` - neither is
+built on the other.
+
+```c
+OS_MSG_DEFINE_STATIC(cmd_buf, 4U * OS_MSG_SPACE(32U));   /* 136 bytes of storage */
+
+os_msg_send(&cmd_buf, frame, frame_len, 10U);
+
+uint8_t rx[64];
+size_t  rx_len;
+os_msg_receive(&cmd_buf, rx, sizeof(rx), &rx_len, OS_WAIT_FOREVER);
+```
+
+**Which one to reach for.** If every item is the same `struct`, use a queue: the
+slot arithmetic is what makes it cheap. If the length is *data* - a protocol
+frame, a console line, a sensor burst - use this. Sizing a queue for the longest
+message a link can carry and then sending mostly short ones spends the
+difference on every slot; padding short messages up to that size throws away the
+one thing the receiver needed, which is how many of those bytes are real.
+
+| | queue | message buffer |
+|---|---|---|
+| capacity is | a slot count × one item size | a byte budget, shared |
+| an item costs | one slot, always | its own length + `OS_MSG_HEADER_BYTES` |
+| a short item | costs a whole slot | costs what it is |
+| back-pressure reads as | free **slots** | free **bytes** |
+| storage kinds | static, own buffer, heap | static, own buffer |
+
+**Sizing it.** Capacity is in bytes, and each message carries a small length
+header, so write the budget in the terms the application thinks in and let
+`OS_MSG_SPACE` add the overhead:
+
+```c
+OS_MSG_DEFINE_STATIC(cmd_buf, 4U * OS_MSG_SPACE(32U));    /* "four commands of up to 32" */
+
+static uint8_t rx_area[512] __attribute__((section(".dma_buffers")));
+OS_MSG_DEFINE_BUFFER(rx_buf, rx_area);                    /* storage you placed yourself */
+```
+
+Nothing enforces that split at run time - those same 136 bytes will just as
+happily hold eight 14-byte messages or one 130-byte one, which is the
+flexibility being paid for. There is no dynamic kind: the capacity is one
+number, not a geometry, and `OS_MSG_DEFINE_BUFFER` covers storage the static
+macro cannot express.
+
+**Sending and receiving.** Messages arrive whole and in order, one per
+`os_msg_receive()` - never a fragment, never two joined. Both directions block
+with the usual [timeout semantics](#timeout-semantics), so a full buffer applies
+back-pressure to senders exactly as a full queue does.
+
+Three refusals are worth knowing, because each one replaces a failure that would
+otherwise be silent:
+
+- **A destination too small** is `OS_ERR_INVALID_ARG`, and **the message stays
+  where it is** - nothing is truncated, nothing is dropped. `length_out` still
+  receives the size that message needs, so one failed call tells the caller
+  exactly how big a buffer to come back with. Note the consequence: a receiver
+  that keeps offering the same too-small buffer keeps meeting the same message,
+  so treat this as a bug to fix rather than a condition to retry around. Use
+  `os_msg_peek_size()` to size a destination before committing to one.
+- **A message larger than the whole buffer** is refused immediately, even with
+  `OS_WAIT_FOREVER`. Waiting for room that can never exist is a hang, and a hang
+  is the one outcome a timeout cannot rescue the caller from.
+- **A zero-length message** is refused. Use a semaphore or a notification to
+  signal without carrying bytes.
+
+**Reading the free count.** `os_msg_free_get()` reports free **bytes**, and has
+to be read against `OS_MSG_SPACE`, not against a raw length - a buffer with
+exactly `length` bytes free still has no room, because the message pays for its
+own header too:
+
+```c
+if (os_msg_free_get(&cmd_buf) >= OS_MSG_SPACE(len))     /* right */
+if (os_msg_free_get(&cmd_buf) >= len)                   /* wrong: forgets the header */
+```
+
+Like the queue's, it is a snapshot: anything that sends or receives in between
+changes the answer, so treat a large enough result as "worth trying", not as a
+guarantee the next send cannot report `OS_ERR_FULL`.
+
+**Teardown** is `os_msg_reset()`, which discards every stored message and leaves
+the buffer immediately usable. There is nothing to release - the storage came
+from the definition, never from the heap - which is why it is not called
+`cleanup`. It returns `OS_ERR_BUSY` while any task is blocked on the buffer, for
+the same reason `os_queue_cleanup` does.
+
+**Limits.** One message is at most `OS_MSG_LENGTH_MAX` (64 KiB - 1), which is
+what the two-byte header can express. The header width is fixed rather than
+configurable: it is the difference between a 12-byte message costing 14 bytes
+and costing 16, and a knob for that is a decision every project would have to
+make and none would benefit from. The copy runs inside a critical section, as
+the queue's does, so keep messages modest for the same reason.
+
 ### Atomics
 
 An operation no other task, ISR, or core can observe half-finished. Enabled with
@@ -612,6 +710,29 @@ with interrupts masked. See [The kernel heap
 
 ### Diagnostics
 
+**Task names.** `OS_TASK_DEFINE(worker, 512U)` names the task after its own
+handle, and
+
+```c
+const char *name = os_task_name_get(task);   /* NULL task = calling task */
+```
+
+hands that string back - so an application's own diagnostics (a shell command
+listing tasks, a trace line, an error report) can say *which* task without
+keeping a second table mapping handles to strings. The pointer is a string
+literal, so it stays valid after the task is deleted; what it stops describing
+is a *live* task.
+
+`NULL` comes back for a handle no task owns, and for **every** task in a build
+with `OS_CONFIG_TASK_NAME_ENABLE` at `0`. That option is a pure size trade: the
+kernel never reads a name itself, so turning it off removes one pointer per task
+from the TCB and, because nothing references the strings any more, the names
+themselves from flash - measured at 64 bytes of RAM and 604 bytes of flash on
+the self-test build for RP2350. What it costs is diagnosis:
+`os_stack_overflow_cb()` is handed `NULL` and the deadlock report names no task.
+Because the unknown-handle answer is already `NULL`, a caller that handles one
+case handles both.
+
 **Stack watermark.** With `OS_CONFIG_STACK_WATERMARK_ENABLE` (default 1), task
 stacks are pattern-filled at creation and
 
@@ -634,6 +755,9 @@ notice. On a hit the kernel calls
 ```c
 void os_stack_overflow_cb(const char *task_name);   /* you define it; no kernel default */
 ```
+
+`task_name` is `NULL` when `OS_CONFIG_TASK_NAME_ENABLE` is `0`. The overflow is
+still detected and still parks the core; it just cannot say whose stack it was.
 
 The kernel ships no default for it, so a build with the check enabled and no
 callback is a link error rather than an overflow detector reporting to nobody -

@@ -55,7 +55,7 @@ files under `arch/arm/common/`. Nothing in `core/` would change.
 > into two groups: what the *product* decides (log output, assertions, stack
 > overflow) and what the *silicon* dictates (core id, IPI, spinlocks, an
 > external tick, TrustZone banking, tickless sleep). An optional package under
-> `kernel/soc/<vendor>/<family>/` supplies the second group, selected with one
+> `soc/<vendor>/<family>/` supplies the second group, selected with one
 > CMake variable. Copying `template/os_cb.c` covers the first group either way.
 > See **[SoC packages](soc.md)**, which also explains why copying the SoC group
 > as well would silently displace the package.
@@ -64,7 +64,7 @@ Application hooks carry the `_cb` suffix. Most are weak, so overriding them is
 optional and the kernel's default applies otherwise; a few have no default at all
 because a silent one would hide the very thing the hook exists to report, and
 those are link errors until the application supplies them. For a clean starting
-point, copy `AhuraRTOS/kernel/template/os_cb.c` into the application source tree as
+point, copy `AhuraRTOS/template/os_cb.c` into the application source tree as
 `os_cb.c`, add it to the **application** build (never to the kernel, where the
 template is deliberately absent from the CMakeLists), and adapt:
 

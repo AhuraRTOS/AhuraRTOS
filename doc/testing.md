@@ -8,13 +8,13 @@ Proving a port with the self-test suite, and the runnable examples.
 ### Self-test suite
 
 The suite is not copied into the application. It is a normal buildable module
-with its own `CMakeLists.txt` (`AhuraRTOS/kernel/test/CMakeLists.txt`), producing a
+with its own `CMakeLists.txt` (`AhuraRTOS/test/CMakeLists.txt`), producing a
 static library `os_test` that links against `ahura_kernel` and supplies
 `os_test()`. Any project that already builds the kernel can add it:
 
 ```cmake
 add_subdirectory(AhuraRTOS/kernel)
-add_subdirectory(AhuraRTOS/kernel/test)   # builds the os_test library
+add_subdirectory(AhuraRTOS/test)   # builds the os_test library
 
 target_link_libraries(my_app PRIVATE
     ahura_kernel
@@ -81,10 +81,19 @@ start, core id, affinity, the cross-core spinlock, a dedicated cross-core
 stress tier (see below), and a final watch that both cores survived the whole
 run. It prints a detailed
 PASS/FAIL log via `printf` with a pass/fail summary, then finishes with a
-**benchmark table**: each hot kernel path timed with the CPU cycle counter,
-sampled repeatedly with the minimum kept, and the measurement overhead
-subtracted. The header reports the core profile, optimization level, and clocks,
-so a result is always interpretable.
+**benchmark table**: each hot kernel path timed with the CPU cycle counter and
+sampled repeatedly, with the measurement overhead subtracted. Every row carries
+two figures, in cycles and nanoseconds. **best** is the cheapest sample -
+interference only ever adds cycles, so it is the uninterrupted cost of the code
+itself, and it is the number to compare kernels or catch a regression with.
+**worst** is the dearest of the same samples, which at a 1 kHz tick is nearly
+always that code plus the tick ISR, and it is the number to budget a deadline
+against. Neither is a guaranteed bound: worst is the worst *seen*, not a proof.
+
+The header reports the core profile, the CMake build type and optimization
+category, the clocks - and the cycle counter measured against the tick, so a
+table converted with the wrong clock says so on its own line instead of being
+quietly wrong in every row.
 
 The suite depends on nothing but `ahura.h`, with no board or HAL headers, so it
 runs on real hardware for any arch or board the kernel supports. Retarget

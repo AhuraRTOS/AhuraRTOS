@@ -25,9 +25,9 @@ are the only two places the kernel touches the device.
 
    | Copy this template | into the project as | and add it to |
    |---|---|---|
-   | [`template/os_config.h`](../kernel/template/os_config.h) | `os_config.h` | nothing (it is a header) |
-   | [`template/os_cb.c`](../kernel/template/os_cb.c) | `os_cb.c` | the **application** build |
-   | [`template/os_main.c`](../kernel/template/os_main.c) | `os_main.c` | the **application** build |
+   | [`template/os_config.h`](../template/os_config.h) | `os_config.h` | nothing (it is a header) |
+   | [`template/os_cb.c`](../template/os_cb.c) | `os_cb.c` | the **application** build |
+   | [`template/os_main.c`](../template/os_main.c) | `os_main.c` | the **application** build |
 
    The kernel deliberately compiles none of the three. `os_config.h` is the
    application's configuration, and `os_cb.c` / `os_main.c` hold application
@@ -137,7 +137,7 @@ Projects never edit kernel files, and the kernel ships no editable configuration
 of its own. The application owns the one and only config file, following the
 same model as `FreeRTOSConfig.h`:
 
-1. Copy `AhuraRTOS/kernel/template/os_config.h` into the project as `os_config.h`.
+1. Copy `AhuraRTOS/template/os_config.h` into the project as `os_config.h`.
    Any directory works. Every option is active at its default value, so adjust
    values in place.
 2. Make that directory visible to the **kernel library build**, not just the
@@ -179,6 +179,7 @@ feature off shows exactly which values stop mattering. PART 3 is the platform.
 | `OS_CONFIG_TICK_SOURCE` | `..._SYSTICK` | Who owns the tick timer: the port, or the application |
 | `OS_CONFIG_TIME_SLICE_TICKS` | `1U` | Round-robin quantum; `0` turns rotation off |
 | `OS_CONFIG_MAX_USER_TASKS` | `6U` | Application task slots. Service tasks are counted on top |
+| `OS_CONFIG_TASK_NAME_ENABLE` | `1U` | Keep task names. `0` drops the TCB pointer and the strings; `os_task_name_get()` then answers `NULL` |
 | `OS_CONFIG_MIN_STACK_SIZE` | `256U` | Floor for every task stack, and the idle task's own size |
 | `OS_CONFIG_STACK_CHECK_ENABLE` | `1U` | Stack-pointer and guard-word check on every switch away |
 | `OS_CONFIG_MAIN_TASK_STACK_SIZE` | `1024U` | Stack of the default application task (`tsk_main`) |
@@ -188,6 +189,7 @@ feature off shows exactly which values stop mattering. PART 3 is the platform.
 | `OS_CONFIG_MUTEX_ENABLE` | `1U` | Mutexes, always with single-level priority inheritance |
 | `OS_CONFIG_SEMAPHORE_ENABLE` | `1U` | Counting semaphores |
 | `OS_CONFIG_QUEUE_ENABLE` | `1U` | Fixed-item-size queues |
+| `OS_CONFIG_MSG_ENABLE` | `1U` | Variable-length message buffers. Independent of the queue switch |
 | `OS_CONFIG_EVENT_ENABLE` | `1U` | Event bit groups |
 | `OS_CONFIG_TIMER_ENABLE` + `MAX_TIMERS` `8U`, `TIMER_STACK_SIZE` `512U`, `TIMER_PRIORITY`, `TIMER_CORE_AFFINITY` | `1U` | Software timers and the `tsk_timer` service task |
 | `OS_CONFIG_NOTIFY_ENABLE` | `1U` | The per-task notification mailbox |

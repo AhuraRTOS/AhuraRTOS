@@ -153,7 +153,8 @@ MyProject/
 ├── MyProject.ioc
 ├── Core/
 └── AhuraRTOS/            <- the repository you copied in
-    ├── kernel/
+    ├── ahura.h
+    ├── kernel/  arch/  soc/  template/
     └── tools/install_stm32_offline.py
 ```
 
@@ -234,12 +235,11 @@ CubeMX settings rather than code.
 ### 1. Add the kernel to the project
 
 From the project root (the directory holding `CMakeLists.txt` and the `.ioc`),
-copy the `kernel/` directory out of a clone of AhuraRTOS:
+copy a clone of AhuraRTOS in as `AhuraRTOS/`:
 
 ```bash
-git clone https://github.com/AhuraRTOS/AhuraRTOS.git /tmp/AhuraRTOS
-mkdir AhuraRTOS
-cp -r /tmp/AhuraRTOS/kernel AhuraRTOS/kernel
+git clone https://github.com/AhuraRTOS/AhuraRTOS.git AhuraRTOS
+rm -rf AhuraRTOS/.git      # or keep it, and update with git pull
 ```
 
 Or track the whole repository as a submodule instead, if you would rather
@@ -249,7 +249,7 @@ updates be a `git pull`:
 git submodule add https://github.com/AhuraRTOS/AhuraRTOS.git AhuraRTOS
 ```
 
-Both put the kernel at `AhuraRTOS/kernel/`, which is the path every CMake line
+Both put the tree at `AhuraRTOS/`, which is the path every CMake line
 below uses. See [Installation → Step 1](installation.md#step-1---get-the-source)
 for the details and [Keeping the kernel up to
 date](installation.md#keeping-the-kernel-up-to-date) for later.
@@ -337,9 +337,9 @@ code and keep `HAL_Delay()` for driver init that runs before `os_start()`.
 ### 4. Copy the three files
 
 ```bash
-cp AhuraRTOS/kernel/template/os_config.h Core/Inc/os_config.h
-cp AhuraRTOS/kernel/template/os_cb.c     Core/Src/os_cb.c
-cp AhuraRTOS/kernel/template/os_main.c   Core/Src/os_main.c
+cp AhuraRTOS/template/os_config.h Core/Inc/os_config.h
+cp AhuraRTOS/template/os_cb.c     Core/Src/os_cb.c
+cp AhuraRTOS/template/os_main.c   Core/Src/os_main.c
 ```
 
 `Core/Inc` and `Core/Src` are only a convention - CubeMX never overwrites files
@@ -427,7 +427,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${OS_CONFIG_DIR}/
 file(READ ${OS_CONFIG_DIR}/os_config.h _os_config_contents)
 if(_os_config_contents MATCHES "#define[ \t]+OS_CONFIG_TEST_ENABLE[ \t]+1")
     message(STATUS "Ahura self-test suite: ENABLED (os_main() is not run in this build)")
-    add_subdirectory(AhuraRTOS/kernel/test)
+    add_subdirectory(AhuraRTOS/test)
     set(AHURA_TEST_LIB os_test)
 else()
     set(AHURA_TEST_LIB "")

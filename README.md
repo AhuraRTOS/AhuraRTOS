@@ -56,7 +56,7 @@ rather than producing a subtly wrong context switch.
 
 **You never edit a kernel file.** One template becomes your `os_config.h`, and
 that is the single source of configuration for both the kernel library and your
-application. Updating the kernel is a drop-in replacement of `kernel/`, every
+application. Updating the kernel is a drop-in replacement of `AhuraRTOS/`, every
 time - there are no local modifications to re-apply, because there are none to
 make.
 
@@ -169,25 +169,38 @@ steps - **[Installation](doc/installation.md)**.
 | The kernel | |
 |---|---|
 | [Kernel reference](doc/kernel.md) | **The authoritative reference:** how the kernel works inside, every API, every configuration option |
-| [Examples](examples/README.md) | One runnable `os_main.c` per feature, and how to run them |
+| [Examples](doc/examples.md) | One runnable `os_main.c` per feature, and how to run them |
 
 ## Repository layout
 
 ```text
 AhuraRTOS/
-├── doc/        <- the documentation above
-├── kernel/     <- the kernel: core, arch ports, templates, self-test suite
-│   └── soc/    <- optional per-silicon packages, <vendor>/<family> (see doc/soc.md)
-├── examples/   <- one runnable main per feature
-├── tools/      <- one-command installers: install_stm32_online.py (CubeMX) and
-│               install_rpi_online.py (Pico SDK), each with an _offline twin
-│               for machines with no internet. Each online installer is one
-│               self-contained file - piping it straight into Python needs
-│               nothing else on disk
-├── CSTYLE.md   <- the C style every file here is written to
+├── CMakeLists.txt  <- builds the ahura_kernel library; the application calls
+│                      add_subdirectory(AhuraRTOS) and links ahura_kernel
+├── ahura.h         <- the single public header; applications include only this
+├── kernel/         <- the portable core: scheduler, sync and IPC, timers, memory,
+│                      log. Plain C11, no CPU knowledge anywhere in it
+├── arch/           <- the port layer, <family>/<core>: arm/ and riscv/ today.
+│                      Everything a CPU changes is confined here
+├── soc/            <- optional per-silicon packages, <vendor>/<family> (see doc/soc.md)
+├── template/       <- the files you copy into your project: os_config.h, os_cb.c,
+│                      os_main.c, plus soc_cb.c when no SoC package covers the part
+├── test/           <- the self-test suite, built as its own os_test library
+├── examples/       <- one runnable main per feature
+├── doc/            <- every documentation page, including the per-SoC ones
+├── tools/          <- one-command installers: install_stm32_online.py (CubeMX) and
+│                      install_rpi_online.py (Pico SDK), each with an _offline twin
+│                      for machines with no internet. Each online installer is one
+│                      self-contained file - piping it straight into Python needs
+│                      nothing else on disk
+├── CSTYLE.md       <- the C style every file here is written to
 ├── LICENSE
-└── README.md   <- this file
+└── README.md       <- this file
 ```
+
+The three axes the layout separates are the three questions a port asks:
+`kernel/` never changes, `arch/` changes with the instruction set, `soc/`
+changes with the chip.
 
 One repository, no submodules - a plain clone gives you everything:
 

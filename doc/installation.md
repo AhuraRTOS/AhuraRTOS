@@ -38,7 +38,7 @@ Three companion pages go with this one:
 | **[Raspberry Pi Pico SDK](pico-sdk.md)** | RP2040, RP2350 and RP2354: the two installers, then the same steps by hand. Steps 4 and 5 below are already done for you there, by the SoC package |
 | **[STM32CubeMX / STM32CubeIDE](stm32cubemx.md)** | ST tooling, on a concrete board: the two installers, then the same steps by hand with exact checkboxes and file paths |
 
-Paths below assume the kernel sits at `AhuraRTOS/kernel/` in your project, which
+Paths below assume the kernel tree sits at `AhuraRTOS/` in your project, which
 is what step 1 produces. Nothing depends on that layout - only on the build
 being able to see the files.
 
@@ -72,8 +72,8 @@ There are no submodules, so a plain clone is the whole story:
 git clone https://github.com/AhuraRTOS/AhuraRTOS.git
 ```
 
-Then get `kernel/` into your project. Both routes below land it at
-`AhuraRTOS/kernel/`, which is the path the rest of this page assumes.
+Then get the tree into your project. Both routes below land it at
+`AhuraRTOS/`, which is the path the rest of this page assumes.
 
 **Copy it in** - the simplest thing that works, and the recommended default.
 Nothing about the build is git-specific:
@@ -102,9 +102,9 @@ configuration. Their locations do not matter, only that the build can see them.
 
 | Copy this template | into your project as | and add it to |
 |---|---|---|
-| `AhuraRTOS/kernel/template/os_config.h` | `os_config.h` | nothing - it is a header |
-| `AhuraRTOS/kernel/template/os_cb.c` | `os_cb.c` | your **application** build |
-| `AhuraRTOS/kernel/template/os_main.c` | `os_main.c` | your **application** build |
+| `AhuraRTOS/template/os_config.h` | `os_config.h` | nothing - it is a header |
+| `AhuraRTOS/template/os_cb.c` | `os_cb.c` | your **application** build |
+| `AhuraRTOS/template/os_main.c` | `os_main.c` | your **application** build |
 
 `os_config.h` is every build-time option at its default value - edit it in
 place, and do not delete options: a missing one would read as `0` in an `#if`
@@ -172,8 +172,8 @@ generation, so Keil, MPLAB X, SEGGER Embedded Studio or a hand-written Makefile
 all work. Compile:
 
 ```text
-AhuraRTOS/kernel/core/*.c                        <- all 16 files
-AhuraRTOS/kernel/arch/arm/<core>/os_arch_port.c  <- exactly ONE, matching the device
+AhuraRTOS/kernel/*.c                        <- all 15 files
+AhuraRTOS/arch/arm/<core>/os_arch_port.c    <- exactly ONE, matching the device
 ```
 
 `<core>` is one of `cortex_m0`, `cortex_m0plus`, `cortex_m3`, `cortex_m4`,
@@ -187,8 +187,8 @@ duplicate symbols.
 Three include paths:
 
 ```text
-AhuraRTOS/kernel/                      <- ahura.h
-AhuraRTOS/kernel/arch/arm/<core>/      <- os_arch_port.h
+AhuraRTOS/                           <- ahura.h
+AhuraRTOS/arch/arm/<core>/           <- os_arch_port.h
 <the directory holding your os_config.h>/
 ```
 
@@ -273,7 +273,7 @@ Tasks you need before the scheduler runs go between the two calls; everything
 else is better created from `os_main()`.
 
 **Learning a specific feature?** The
-[examples](../examples/README.md) hold one standalone
+[examples](examples.md) hold one standalone
 `os_main_<feature>.c` per feature - mutexes, queues, events, timers, the work
 queue, notifications, atomics, the heap, logging, and so on. Each one *is* an
 `os_main.c`: it includes only `ahura.h` and `<stdio.h>`, needs no board support
@@ -296,7 +296,7 @@ step 2. Swap one in, build, read the console, swap the next.
 ## Keeping the kernel up to date
 
 Updating is a replacement, never a merge. You never edited a kernel file, so
-there is nothing of yours inside `kernel/` to preserve - your three files
+there is nothing of yours inside `AhuraRTOS/` to preserve - your three files
 (`os_config.h`, `os_cb.c`, `os_main.c`) live in your own tree and are not
 touched by any of this.
 
@@ -326,7 +326,7 @@ Then, either way, two things to check afterwards:
    only helpful if you know to look:
 
    ```bash
-   diff AhuraRTOS/kernel/template/os_config.h Core/Inc/os_config.h
+   diff AhuraRTOS/template/os_config.h Core/Inc/os_config.h
    ```
 
    Add any new `#define` to your `os_config.h`; leave your edited values alone.

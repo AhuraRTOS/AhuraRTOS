@@ -258,7 +258,8 @@ MyPicoProject/
 ├── pico_sdk_import.cmake
 ├── main.c
 └── AhuraRTOS/            <- the repository you copied in
-    ├── kernel/
+    ├── ahura.h
+    ├── kernel/  arch/  soc/  template/
     └── tools/install_rpi_offline.py
 ```
 
@@ -357,13 +358,11 @@ the PendSV and tick steps for you.
 
 ### 1. Add the kernel to the project
 
-From the project root, copy the `kernel/` directory out of a clone of
-AhuraRTOS:
+From the project root, copy a clone of AhuraRTOS in as `AhuraRTOS/`:
 
 ```bash
-git clone https://github.com/AhuraRTOS/AhuraRTOS.git /tmp/AhuraRTOS
-mkdir -p AhuraRTOS
-cp -r /tmp/AhuraRTOS/kernel AhuraRTOS/kernel
+git clone https://github.com/AhuraRTOS/AhuraRTOS.git AhuraRTOS
+rm -rf AhuraRTOS/.git      # or keep it, and update with git pull
 ```
 
 A submodule works the same way - see
@@ -376,15 +375,15 @@ beside your `main.c`:
 
 | Copy this template | into your project as |
 |---|---|
-| `AhuraRTOS/kernel/template/os_config.h` | `os_config.h` |
-| `AhuraRTOS/kernel/template/os_cb.c` | `os_cb.c` |
-| `AhuraRTOS/kernel/template/os_main.c` | `os_main.c` |
-| `AhuraRTOS/kernel/soc/raspberrypi/<chip>/template/soc_config.h` | `soc_config.h` |
+| `AhuraRTOS/template/os_config.h` | `os_config.h` |
+| `AhuraRTOS/template/os_cb.c` | `os_cb.c` |
+| `AhuraRTOS/template/os_main.c` | `os_main.c` |
+| `AhuraRTOS/soc/raspberrypi/<chip>/template/soc_config.h` | `soc_config.h` |
 
 `<chip>` is `rp235x_arm` or `rp2040`, from
 [the table above](#which-chip-which-package).
 
-**Do not copy `kernel/template/soc_cb.c`.** The package is that file for these
+**Do not copy `template/soc_cb.c`.** The package is that file for these
 chips - see [what it will not do](#what-it-will-not-do) above.
 
 `soc_config.h` is required, and so is every option in it: a missing one is a
@@ -434,7 +433,7 @@ Replace `my_firmware` with the name in your `add_executable()`, and
 `raspberrypi/rp235x_arm` with your chip's package.
 
 To build the [self-test suite](self-test.md) as well, add
-`add_subdirectory(AhuraRTOS/kernel/test)` and link `os_test`. The installer
+`add_subdirectory(AhuraRTOS/test)` and link `os_test`. The installer
 writes that conditionally, driven by `OS_CONFIG_TEST_ENABLE` in `os_config.h`,
 so there is only one switch to flip.
 

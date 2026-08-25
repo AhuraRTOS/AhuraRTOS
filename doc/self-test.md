@@ -36,7 +36,7 @@ Three things have to line up:
    nothing:
 
    ```cmake
-   add_subdirectory(AhuraRTOS/kernel/test)
+   add_subdirectory(AhuraRTOS/test)
    target_link_libraries(my_firmware os_test)
    ```
 
@@ -74,7 +74,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${OS_CONFIG_DIR}/
 file(READ ${OS_CONFIG_DIR}/os_config.h _os_cfg)
 if(_os_cfg MATCHES "#define[ \t]+OS_CONFIG_TEST_ENABLE[ \t]+1")
     message(STATUS "Ahura self-test suite: ENABLED (os_main() is not run in this build)")
-    add_subdirectory(AhuraRTOS/kernel/test)
+    add_subdirectory(AhuraRTOS/test)
     set(AHURA_TEST_LIB os_test)
 else()
     set(AHURA_TEST_LIB "")
@@ -125,9 +125,13 @@ appears within milliseconds of boot:
   build     : -Os, optimized for size, 32-bit
   clocks    : tick 1000 Hz, CPU 250000000 Hz
 
-  Operation (uncontended fast path)              cycles         ns
-  ------------------------------------------------------------
-  (one row per hot kernel path)
+  counter   : 150000000 Hz measured against the tick, 150000000 Hz configured (0% apart) - agree
+
+  Operation (each sampled alone)                        best             worst
+  ----------------------------------------------------------------------------
+  (one row per hot kernel path, e.g.)
+  os_critical_enter + exit                   100 (   666 ns)   168 (  1120 ns)
+    ^ ONE context switch, task to task       496 (  3306 ns)   620 (  4133 ns)
 ```
 
 A failing check prints `[FAIL]` with the file and line it came from, and the
