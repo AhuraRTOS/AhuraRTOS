@@ -37,6 +37,16 @@
 #define BIT_A (1UL << 0)
 #define BIT_B (1UL << 1)
 
+/* Every task states its core affinity on a multi-core build: the kernel asks for that argument
+ * rather than defaulting it, so the decision is made on purpose at each creation site. These
+ * examples have no placement preference, so they take any core. */
+#if (OS_CONFIG_CORE_COUNT == 1U)
+#define EXAMPLE_TASK(entry, context, priority)  OS_TASK_CONFIG((entry), (context), (priority))
+#else
+#define EXAMPLE_TASK(entry, context, priority)  \
+    OS_TASK_CONFIG((entry), (context), (priority), OS_TASK_CORE_ANY)
+#endif
+
 OS_TASK_DEFINE(task_a, 512U);
 OS_TASK_DEFINE(task_b, 512U);
 
@@ -89,8 +99,8 @@ static void task_b_entry(void *context)
 void os_main(void)
 {
     (void)os_event_init(&os_main_event);
-    (void)os_task_create(&task_a, OS_TASK_CONFIG(task_a_entry, NULL, OS_TASK_PRIO_1));
-    (void)os_task_create(&task_b, OS_TASK_CONFIG(task_b_entry, NULL, OS_TASK_PRIO_1));
+    (void)os_task_create(&task_a, EXAMPLE_TASK(task_a_entry, NULL, OS_TASK_PRIO_1));
+    (void)os_task_create(&task_b, EXAMPLE_TASK(task_b_entry, NULL, OS_TASK_PRIO_1));
     (void)os_task_start(&task_a);
     (void)os_task_start(&task_b);
 

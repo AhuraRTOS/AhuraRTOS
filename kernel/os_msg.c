@@ -383,20 +383,107 @@ size_t os_msg_peek_size(const os_msg_t *msg)
     return length;
 }
 
+#if (OS_CONFIG_ALLOC_ENABLE == 1U)
 /******************************************************************************************************/
 /**
- * @brief Discard every stored message, leaving the buffer empty and still usable.
+ * @brief Initialize a message buffer over storage allocated from the kernel heap.
  *
- * There is nothing to release - the storage came from the definition, never from the heap - so
- * this is the emptying half of os_queue_cleanup() and nothing more, which is also why it is not
- * called cleanup. Refused with OS_ERR_BUSY while any task is blocked on the object: resetting
- * under a waiter would strand it on a state that no longer matches what it went to sleep on.
+ * There is no geometry product to overflow here, unlike os_queue_init_dynamic: a message buffer is
+ * sized in bytes directly, so byte_size is already the allocation size. What it does check is that
+ * the budget can hold at least one message - a buffer smaller than OS_MSG_SPACE(1) has room for a
+ * header and nothing else, so every send against it would be refused and the object would be
+ * useless in a way only visible at run time.
  *
- * @param[in,out] msg  Message buffer object.
- * @return os_err_t  OK; INVALID_ARG for NULL; BUSY while tasks are blocked on it.
+ * @param[in,out] msg        Message buffer object, from OS_MSG_DEFINE_DYNAMIC.
+ * @param[in]     byte_size  Storage to allocate, in bytes, exactly as for OS_MSG_DEFINE_STATIC.
+ *                           Every message stored in it costs 2 bytes more than its length.
+ * @return os_err_t  OS_ERR_NONE, OS_ERR_INVALID_ARG for NULL or a budget too small to hold one
+ *                    message, OS_ERR_NO_MEMORY if the heap could not supply it, or OS_ERR_BUSY if
+ *                    tasks are already blocked on the object.
  */
-os_err_t os_msg_reset(os_msg_t *msg)
+os_err_t os_msg_init_dynamic(os_msg_t *msg, size_t byte_size)
 {
+    os_err_t status = OS_ERR_INVALID_ARG;
+
+    if ((msg != NULL) && (byte_size >= OS_MSG_SPACE(1U)))
+    {
+        void *buffer = os_mem_alloc(byte_size);
+
+        if (buffer == NULL)
+        {
+            status = OS_ERR_NO_MEMORY;
+        }
+        else
+        {
+            /* One critical section covers both the initialization and the ownership flag.
+             *
+             * Setting buffer_owned in a second, separate critical section would leave the object fully
+             * usable but still claiming it does not own its buffer. An os_msg_cleanup landing in that
+             * gap would empty the buffer and, seeing buffer_owned false, walk away without freeing the
+             * allocation just made - a permanent leak of byte_size bytes with nothing to report it.
+             * The window is only a few instructions wide, which is exactly the kind that survives
+             * testing and fails in the field. */
+            os_critical_enter();
+
+            if ((msg->send_waiters.head != NULL) || (msg->receive_waiters.head != NULL))
+            {
+                /* Re-initializing underneath blocked tasks would park them on list nodes in memory
+                 * the heap can hand out again. */
+                status = OS_ERR_BUSY;
+            }
+            else
+            {
+                msg->buffer       = (uint8_t *)buffer;
+                msg->capacity     = byte_size;
+                msg->head         = 0U;
+                msg->tail         = 0U;
+                msg->used         = 0U;
+                msg->count        = 0U;
+                msg->buffer_owned = true;
+
+                os_list_init(&msg->send_waiters);
+                os_list_init(&msg->receive_waiters);
+
+                status = OS_ERR_NONE;
+            }
+
+            os_critical_exit();
+
+            if (status != OS_ERR_NONE)
+            {
+                os_mem_free(buffer);
+            }
+        }
+    }
+
+    return status;
+}
+#endif /* OS_CONFIG_ALLOC_ENABLE */
+
+/******************************************************************************************************/
+/**
+ * @brief Tear down a message buffer of any storage kind.
+ *
+ * Every kind converges here, so a caller tearing down a mixed set need not track which is which.
+ * A heap buffer (os_msg_init_dynamic) goes back with its capacity, and re-use means another init
+ * call; a buffer from the compile-time macros has nothing to release, so the object is left empty
+ * and immediately usable - which is what makes their "never needs an init call" promise hold in
+ * both directions.
+ *
+ * Refuses while tasks are blocked on it: freeing underneath them would park them on list nodes in
+ * memory the heap can hand out again, and waking them would need a status senders and receivers
+ * cannot tell from a real transfer. Drain it and let the waiters time out first.
+ *
+ * @param[in,out] msg  Message buffer to tear down.
+ * @return os_err_t  OS_ERR_NONE, OS_ERR_INVALID_ARG for NULL, or OS_ERR_BUSY if any task is
+ *                    currently blocked on the object.
+ */
+os_err_t os_msg_cleanup(os_msg_t *msg)
+{
+#if (OS_CONFIG_ALLOC_ENABLE == 1U)
+    void *buffer_to_free = NULL;
+#endif
+
     os_err_t status = OS_ERR_INVALID_ARG;
 
     if (msg != NULL)
@@ -409,21 +496,41 @@ os_err_t os_msg_reset(os_msg_t *msg)
         }
         else
         {
+            /* Emptied either way. The waiter lists are already empty - the check above just proved
+             * it - so re-initializing them only guarantees that a tail left behind by a list bug
+             * cannot survive a teardown. */
             msg->head  = 0U;
             msg->tail  = 0U;
             msg->used  = 0U;
             msg->count = 0U;
 
-            /* The waiter lists are already empty - the check above just proved it - so
-             * re-initializing them only guarantees that a tail left behind by a list bug cannot
-             * survive a reset. */
             os_list_init(&msg->send_waiters);
             os_list_init(&msg->receive_waiters);
+
+#if (OS_CONFIG_ALLOC_ENABLE == 1U)
+            if (msg->buffer_owned)
+            {
+                /* Dropped before the critical section ends so the object cannot be used against a
+                 * buffer that is about to be released; the freeing itself happens outside, since
+                 * os_mem_free walks the heap free list and there is no reason to hold interrupts
+                 * off for it. */
+                buffer_to_free    = msg->buffer;
+                msg->buffer       = NULL;
+                msg->capacity     = 0U;
+                msg->buffer_owned = false;
+            }
+#endif
 
             status = OS_ERR_NONE;
         }
 
         os_critical_exit();
+
+#if (OS_CONFIG_ALLOC_ENABLE == 1U)
+        /* NULL is ignored, so the non-owning case (and the BUSY path, which never set it) needs
+         * no branch. */
+        os_mem_free(buffer_to_free);
+#endif
     }
 
     return status;

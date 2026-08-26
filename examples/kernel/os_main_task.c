@@ -30,6 +30,16 @@
  * ***********************************************************************************************************
 */
 
+/* Every task states its core affinity on a multi-core build: the kernel asks for that argument
+ * rather than defaulting it, so the decision is made on purpose at each creation site. These
+ * examples have no placement preference, so they take any core. */
+#if (OS_CONFIG_CORE_COUNT == 1U)
+#define EXAMPLE_TASK(entry, context, priority)  OS_TASK_CONFIG((entry), (context), (priority))
+#else
+#define EXAMPLE_TASK(entry, context, priority)  \
+    OS_TASK_CONFIG((entry), (context), (priority), OS_TASK_CORE_ANY)
+#endif
+
 OS_TASK_DEFINE(worker, 512U);
 
 /* The same definition, with attributes on the stack - for when WHERE it lives matters as much as
@@ -128,7 +138,7 @@ static void placed_entry(void *context)
  */
 void os_main(void)
 {
-    (void)os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_1));
+    (void)os_task_create(&worker, EXAMPLE_TASK(worker_entry, NULL, OS_TASK_PRIO_1));
     printf("[task] created: state=%s\r\n", task_state_name(os_task_state_get(&worker)));
 
     (void)os_task_start(&worker);
@@ -173,7 +183,7 @@ void os_main(void)
 
     /* The attributed task runs exactly like any other - os_task_create validated its stack the
      * same way, and nothing below knows the difference. */
-    (void)os_task_create(&placed, OS_TASK_CONFIG(placed_entry, NULL, OS_TASK_PRIO_1));
+    (void)os_task_create(&placed, EXAMPLE_TASK(placed_entry, NULL, OS_TASK_PRIO_1));
     (void)os_task_start(&placed);
     os_delay_ms(20U);
     printf("[task] attributed-stack task: state=%s, iterations=%lu\r\n",

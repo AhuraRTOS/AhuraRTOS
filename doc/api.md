@@ -22,7 +22,7 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | **Mutex** | `os_mutex_init` · `os_mutex_lock` · `os_mutex_unlock` |
 | **Semaphore** | `os_semaphore_init` · `os_semaphore_give` · `os_semaphore_take` |
 | **Queue** | `OS_QUEUE_DEFINE_STATIC` · `OS_QUEUE_DEFINE_BUFFER` · `OS_QUEUE_DEFINE_DYNAMIC` · `os_queue_init_dynamic` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
-| **Message buffer** | `OS_MSG_DEFINE_STATIC` · `OS_MSG_DEFINE_BUFFER` · `OS_MSG_SPACE` · `os_msg_send` · `os_msg_receive` · `os_msg_count_get` · `os_msg_free_get` · `os_msg_peek_size` · `os_msg_reset` |
+| **Message buffer** | `OS_MSG_DEFINE_STATIC` · `OS_MSG_DEFINE_BUFFER` · `OS_MSG_DEFINE_DYNAMIC` · `OS_MSG_SPACE` · `os_msg_init_dynamic` · `os_msg_send` · `os_msg_receive` · `os_msg_count_get` · `os_msg_free_get` · `os_msg_peek_size` · `os_msg_cleanup` |
 | **Event** | `os_event_init` · `os_event_set_bits` · `os_event_clear_bits` · `os_event_wait_bits` |
 | **Task notifications** | `os_notify_give` · `os_notify_wait` |
 | **Software timers** | `OS_TIMER_DEFINE_PERIODIC` / `OS_TIMER_DEFINE_ONESHOT` · `os_timer_start` · `os_timer_restart` · `os_timer_pause` · `os_timer_stop` · `os_timer_period_set` · `os_timer_callback_set` · `os_timer_value_set` |
@@ -535,15 +535,41 @@ if (os_msg_free_get(&cmd_buf) >= OS_MSG_SPACE(len))     /* right */
 if (os_msg_free_get(&cmd_buf) >= len)                   /* wrong: forgets the header */
 ```
 
-Like the queue's, it is a snapshot: anything that sends or receives in between
-changes the answer, so treat a large enough result as "worth trying", not as a
-guarantee the next send cannot report `OS_ERR_FULL`.
+**Most code needs none of this.** `os_msg_send()` adds the 2 bytes itself and
+returns `OS_ERR_FULL` when the message does not fit, so sending and reading the
+status answers the question without any arithmetic. `os_msg_free_get()` is for
+reporting and back-pressure heuristics, and like the queue's it is a snapshot:
+anything that sends or receives in between changes the answer.
 
-**Teardown** is `os_msg_reset()`, which discards every stored message and leaves
-the buffer immediately usable. There is nothing to release - the storage came
-from the definition, never from the heap - which is why it is not called
-`cleanup`. It returns `OS_ERR_BUSY` while any task is blocked on the buffer, for
-the same reason `os_queue_cleanup` does.
+**Storage comes in the same three kinds as a queue's**, and for the same reason:
+these are the only two kernel objects that own a buffer.
+`OS_MSG_DEFINE_STATIC` sizes it at compile time, `OS_MSG_DEFINE_BUFFER` takes an
+array you placed yourself, and `OS_MSG_DEFINE_DYNAMIC` plus `os_msg_init_dynamic()`
+takes a byte budget not known until run time:
+
+```c
+OS_MSG_DEFINE_DYNAMIC(rx_buf);
+...
+status = os_msg_init_dynamic(&rx_buf, 4U * OS_MSG_SPACE(mtu_from_config));
+```
+
+`byte_size` is a byte budget exactly as in the static macro, so size it with
+`OS_MSG_SPACE`. A budget too small to hold even one message - anything under
+`OS_MSG_SPACE(1)` - is `OS_ERR_INVALID_ARG` rather than an object that exists and
+refuses every send it is ever given. Only the buffer is allocated; the object
+itself is yours, which is why a failed init leaves nothing to clean up.
+
+**Teardown** is `os_msg_cleanup()`, and every kind converges on it, so a caller
+tearing down a mixed set need not track which is which. A heap buffer goes back
+to the heap and re-use means another init call; a compile-time buffer has nothing
+to release, so it is left empty and immediately usable. It returns `OS_ERR_BUSY`
+while any task is blocked on the buffer, for the same reason `os_queue_cleanup`
+does - freeing underneath a waiter would park it on a list node the heap can hand
+out again.
+
+Note that it empties the buffer without erasing it: the bytes of consumed
+messages stay in RAM until later ones overwrite them. Nothing can read them back
+through the API, but a memory dump will still show them.
 
 **Limits.** One message is at most `OS_MSG_LENGTH_MAX` (64 KiB - 1), which is
 what the two-byte header can express. The header width is fixed rather than

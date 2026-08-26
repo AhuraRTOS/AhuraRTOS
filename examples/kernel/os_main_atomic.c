@@ -56,6 +56,16 @@
  * ***********************************************************************************************************
 */
 
+/* Every task states its core affinity on a multi-core build: the kernel asks for that argument
+ * rather than defaulting it, so the decision is made on purpose at each creation site. These
+ * examples have no placement preference, so they take any core. */
+#if (OS_CONFIG_CORE_COUNT == 1U)
+#define EXAMPLE_TASK(entry, context, priority)  OS_TASK_CONFIG((entry), (context), (priority))
+#else
+#define EXAMPLE_TASK(entry, context, priority)  \
+    OS_TASK_CONFIG((entry), (context), (priority), OS_TASK_CORE_ANY)
+#endif
+
 OS_TASK_DEFINE(writer_a, 512U);
 OS_TASK_DEFINE(writer_b, 512U);
 
@@ -134,11 +144,11 @@ void os_main(void)
     printf("[atomic] two tasks, %lu increments each, %ld expected in total\r\n",
            (unsigned long)INCREMENTS_PER_TASK, (long)expected);
 
-    (void)os_task_create(&writer_a, OS_TASK_CONFIG(writer_entry,
-                                                  (void *)(uintptr_t)FLAG_FIRST_WRITER_DONE,
+    (void)os_task_create(&writer_a, EXAMPLE_TASK(writer_entry,
+                                                (void *)(uintptr_t)FLAG_FIRST_WRITER_DONE,
                                                   OS_TASK_PRIO_3));
-    (void)os_task_create(&writer_b, OS_TASK_CONFIG(writer_entry,
-                                                  (void *)(uintptr_t)FLAG_SECOND_WRITER_DONE,
+    (void)os_task_create(&writer_b, EXAMPLE_TASK(writer_entry,
+                                                (void *)(uintptr_t)FLAG_SECOND_WRITER_DONE,
                                                   OS_TASK_PRIO_3));
     (void)os_task_start(&writer_a);
     (void)os_task_start(&writer_b);

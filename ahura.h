@@ -1019,8 +1019,7 @@ os_err_t os_queue_cleanup(os_queue_t *queue);
  * A queue for messages whose LENGTH varies. Where os_queue_t stores N items of one fixed size, this
  * stores as many messages as fit in a byte budget you choose, each one exactly as long as it is:
  *
- *     OS_MSG_DEFINE_STATIC(cmd_buf, 4U * OS_MSG_SPACE(32U));   / room for 4 messages of 32 bytes,
- *                                                                or 8 of 14, or 1 of 130
+ *     OS_MSG_DEFINE_STATIC(cmd_buf, 256U);        / 256 bytes, shared by whatever arrives
  *     os_msg_send(&cmd_buf, frame, frame_len, 10U);
  *     os_msg_receive(&cmd_buf, rx, sizeof(rx), &rx_len, OS_WAIT_FOREVER);
  *
@@ -1029,9 +1028,10 @@ os_err_t os_queue_cleanup(os_queue_t *queue);
  * message and sending mostly short ones spends the difference on every slot; padding them to one
  * size throws away the length the receiver needed. Both are what this exists to avoid.
  *
- * Capacity is in BYTES, and each message spends OS_MSG_SPACE(length) of them - its own bytes plus a
- * small length header. That header is why the budget is honest: the buffer is shared, so what fits
- * depends on the traffic rather than on a slot count guessed in advance.
+ * Capacity is in BYTES. Each message costs its own length plus 2 bytes, which is the length header
+ * that lets the receiver be handed a message rather than a stream. Nothing asks the caller to do
+ * that arithmetic: os_msg_send() adds the 2 bytes itself and answers OS_ERR_FULL when the message
+ * does not fit, so sending and reading the status is the whole of it.
  *
  * Messages arrive whole and in order, one per os_msg_receive(): never a fragment, never two joined.
  * Both directions block with the usual timeout, so a full buffer applies back-pressure to senders
@@ -1054,10 +1054,12 @@ os_err_t os_queue_cleanup(os_queue_t *queue);
 
 /** Storage one message of "length" bytes occupies: its bytes plus its header.
  *
- *  Use it to size a buffer in the terms the application actually thinks in - "four commands of up
- *  to 32 bytes" is 4U * OS_MSG_SPACE(32U) - instead of adding the per-message overhead by hand and
- *  finding out at run time that the fourth one did not fit. It is also what os_msg_free_get() has
- *  to be read against: a message of L bytes fits when that reports at least OS_MSG_SPACE(L). */
+ *  Rarely needed. os_msg_send() does this arithmetic itself, so the ordinary way to find out
+ *  whether a message fits is to send it and look at the status. This is here for the one case that
+ *  cannot be answered that way - stating a worst case the buffer must be able to hold, such as
+ *  "four commands of up to 32 bytes even when nothing has been read yet", which is
+ *  4U * OS_MSG_SPACE(32U). It is also what os_msg_free_get() has to be read against, since that
+ *  reports raw bytes and knows nothing about headers. */
 #define OS_MSG_SPACE(length)    ((size_t)(length) + (size_t)OS_MSG_HEADER_BYTES)
 
 /******************************************************************************************************/
@@ -1074,20 +1076,23 @@ typedef struct
     size_t    count;           /**< Whole messages currently stored.             */
     os_list_t send_waiters;    /**< Tasks blocked because the message would not fit. */
     os_list_t receive_waiters; /**< Tasks blocked because nothing is waiting.    */
+    bool      buffer_owned;    /**< Buffer came from os_msg_init_dynamic: os_msg_cleanup frees it. */
 
 } os_msg_t;
 
 /** Compile-time initializer binding a message buffer object to a byte array. Shared by the two
  *  macros below so both derive the capacity the same way and cannot drift apart.
  *
- *  Everything omitted here - head, tail, used, count, the two waiter lists - is zero-initialized by
- *  the C rules for objects with static storage duration, which is exactly the empty buffer with
- *  empty waiter lists an init call would otherwise write at run time. That is why a message buffer
- *  is usable where it stands, with nothing to call and no status to check.
+ *  Everything omitted here - head, tail, used, count, the two waiter lists, buffer_owned - is
+ *  zero-initialized by the C rules for objects with static storage duration, which is exactly the
+ *  empty buffer with empty waiter lists an init call would otherwise write at run time. That is why
+ *  a message buffer is usable where it stands, with nothing to call and no status to check.
  *
  *  Its only parameter is "array" on purpose: a macro parameter named after a struct field would be
  *  substituted inside the designated initializers, turning ".capacity" into ".256". Nothing here
  *  may be called buffer or capacity. */
+/* --- Compile-time storage: the capacity is read off the array --------------------------------- */
+
 #define OS_MSG_INITIALIZER(array)              \
     {                                          \
         .buffer   = (uint8_t *)(array),        \
@@ -1099,17 +1104,18 @@ typedef struct
  *  backing array gets the decorated "name_BUFFER", which nothing should name by hand.
  *
  *  byte_size is a BYTE budget, not a message count - that is the whole point of this object - so
- *  write it in the terms the application thinks in and let OS_MSG_SPACE add the per-message
- *  overhead:
+ *  just write how much RAM the buffer may have:
  *
- *      OS_MSG_DEFINE_STATIC(cmd_buf, 4U * OS_MSG_SPACE(32U));
+ *      OS_MSG_DEFINE_STATIC(cmd_buf, 256U);
  *      status = os_msg_send(&cmd_buf, frame, frame_len, 10U);
  *
- *  Nothing enforces that split at run time. Those same bytes will just as happily hold eight
- *  14-byte messages or one 130-byte one, which is the flexibility being paid for.
+ *  **Every message costs 2 bytes more than its length**, for the header that records it, so those
+ *  256 bytes hold two 126-byte messages, or eight 30-byte ones, or any mix that fits. Nothing has
+ *  to be worked out in advance: os_msg_send() adds those 2 bytes itself and returns OS_ERR_FULL if
+ *  the message does not fit.
  *
  *  Both objects are static, so this belongs at file scope. Use OS_MSG_DEFINE_BUFFER to place the
- *  storage yourself. */
+ *  storage yourself, or OS_MSG_DEFINE_DYNAMIC for a capacity not known until run time. */
 #define OS_MSG_DEFINE_STATIC(name, byte_size)       \
     static uint8_t  name##_BUFFER[(byte_size)];     \
     static os_msg_t name = OS_MSG_INITIALIZER(name##_BUFFER)
@@ -1131,6 +1137,33 @@ typedef struct
     OS_STATIC_ASSERT(OS_IS_ARRAY(array),                                             \
                    "OS_MSG_DEFINE_BUFFER needs the byte array itself, not a pointer"); \
     static os_msg_t name = OS_MSG_INITIALIZER(array)
+
+/* --- Dynamic storage: the byte buffer comes from the kernel heap ------------------------------ */
+
+/** Define the object for a message buffer whose storage comes from the kernel heap. Only the
+ *  object is declared here - os_msg_init_dynamic(), called in code, is what obtains the buffer -
+ *  so this says at the declaration site which kind of message buffer "name" is, and keeps the
+ *  object out of the allocation so its lifetime stays obvious and a failed init leaves nothing to
+ *  clean up.
+ *
+ *      OS_MSG_DEFINE_DYNAMIC(rx_buf);
+ *      ...
+ *      status = os_msg_init_dynamic(&rx_buf, bytes_from_config);
+ *
+ *  Zero-initialized like any static object, which is the state os_msg_init_dynamic() expects. */
+#define OS_MSG_DEFINE_DYNAMIC(name) \
+    static os_msg_t name
+
+#if (OS_CONFIG_ALLOC_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief Initialize a message buffer over storage allocated from the kernel heap, for a capacity
+ *        not known until run time. byte_size is a BYTE budget exactly as in OS_MSG_DEFINE_STATIC,
+ *        and every message costs 2 bytes more than its length. Only the buffer is allocated; the
+ *        object itself is the caller's, and os_msg_cleanup releases what this obtained.
+ */
+os_err_t os_msg_init_dynamic(os_msg_t *msg, size_t byte_size);
+#endif /* OS_CONFIG_ALLOC_ENABLE */
 
 /******************************************************************************************************/
 /**
@@ -1156,8 +1189,9 @@ size_t os_msg_count_get(const os_msg_t *msg);
 
 /******************************************************************************************************/
 /**
- * @brief Get how many bytes of storage are still free. A message of L bytes fits when this is at
- *        least OS_MSG_SPACE(L).
+ * @brief Get how many bytes of storage are still free - raw bytes, headers not deducted. A
+ *        message of L bytes needs L + 2 of them. Usually there is nothing to check here: send it
+ *        and read the status.
  */
 size_t os_msg_free_get(const os_msg_t *msg);
 
@@ -1169,10 +1203,11 @@ size_t os_msg_peek_size(const os_msg_t *msg);
 
 /******************************************************************************************************/
 /**
- * @brief Discard every stored message, leaving the buffer empty and still usable. Refuses with
- *        OS_ERR_BUSY while tasks are blocked on it.
+ * @brief Tear down a message buffer of any storage kind: every stored message is discarded, and a
+ *        heap buffer goes back to the heap while a compile-time one is left empty and immediately
+ *        usable. Refuses with OS_ERR_BUSY while tasks are blocked on it.
  */
-os_err_t os_msg_reset(os_msg_t *msg);
+os_err_t os_msg_cleanup(os_msg_t *msg);
 
 #endif /* OS_CONFIG_MSG_ENABLE */
 

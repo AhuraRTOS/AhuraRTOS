@@ -1997,11 +1997,75 @@ static void test_msg(void)
     AHURA_TEST_CHECK((delta >= 95U) && (delta <= 150U), "timeout elapsed ~100 ticks (%lu)",
                       (unsigned long)delta);
 
-    /* --- reset() puts it back ---------------------------------------------------------------- */
+    /* --- cleanup() puts it back --------------------------------------------------------------- */
 
-    AHURA_TEST_CHECK(os_msg_reset(&os_test_msg) == OS_ERR_NONE, "os_msg_reset() succeeds with no waiters");
+    AHURA_TEST_CHECK(os_msg_cleanup(&os_test_msg) == OS_ERR_NONE,
+                      "os_msg_cleanup() succeeds with no waiters");
     AHURA_TEST_CHECK((os_msg_count_get(&os_test_msg) == 0U) && (os_msg_free_get(&os_test_msg) == capacity),
-                      "and leaves the buffer empty and whole again");
+                      "and leaves the statically defined buffer empty and whole again");
+    AHURA_TEST_CHECK(os_test_msg.buffer != NULL,
+                      "a compile-time buffer survives cleanup - there is nothing to release");
+
+    /* --- os_msg_init_dynamic / os_msg_cleanup -------------------------------------------------- */
+
+#if (OS_CONFIG_ALLOC_ENABLE == 1U)
+    {
+        OS_MSG_DEFINE_DYNAMIC(dynamic_msg);
+
+        size_t  msg_heap_before;
+        size_t  dyn_len;
+        uint8_t dyn_rx[32];
+
+        msg_heap_before = os_mem_free_get();
+
+        AHURA_TEST_CHECK(os_msg_init_dynamic(&dynamic_msg, 4U * OS_MSG_SPACE(16U)) == OS_ERR_NONE,
+                          "os_msg_init_dynamic() allocates room for four 16-byte messages");
+
+        /* Ownership has to be true the moment the object is usable, not a moment later: it is what
+         * tells os_msg_cleanup the buffer came from the heap. A call that published the object
+         * before claiming ownership would leak that buffer to any cleanup landing in between. */
+        AHURA_TEST_CHECK(dynamic_msg.buffer_owned,
+                          "an allocated message buffer owns its storage as soon as it is usable");
+        AHURA_TEST_CHECK(!os_test_msg.buffer_owned,
+                          "a statically defined message buffer never claims ownership");
+
+        AHURA_TEST_CHECK(os_mem_free_get() < msg_heap_before,
+                          "creating it consumed kernel heap (%u -> %u bytes free)",
+                          (unsigned)msg_heap_before, (unsigned)os_mem_free_get());
+
+        AHURA_TEST_CHECK(os_msg_send(&dynamic_msg, "variable", 8U, OS_WAIT_NOTHING) == OS_ERR_NONE,
+                          "the dynamic buffer accepts a message");
+        dyn_len = 0U;
+        AHURA_TEST_CHECK(os_msg_receive(&dynamic_msg, dyn_rx, sizeof(dyn_rx), &dyn_len,
+                                        OS_WAIT_NOTHING) == OS_ERR_NONE,
+                          "the dynamic buffer returns it");
+        AHURA_TEST_CHECK((dyn_len == 8U) && (memcmp(dyn_rx, "variable", 8U) == 0),
+                          "with the length and the bytes intact (%u)", (unsigned)dyn_len);
+
+        AHURA_TEST_CHECK(os_msg_cleanup(&dynamic_msg) == OS_ERR_NONE,
+                          "os_msg_cleanup() tears the dynamic one down");
+        AHURA_TEST_CHECK(os_mem_free_get() == msg_heap_before,
+                          "and returned every byte it took to the heap (%u bytes free)",
+                          (unsigned)os_mem_free_get());
+        AHURA_TEST_CHECK(dynamic_msg.buffer == NULL,
+                          "the torn-down buffer no longer points at freed memory");
+
+        /* A budget with no room for even one message is refused rather than accepted as an object
+         * that exists and rejects every send it is ever given. */
+        AHURA_TEST_CHECK(os_msg_init_dynamic(&dynamic_msg, 0U) == OS_ERR_INVALID_ARG,
+                          "os_msg_init_dynamic() rejects a zero byte budget");
+        AHURA_TEST_CHECK(os_msg_init_dynamic(&dynamic_msg, OS_MSG_HEADER_BYTES) == OS_ERR_INVALID_ARG,
+                          "os_msg_init_dynamic() rejects a budget with room for a header and nothing else");
+        AHURA_TEST_CHECK(os_msg_init_dynamic(NULL, 64U) == OS_ERR_INVALID_ARG,
+                          "os_msg_init_dynamic() rejects a NULL object");
+
+        /* Valid but larger than the whole heap has to come back as NO_MEMORY, so a caller can tell
+         * "ask for less" apart from "that request was nonsense". */
+        AHURA_TEST_CHECK(os_msg_init_dynamic(&dynamic_msg, OS_CONFIG_HEAP_SIZE * 2U) == OS_ERR_NO_MEMORY,
+                          "os_msg_init_dynamic() reports NO_MEMORY when the heap cannot cover it");
+    }
+#endif /* OS_CONFIG_ALLOC_ENABLE */
+
 
     t0     = os_tick_get();
     status = os_msg_receive(&os_test_msg, rx, sizeof(rx), &rx_len, 100U);
@@ -5979,7 +6043,7 @@ static void test_benchmarks(void)
 #endif
 
 #if (OS_CONFIG_MSG_ENABLE == 1U)
-    if (os_msg_reset(&os_test_bench_msg) == OS_ERR_NONE)
+    if (os_msg_cleanup(&os_test_bench_msg) == OS_ERR_NONE)
     {
         static const uint8_t payload[64] = { 0 };
         uint8_t              out[64];

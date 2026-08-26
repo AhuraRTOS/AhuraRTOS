@@ -33,6 +33,16 @@
  * ***********************************************************************************************************
 */
 
+/* Every task states its core affinity on a multi-core build: the kernel asks for that argument
+ * rather than defaulting it, so the decision is made on purpose at each creation site. These
+ * examples have no placement preference, so they take any core. */
+#if (OS_CONFIG_CORE_COUNT == 1U)
+#define EXAMPLE_TASK(entry, context, priority)  OS_TASK_CONFIG((entry), (context), (priority))
+#else
+#define EXAMPLE_TASK(entry, context, priority)  \
+    OS_TASK_CONFIG((entry), (context), (priority), OS_TASK_CORE_ANY)
+#endif
+
 OS_TASK_DEFINE(receiver, 512U);
 
 /*
@@ -73,7 +83,7 @@ void os_main(void)
 {
     uint32_t counter = 0U;
 
-    (void)os_task_create(&receiver, OS_TASK_CONFIG(receiver_entry, NULL, OS_TASK_PRIO_2));
+    (void)os_task_create(&receiver, EXAMPLE_TASK(receiver_entry, NULL, OS_TASK_PRIO_2));
     (void)os_task_start(&receiver);
 
     while (1)
