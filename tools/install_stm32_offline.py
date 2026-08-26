@@ -1,408 +1,203 @@
-#!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
 """
-Install AhuraRTOS into an STM32CubeMX-generated CMake project, offline.
+***************************************************************************************************
+ * @file        install_stm32_offline.py
+ * @author      Nima Askari
+ * @github      https://github.com/AhuraRTOS/AhuraRTOS
+ * @version     1.0.0
+ * @date        2026
+ * @brief       Install AhuraRTOS into an STM32CubeMX CMake project - from a local checkout.
+ **************************************************************************************************
 
-The companion to install_stm32_online.py, for a machine with no internet access - an
-air-gapped lab, a locked-down corporate network, a build agent with no route
-out. It performs exactly the same six-step installation and produces a
-byte-identical result; the only difference is where the kernel comes from.
+The offline twin of install_stm32_online.py: the same steps, from a copy of the
+repository already on disk. It imports no networking module at all, so being
+offline is a property of the file rather than a promise in a comment.
 
-    install_stm32_online.py           downloads the repository when it cannot find one
-    install_stm32_offline.py   only ever uses a copy already on this machine
-
-Nothing here imports urllib, tarfile or socket, so "offline" is a property of
-the file rather than a promise in a comment.
-
-USAGE
-
-Download the repository on a machine that has a connection (git clone, or the
-"Download ZIP" button on GitHub), copy it into the root of your CubeMX project,
-and run it:
-
-    MyProject/
-    |- CMakeLists.txt          <- the top-level one CubeMX generated
-    |- MyProject.ioc
-    |- Core/
-    |- AhuraRTOS/              <- the repository you copied in
-       |- ahura.h  kernel/  arch/  soc/  template/
-       |- tools/install_stm32_offline.py
-
-    cd MyProject
     python3 AhuraRTOS/tools/install_stm32_offline.py
 
-That is the whole procedure. The script finds the kernel beside itself, reads
-the project, prints the diff and asks before writing anything.
+Options go after the `-`: --dry-run shows the diff and writes nothing, --yes skips the prompt,
+--update fetches the current kernel over the one already installed, --uninstall takes it back out,
+--source DIR installs from a checkout you already have.
 
-A ZIP download unpacks as AhuraRTOS-main/ rather than AhuraRTOS/, and that
-works too - it is found, and installed to AhuraRTOS/ so the CMake block and the
-online installer agree on one path. Copying this one file to the project root
-instead of running it in place works as well; it looks for the kernel next to
-itself first, then in the project.
+HOW IT WORKS
 
-Options are the same as the online installer, minus --ref (nothing to fetch):
+This file is a bootstrap, and deliberately small. Its whole job is to end up holding a real
+AhuraRTOS checkout on disk, in one of four ways, and then to load the installer out of it:
 
-    --dry-run            print the diff and exit, writing nothing
-    --yes                apply without asking
-    --uninstall          take the integration back out
-    --source PATH        use this checkout, wherever it is
-    --project DIR        project root (default: the current directory)
-    --app-dir DIR        which source tree to install into, on a dual-core part
-    --tick external      drive os_tick_handler() from your own timer
-    --update             refresh AhuraRTOS/ in the project from --source
-    --force-templates    overwrite an existing os_config.h / os_cb.c / os_main.c
+    1. --source DIR             a checkout you point at
+    2. beside this script       when run from inside a checkout, tools/ next to ahura.h
+    3. the project's AhuraRTOS/ when the kernel is already installed and --update was not asked
+    4. nothing - this installer never reaches the network
 
-HOW IT RELATES TO install_stm32_online.py
+If none of the first three finds one, it stops and says how to get a copy.
 
-Everything that reads the project, computes the edits, prints the diff and
-writes with rollback lives in install_stm32_online.py and is imported from there. This
-file contains only what is genuinely different: finding a local checkout, and
-the rule below. Duplicating the editing logic would mean two installers that
-drift apart, and the one nobody runs on a network-connected machine is the one
-that would rot.
+The installer itself - diffing, the >>> AhuraRTOS BEGIN blocks, rollback - lives in
+tools/_ahura_install.py, and the stm32-specific half in tools/_platforms/stm32.py. Both are
+loaded from the checkout found above, so there is exactly one copy of each in the repository no
+matter how many platforms it supports.
 
-THE RULE THIS FILE EXISTS TO ENFORCE
+Requires Python 3.8 or newer and nothing else - standard library only.
 
-Offline, the source and the destination are routinely the SAME directory: the
-repository is already at <project>/AhuraRTOS, which is exactly where the
-installer would otherwise copy it. Copying a directory onto itself is not a
-copy - the destination is cleared first, so it destroys the source. This script
-therefore treats "already in place" as nothing to do, and refuses any copy
-whose source and destination resolve to one path.
-
-Requires Python 3.8 or newer and nothing else. Runs the same on Windows, macOS
-and Linux.
+@copyright (c) 2026 Ahura Project Contributors
+            See LICENSE in the project root for the full license text.
 """
 
 import argparse
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
 
-# Where the repository is installed inside the project. Not configurable, and
-# deliberately: install_stm32_online.py hardcodes the same name when it writes the
-# CMake block, so a second path here would produce a project the online
-# installer could no longer recognise or uninstall.
-INSTALL_DIRNAME = "AhuraRTOS"
+PLATFORM = "stm32"
+ONLINE = False
 
-# Directory names a downloaded repository plausibly arrives under. "AhuraRTOS"
-# is a git clone; the rest are what GitHub's ZIP produces for a branch or tag.
-SOURCE_GLOB = "AhuraRTOS*"
+REPO = "AhuraRTOS/AhuraRTOS"
+TARBALL = "https://codeload.github.com/{repo}/tar.gz/{ref}"
+
+#: Names the engine must expose. A bootstrap and an engine always ship together, so a mismatch
+#: means two versions were mixed - say so rather than failing later with an AttributeError.
+ENGINE_API = ("Fatal", "run", "looks_like_ahura")
+PLATFORM_API = ("NAME", "PROG", "DESCRIPTION", "detect", "add_arguments",
+                "Project", "plan", "plan_uninstall")
 
 
 class Fatal(Exception):
-    """A problem the user has to fix before anything can be written.
-
-    Declared here as well as in install_stm32_online.py because the repository has to
-    be located before that module can be imported from it - so this file needs
-    a way to fail before it has the shared one. resolve_module() replaces it
-    with the shared class the moment one is available, and everything raised
-    after that point is caught by the same handler.
-    """
+    """An error with a message already written for the user."""
 
 
 def looks_like_ahura(path: Path) -> bool:
-    """A usable AhuraRTOS tree: the kernel and the templates that get copied.
+    """Whether `path` is the root of an AhuraRTOS checkout.
 
-    Deliberately the same two-file test install_stm32_online.py uses. It is duplicated
-    rather than imported for the reason above - this is what decides WHICH tree
-    to import from - and it is two lines that cannot drift meaningfully.
+    ahura.h and kernel/ together, because either one alone is something a project might
+    plausibly have of its own.
     """
-    return (path.is_dir()
-            and (path / "ahura.h").is_file()
-            and (path / "template" / "os_config.h").is_file())
+    return (path / "ahura.h").is_file() and (path / "kernel").is_dir()
 
 
-def find_repo(source: str, root: Path, script: Path) -> Path:
-    """Locate an AhuraRTOS checkout on this machine. Never touches the network.
+def has_installer(path: Path) -> bool:
+    """Whether that checkout is new enough to carry the split installer."""
+    return (path / "tools" / "_ahura_install.py").is_file() \
+        and (path / "tools" / "_platforms" / (PLATFORM + ".py")).is_file()
 
-    Searched in the order a user would expect to win, most explicit first:
 
-      1. --source, if given. An explicit path that is not a checkout is an
-         error, never a reason to go looking elsewhere - silently installing
-         some other copy is how the wrong kernel version ends up in a build.
-      2. The checkout this script is running from. Running
-         AhuraRTOS/tools/install_stm32_offline.py means the kernel beside it is
-         the one being asked for.
-      3. <project>/AhuraRTOS - already installed, or copied in by hand.
-      4. <project>/AhuraRTOS* - a ZIP download still under its branch name.
-      5. Beside the project, one level up, under either name. Common when
-         several projects share one downloaded copy.
-    """
+@contextlib.contextmanager
+def checkout(source: str, ref: str, project: Path, update: bool):
+    """Yield a directory that is an AhuraRTOS checkout carrying the installer."""
     if source:
         given = Path(source).expanduser().resolve()
-        if not given.exists():
-            raise Fatal("--source {} does not exist".format(source))
         if not looks_like_ahura(given):
-            raise Fatal(
-                "--source {} is not an AhuraRTOS checkout (no ahura.h and\n"
-                "  template/os_config.h in it). If you unpacked a ZIP, point at\n"
-                "  the directory that CONTAINS ahura.h and kernel/, not at the one above it."
-                .format(source))
-        return given
+            raise Fatal("--source {} is not an AhuraRTOS checkout "
+                        "(no ahura.h in it)".format(source))
+        yield given
+        return
 
-    candidates = []
+    # Running from inside a checkout - tools/<this file> beside ahura.h and kernel/.
+    #
+    # __file__ is not a reliable signal on its own: piped in as `python -` it is set to the
+    # literal string "<stdin>", which resolves against the working directory and would point two
+    # levels above the project. Requiring it to be an existing file rules that out.
+    here = globals().get("__file__")
+    if here and Path(here).is_file():
+        local = Path(here).resolve().parent.parent
+        if looks_like_ahura(local) and has_installer(local):
+            yield local
+            return
 
-    # The tree this file lives in: tools/install_stm32_offline.py -> repo root.
-    # Only when __file__ is a real file on disk: piped into Python it is the
-    # literal string "<stdin>" and would resolve against the working directory.
-    if script.is_file():
-        candidates.append(script.resolve().parent.parent)
-
-    candidates.append(root / INSTALL_DIRNAME)
-    candidates.extend(sorted(root.glob(SOURCE_GLOB)))
-    candidates.extend(sorted(root.parent.glob(SOURCE_GLOB)))
-
-    seen = set()
-    for candidate in candidates:
-        try:
-            key = candidate.resolve()
-        except OSError:
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        if looks_like_ahura(key):
-            return key
+    # The kernel is already in the project. Re-running then costs no network at all, which is
+    # what makes running this twice free. --update is how you ask for the current version.
+    installed = project / "AhuraRTOS"
+    if not update and looks_like_ahura(installed) and has_installer(installed):
+        yield installed
+        return
 
     raise Fatal(
-        "no AhuraRTOS checkout found on this machine, and this installer never\n"
-        "  downloads one. Looked in:\n"
-        "      {script}\n"
-        "      {here}\n"
-        "      {beside}\n"
+        "no AhuraRTOS checkout found, and this is the offline installer - it never\n"
+        "  reaches the network.\n"
+        "\n"
         "  Get the repository on a machine that has a connection:\n"
-        "      git clone https://github.com/AhuraRTOS/AhuraRTOS.git\n"
-        "  or download the ZIP from https://github.com/AhuraRTOS/AhuraRTOS\n"
-        "  copy it into this project, and re-run. Point at it explicitly with\n"
-        "  --source PATH if you keep it somewhere else."
-        .format(script=script.resolve().parent.parent if script.is_file() else "(this script)",
-                here=root / (INSTALL_DIRNAME + "*"),
-                beside=root.parent / (INSTALL_DIRNAME + "*")))
+        "      git clone https://github.com/{}.git\n"
+        "  or download the ZIP from https://github.com/{}\n"
+        "\n"
+        "  Then copy it into your project and run this from the project root, or\n"
+        "  point at it directly:\n"
+        "      python {} --source /path/to/AhuraRTOS".format(
+            REPO, REPO, Path(sys.argv[0]).name))
 
 
-def resolve_module(repo: Path):
-    """Import install_stm32_online.py out of the located checkout.
+def load(path: Path, name: str, required, inject=None):
+    """Import a module by path, check it is the one this bootstrap was written against.
 
-    Loaded by path rather than by name so it is found whether this script is
-    run from tools/ or was copied to the project root, and so the module always
-    comes from the SAME checkout the kernel is being installed from - a stale
-    copy left elsewhere on the machine cannot be picked up instead.
-
-    The module name given here is not "__main__", so importing it does not run
-    its own entry point.
+    Loaded by path rather than by name so the module always comes from the SAME checkout the
+    kernel is being installed from - a stale copy elsewhere on the machine cannot be picked up
+    instead. The module name given here is not "__main__", so importing it does not run any
+    entry point of its own.
     """
-    global Fatal
-
-    module_path = repo / "tools" / "install_stm32_online.py"
-    if not module_path.is_file():
+    if not path.is_file():
         raise Fatal(
-            "{} has no tools/install_stm32_online.py in it.\n"
-            "  The offline installer reuses that file for everything except finding\n"
-            "  the kernel, so the checkout has to be complete. Re-download it."
-            .format(repo))
+            "{} is missing from the checkout.\n"
+            "  The installer is split across tools/_ahura_install.py and tools/_platforms/,\n"
+            "  so the checkout has to be complete. Re-download it.".format(path))
 
-    spec = importlib.util.spec_from_file_location("ahura_installer_stm32", module_path)
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise Fatal("could not load {}".format(module_path))
-
+        raise Fatal("could not load {}".format(path))
     module = importlib.util.module_from_spec(spec)
+    if inject:
+        # The engine's public names, so a platform descriptor can use Fatal, SourceFile,
+        # relative() and the rest without importing a module it was not loaded as.
+        module.__dict__.update(inject)
     sys.modules[spec.name] = module
 
-    # Import writes tools/__pycache__/ next to the module by default, which
-    # would leave a build artefact inside the user's downloaded repository -
-    # and, when that repository is the tree being copied into the project, ship
-    # it into their source control. Turned off across the import only, then put
+    # Import writes tools/__pycache__/ next to the module by default, which would leave a build
+    # artefact inside the user's checkout - and, when that checkout is the tree being copied into
+    # the project, ship it into their source control. Turned off across the import only, then put
     # back, since the setting is global and this script does not own it.
     bytecode = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
-
-    # The online half is self-contained (the former install_common.py is merged into it), so
-    # loading it needs nothing beside it on disk.
     try:
         spec.loader.exec_module(module)
     except Exception as exc:                                  # noqa: BLE001
-        raise Fatal("could not load {}: {}".format(module_path, exc))
+        raise Fatal("could not load {}: {}".format(path, exc))
     finally:
         sys.dont_write_bytecode = bytecode
 
-    required = ("Fatal", "Project", "plan", "plan_uninstall", "finish",
-                "looks_like_ahura", "relative")
-    missing = [name for name in required if not hasattr(module, name)]
+    missing = [n for n in required if not hasattr(module, n)]
     if missing:
         raise Fatal(
-            "{} is not the installer this file was written against (missing: {}).\n"
-            "  Both files come from the same repository - use the pair that shipped\n"
-            "  together rather than mixing versions."
-            .format(module_path, ", ".join(missing)))
-
-    # From here on, raise the shared class: main()'s handler catches that one,
-    # and the two must not diverge into "some errors print nicely, some don't".
-    Fatal = module.Fatal
+            "{} is not the version this file was written against (missing: {}).\n"
+            "  Both come from the same repository - use the pair that shipped together\n"
+            "  rather than mixing versions.".format(path, ", ".join(missing)))
     return module
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="install_stm32_offline.py",
-        description="Install AhuraRTOS into an STM32CubeMX-generated CMake project "
-                    "from a local copy of the repository. Never uses the network. "
-                    "Run it from the project root; it never touches the .ioc.")
-    parser.add_argument("--project", default=".", metavar="DIR",
-                        help="project root (default: the current directory)")
-    parser.add_argument("--app-dir", metavar="DIR",
-                        help="which source tree to install into, on a dual-core part")
-    parser.add_argument("--source", metavar="PATH",
-                        help="the AhuraRTOS checkout to install from (default: found "
-                             "beside this script, then in or next to the project)")
-    parser.add_argument("--tick", choices=("systick", "external"), default="systick",
-                        help="tick source (default: systick)")
-    parser.add_argument("--update", action="store_true",
-                        help="refresh an AhuraRTOS/ already in the project from the "
-                             "source checkout (otherwise it is left as it is)")
-    parser.add_argument("--force-templates", action="store_true",
-                        help="overwrite an existing os_config.h / os_cb.c / os_main.c")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="show the diff and exit without writing")
-    parser.add_argument("-y", "--yes", action="store_true",
-                        help="do not ask for confirmation")
-    parser.add_argument("--uninstall", action="store_true",
-                        help="remove the managed blocks and the AhuraRTOS directory")
-    args = parser.parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
 
-    root = Path(args.project).expanduser().resolve()
-    script = Path(globals().get("__file__", "<stdin>"))
+    # Only what choosing a checkout needs. The engine owns the real parser, and parses the same
+    # argv again - so --help, unknown flags and every platform option are answered there, once.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--source")
+    pre.add_argument("--ref", default="main")
+    pre.add_argument("--project", default=".")
+    pre.add_argument("--update", action="store_true")
+    known, _ = pre.parse_known_args(argv)
+    project = Path(known.project).expanduser().resolve()
 
     try:
-        # Uninstall needs no source at all - it only removes managed blocks and
-        # the installed directory - so it must not fail on a machine where the
-        # original checkout has since been deleted. It is answered first, from
-        # the project's own copy, before any search runs.
-        if args.uninstall:
-            module = resolve_module(_repo_for_uninstall(root, script, args.source))
-            project = module.Project(root, args.app_dir)
-            _banner(module, project, root, None)
-
-            edits = module.plan_uninstall(project)
-            notes = []
-            installed = root / INSTALL_DIRNAME
-            if module.looks_like_ahura(installed):
-                notes.append("{}/ will be deleted".format(INSTALL_DIRNAME))
-            notes.append("your os_config.h, os_cb.c and os_main.c are left alone - "
-                         "they are your files now")
-            if not edits and not notes:
-                print("Nothing installed here.")
-                return 0
-            return module.finish(args, project, root, edits, [], notes)
-
-        repo = find_repo(args.source, root, script)
-        module = resolve_module(repo)
-
-        project = module.Project(root, args.app_dir)
-        _banner(module, project, root, repo)
-        project.check(args.tick)
-
-        destination = root / INSTALL_DIRNAME
-        in_place = _same_path(repo, destination)
-        installed = module.looks_like_ahura(destination)
-
-        # The rule this file exists for. Three distinct situations, and only one
-        # of them is a copy:
-        #
-        #   in_place            the checkout IS the destination. Nothing to
-        #                       copy, and copying would clear the destination
-        #                       first and so destroy the source. Not a copy.
-        #   installed, no flag  a different checkout exists, but the project
-        #                       already carries one. Left alone, so a tree
-        #                       pinned deliberately is not silently replaced.
-        #                       --update is how to ask for the other one.
-        #   otherwise           a real copy into the project.
-        copy_tree = (not in_place) and ((not installed) or args.update)
-
-        edits, copies, notes = module.plan(
-            project, repo, args.tick, args.force_templates, copy_tree=copy_tree)
-
-        # When nothing is copied, plan() explains it in terms of DOWNLOADING a
-        # current version - which is the one thing this installer will never
-        # do. Its note is dropped and replaced below with what actually
-        # happened. Matched on a phrase rather than the full sentence so a
-        # reworded upstream note costs a duplicate line, not a crash.
-        if not copy_tree:
-            notes = [note for note in notes if "already in the project" not in note]
-
-        if in_place:
-            notes.append("the kernel is already at {}/ - installed in place, nothing copied"
-                         .format(INSTALL_DIRNAME))
-            if args.update:
-                notes.append("--update has nothing to do here: the source and the "
-                             "destination are the same directory")
-        elif installed and not copy_tree:
-            notes.append("{}/ is already in the project - left as it is "
-                         "(--update replaces it from {})"
-                         .format(INSTALL_DIRNAME, module.relative(repo, root)))
-
-        if not edits and not copies:
-            print("Already installed, and everything is where it should be.")
-            return 0
-
-        return module.finish(args, project, root, edits, copies, notes)
-
+        with checkout(known.source, known.ref, project, known.update) as repo:
+            engine = load(repo / "tools" / "_ahura_install.py",
+                          "ahura_install_engine", ENGINE_API)
+            platform = load(repo / "tools" / "_platforms" / (PLATFORM + ".py"),
+                            "ahura_platform_" + PLATFORM, PLATFORM_API,
+                            inject={k: v for k, v in vars(engine).items()
+                                    if not k.startswith("_")})
+            return engine.run(platform, repo, argv,
+                              title="AhuraRTOS installer (offline)", show_kernel=True)
     except Fatal as exc:
         print("\nerror: {}".format(exc), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\ncancelled", file=sys.stderr)
         return 130
-
-
-def _repo_for_uninstall(root: Path, script: Path, source: str) -> Path:
-    """A checkout to load install_stm32_online.py from, for --uninstall only.
-
-    Uninstalling must keep working after the source has been deleted, so this
-    accepts anything that can supply the module and says so plainly when it
-    cannot, rather than reporting "no kernel found" for an operation that does
-    not need one.
-    """
-    for candidate in (Path(source).expanduser() if source else None,
-                      script.resolve().parent.parent if script.is_file() else None,
-                      root / INSTALL_DIRNAME):
-        if candidate is not None and (candidate / "tools" / "install_stm32_online.py").is_file():
-            return candidate
-
-    raise Fatal(
-        "cannot uninstall: no copy of tools/install_stm32_online.py to work from.\n"
-        "  Uninstalling only edits your project, but it reuses that file to do it.\n"
-        "  Point at any AhuraRTOS checkout with --source PATH, or remove the blocks\n"
-        "  by hand - each one is marked '>>> AhuraRTOS BEGIN' ... '<<< AhuraRTOS END'.")
-
-
-def _same_path(left: Path, right: Path) -> bool:
-    """Whether two paths name one directory, following links and case rules.
-
-    os.path.samefile is the reliable test - it compares what the filesystem
-    resolves to, so a symlinked or junction-mounted checkout, and a Windows
-    path differing only in case, are all correctly seen as the same directory.
-    It needs both to exist; when the destination does not, they cannot be the
-    same thing anyway.
-    """
-    try:
-        return left.exists() and right.exists() and left.samefile(right)
-    except OSError:
-        return left.resolve() == right.resolve()
-
-
-def _banner(module, project, root: Path, repo):
-    print("AhuraRTOS installer (offline)")
-    print("  project   {}".format(root))
-    if repo is not None:
-        print("  kernel    {}".format(module.relative(repo, root)))
-    if project.mcu:
-        print("  device    {}{}".format(
-            project.mcu, " ({})".format(project.core) if project.core else ""))
-    print("  target    {}".format(project.target))
-    print("  sources   {} / {}".format(module.relative(project.main_c, root),
-                                       module.relative(project.it_c, root)))
-    print()
 
 
 if __name__ == "__main__":

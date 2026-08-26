@@ -195,11 +195,11 @@ AhuraRTOS/
 ├── test/           <- the self-test suite, built as its own os_test library
 ├── examples/       <- one runnable main per feature
 ├── doc/            <- every documentation page, including the per-SoC ones
-├── tools/          <- one-command installers: install_stm32_online.py (CubeMX) and
-│                      install_rpi_online.py (Pico SDK), each with an _offline twin
-│                      for machines with no internet. Each online installer is one
-│                      self-contained file - piping it straight into Python needs
-│                      nothing else on disk
+├── tools/          <- one-command installers. The four install_*.py are small
+│                      bootstraps: each locates an AhuraRTOS checkout - downloading
+│                      one if it has to - then loads _ahura_install.py (the engine,
+│                      shared by every platform) and _platforms/<vendor>.py from it.
+│                      Adding a platform is one file in _platforms/
 ├── CSTYLE.md       <- the C style every file here is written to
 ├── LICENSE
 └── README.md       <- this file
