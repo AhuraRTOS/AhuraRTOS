@@ -1,6 +1,6 @@
 """
 ***************************************************************************************************
- * @file        _platforms/raspberrypi.py
+ * @file        _internal/raspberrypi.py
  * @author      Nima Askari
  * @github      https://github.com/AhuraRTOS/AhuraRTOS
  * @version     1.0.0
@@ -8,7 +8,7 @@
  * @brief       Raspberry Pi Pico SDK - RP2040, RP2350, RP2354, Arm and RISC-V.
  **************************************************************************************************
 
-A platform descriptor, not an installer. tools/_ahura_install.py drives it; the bootstraps in
+A platform descriptor, not an installer. tools/_internal/engine.py drives it; the bootstraps in
 tools/ load both. Everything vendor-neutral - managed blocks, diffing, rollback, the download -
 lives in the engine and is not repeated here.
 

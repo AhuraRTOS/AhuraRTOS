@@ -31,7 +31,7 @@ AhuraRTOS checkout on disk, in one of four ways, and then to load the installer 
 If none of the first three finds one, it stops and says how to get a copy.
 
 The installer itself - diffing, the >>> AhuraRTOS BEGIN blocks, rollback - lives in
-tools/_ahura_install.py, and the raspberrypi-specific half in tools/_platforms/raspberrypi.py. Both are
+tools/_internal/engine.py, and the raspberrypi-specific half in tools/_internal/raspberrypi.py. Both are
 loaded from the checkout found above, so there is exactly one copy of each in the repository no
 matter how many platforms it supports.
 
@@ -75,8 +75,8 @@ def looks_like_ahura(path: Path) -> bool:
 
 def has_installer(path: Path) -> bool:
     """Whether that checkout is new enough to carry the split installer."""
-    return (path / "tools" / "_ahura_install.py").is_file() \
-        and (path / "tools" / "_platforms" / (PLATFORM + ".py")).is_file()
+    return (path / "tools" / "_internal" / "engine.py").is_file() \
+        and (path / "tools" / "_internal" / (PLATFORM + ".py")).is_file()
 
 
 @contextlib.contextmanager
@@ -134,7 +134,7 @@ def load(path: Path, name: str, required, inject=None):
     if not path.is_file():
         raise Fatal(
             "{} is missing from the checkout.\n"
-            "  The installer is split across tools/_ahura_install.py and tools/_platforms/,\n"
+            "  The engine and the platform descriptors live in tools/_internal/,\n"
             "  so the checkout has to be complete. Re-download it.".format(path))
 
     spec = importlib.util.spec_from_file_location(name, path)
@@ -184,9 +184,9 @@ def main(argv=None) -> int:
 
     try:
         with checkout(known.source, known.ref, project, known.update) as repo:
-            engine = load(repo / "tools" / "_ahura_install.py",
+            engine = load(repo / "tools" / "_internal" / "engine.py",
                           "ahura_install_engine", ENGINE_API)
-            platform = load(repo / "tools" / "_platforms" / (PLATFORM + ".py"),
+            platform = load(repo / "tools" / "_internal" / (PLATFORM + ".py"),
                             "ahura_platform_" + PLATFORM, PLATFORM_API,
                             inject={k: v for k, v in vars(engine).items()
                                     if not k.startswith("_")})
