@@ -12,59 +12,18 @@ One public header · no editable kernel files · every feature a compile-time sw
 ![Toolchains: GCC | Clang | armclang](https://img.shields.io/badge/toolchains-GCC%20%7C%20Clang%20%7C%20armclang-informational.svg)
 ![Status: under development](https://img.shields.io/badge/status-under%20development-orange.svg)
 
+**[Why](#why-ahurartos)** ·
+**[Features](#what-you-get)** ·
+**[Verified](#verified-on-hardware)** ·
 **[Install](#install-it)** ·
-**[Documentation](doc/README.md)** ·
-**[Kernel reference](doc/kernel.md)** ·
-**[Self-test](doc/self-test.md)** ·
-**[Roadmap](doc/roadmap.md)**
+**[Documentation](#documentation)**
 
 </div>
-
----
-
-```c
-int main(void)
-{
-    SystemClock_Config();
-
-    os_init();      /* idle task, service tasks, your default task, the tick */
-    os_start();     /* never returns */
-}
-
-void os_main(void)  /* your application - already a running task */
-{
-    while (1)
-    {
-        my_led_toggle();
-        os_delay_ms(500U);
-    }
-}
-```
-
-That is a complete application. `os_init()` creates and starts a default task
-for you, so there is nothing to declare just to get moving.
 
 > [!WARNING]
 > **Early and under active development.** The kernel is functional and
 > self-testing on every board in the table below, but **APIs may still change**
 > and it is not yet recommended for production use.
-
-## Verified on hardware
-
-The self-test suite is not a CI badge - it runs on the board. Every row below is
-a real part that has run the full suite to completion:
-
-| Board | Cores | Self-test | Dual-core SMP |
-|---|---|---|---|
-| **Raspberry Pi Pico 2** | 2 × Cortex-M33 (RP2350) | ✅ | ✅ |
-| **Raspberry Pi Pico 2** | 2 × Hazard3 RV32 (RP2350) | ✅ | ✅ |
-| **Raspberry Pi Pico** | 2 × Cortex-M0+ (RP2040) | ✅ | ✅ |
-| **NUCLEO-H503RB** | Cortex-M33 (STM32H5) | ✅ | single-core part |
-
-Not yet run on silicon: **TrustZone** (builds, callbacks wired, never exercised
-on a part with the Security Extension) and **tickless idle** (implemented on the
-ARMv8-M port, not yet wired into the idle task). Both are listed in the
-[roadmap](doc/roadmap.md) rather than claimed here.
 
 ## Why AhuraRTOS
 
@@ -138,73 +97,91 @@ port rather than a kernel change.
 | **Multi-core** | SMP scheduling with a per-task core-affinity mask over shared ready lists |
 | **Security** | TrustZone on ARMv8-M: secure, non-secure or disabled, per build |
 
-Every one of these is described in full, with the mechanism behind it, in the
-**[kernel reference](doc/kernel.md)**.
+A complete application, in full:
+
+```c
+int main(void)
+{
+    SystemClock_Config();
+
+    os_init();      /* idle task, service tasks, your default task, the tick */
+    os_start();     /* never returns */
+}
+
+void os_main(void)  /* your application - already a running task */
+{
+    while (1)
+    {
+        my_led_toggle();
+        os_delay_ms(500U);
+    }
+}
+```
+
+`os_init()` creates and starts a default task for you, so there is nothing to
+declare just to get moving. Every feature above is described with the mechanism
+behind it in the **[kernel reference](doc/kernel.md)**.
+
+## Verified on hardware
+
+The self-test suite is not a CI badge - it runs on the board. Every row below is
+a real part that has run the full suite to completion:
+
+| Board | Cores | Self-test | Dual-core SMP |
+|---|---|---|---|
+| **Raspberry Pi Pico 2** | 2 × Cortex-M33 (RP2350) | ✅ | ✅ |
+| **Raspberry Pi Pico 2** | 2 × Hazard3 RV32 (RP2350) | ✅ | ✅ |
+| **Raspberry Pi Pico** | 2 × Cortex-M0+ (RP2040) | ✅ | ✅ |
+| **NUCLEO-H503RB** | Cortex-M33 (STM32H5) | ✅ | single-core part |
+
+Not yet run on silicon: **TrustZone** (builds, callbacks wired, never exercised
+on a part with the Security Extension) and **tickless idle** (implemented on the
+ARMv8-M port, not yet wired into the idle task). Both are listed in the
+[roadmap](doc/roadmap.md) rather than claimed here.
 
 ## Install it
 
-One command, from the root of your project. It prints the exact diff it wants to
-apply and waits for a `y` before touching anything - Python 3.8 or newer and
-nothing else, no `pip install`, and no installer file left behind.
+On a **Raspberry Pi Pico SDK** or **STM32CubeMX** project it is one command,
+which prints the exact diff it wants to apply and waits for a `y` before
+touching anything. Every installer has an offline twin for machines with no
+internet, and the same integration by hand is six steps on any other vendor,
+IDE or build system.
 
-**Raspberry Pi Pico SDK** - RP2040, RP2350, RP2354, Arm or RISC-V. The chip is
-read out of `PICO_BOARD` / `PICO_PLATFORM`. No project yet? The Pico page lists
-the [*New C/C++ Project* wizard settings](doc/pico-sdk.md#starting-from-a-new-project)
-the kernel is verified against:
-
-```powershell
-irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_rpi_online.py | python -
-```
-```bash
-curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_rpi_online.py | python3 -
-```
-
-**STM32CubeMX / STM32CubeIDE** - a project generated with the CMake toolchain:
-
-```powershell
-irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python -
-```
-```bash
-curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python3 -
-```
-
-PowerShell first, then bash / zsh. Add `--dry-run` after the `-` to see the diff
-and write nothing, `--yes` to skip the prompt, `--uninstall` to take it back
-out. Re-running is safe: it fills in only what is missing.
-
-**No internet on the build machine?** Every installer has an offline twin that
-only ever reads a copy already on disk - clone or download the repository
-somewhere with a connection, copy it into your project, and run
-`python3 AhuraRTOS/tools/install_rpi_offline.py` (or `install_stm32_offline.py`).
-
-**Any other vendor, IDE or build system?**
-**[Installing AhuraRTOS → Pick your chip](doc/installation.md#pick-your-chip)**
-is the table that names all three routes - one command, offline, by hand - for
-every packaged chip, and the six generic steps for everything else.
+**→ [Installing AhuraRTOS](doc/installation.md#pick-your-chip)** is the table
+that names all three routes for every packaged chip.
 
 ## Documentation
 
-**[📖 Documentation index](doc/README.md)**
+**[📖 Documentation index](doc/README.md)** - or go straight to a page:
 
-| Getting it running | |
+| Page | What is in it |
 |---|---|
-| **[Installation](doc/installation.md)** | **Start here.** The pick-your-chip table, then the general procedure: six steps, any vendor, IDE and build system |
-| **[STM32CubeMX / CubeIDE](doc/stm32cubemx.md)** | On ST tooling, three ways: **[automatic](doc/stm32cubemx.md#automatic---one-command)**, **[offline](doc/stm32cubemx.md#offline---no-internet-on-the-machine)**, or **[manual](doc/stm32cubemx.md#manual---step-by-step)**, checkbox by checkbox on real hardware |
-| **[Raspberry Pi Pico SDK](doc/pico-sdk.md)** | RP2040, RP2350 and RP2354, three ways: **[automatic](doc/pico-sdk.md#automatic---one-command)**, **[offline](doc/pico-sdk.md#offline---no-internet-on-the-machine)**, or **[manual](doc/pico-sdk.md#manual---step-by-step)**. The SoC package supplies the vector names and the tick, so there is nothing to route by hand |
-| [Vendor notes](doc/vendor-notes.md) | The one thing that differs per vendor, and what to do about it |
-| [Self-test suite](doc/self-test.md) | Prove a fresh port before writing anything on top of it |
-
-| The kernel | |
-|---|---|
-| [Kernel reference](doc/kernel.md) | **The authoritative reference:** how the kernel works inside, every API, every configuration option |
-| [What the kernel needs from a platform](doc/integration.md) | Non-CMake build inputs, every `os_config.h` option, and the two-item integration contract |
-| [SoC packages](doc/soc.md) | What a package is, the ones that ship, and how to write one |
-| [Examples](doc/examples.md) | One runnable `os_main.c` per feature, and how to run them |
-
-| The project | |
-|---|---|
-| [Platforms](doc/platforms.md) | Cores, vendors and toolchains: supported, planned, experimental |
-| [Roadmap](doc/roadmap.md) | The three phases, the known gaps, the current status |
+| **Start here** | |
+| [Installing AhuraRTOS](doc/installation.md) | The pick-your-chip table - all three routes per chip - then the general procedure: six steps, any vendor, IDE and build system |
+| [STM32CubeMX / CubeIDE](doc/stm32cubemx.md) | On ST tooling, three ways: [automatic](doc/stm32cubemx.md#automatic---one-command), [offline](doc/stm32cubemx.md#offline---no-internet-on-the-machine), or [manual](doc/stm32cubemx.md#manual---step-by-step) with the exact CubeMX checkboxes, file paths and CMake block |
+| [Raspberry Pi Pico SDK](doc/pico-sdk.md) | RP2040, RP2350 and RP2354, three ways: [automatic](doc/pico-sdk.md#automatic---one-command), [offline](doc/pico-sdk.md#offline---no-internet-on-the-machine), or [manual](doc/pico-sdk.md#manual---step-by-step). The SoC package supplies the vectors and the tick, so there is nothing to route by hand |
+| [Vendor notes](doc/vendor-notes.md) | The one thing that differs per vendor - whether its code generator emits a competing `PendSV_Handler` - on STM32, Nordic, NXP, TI, Silicon Labs, Renesas, Microchip, Infineon, GD32 and anything else |
+| [Running the self-test suite](doc/self-test.md) | Prove a fresh port before writing anything on top of it: how to enable it, how to read the output, why a silent console is usually the libc, and how much flash to budget |
+| **The kernel** | |
+| [Kernel reference](doc/kernel.md) | **The authoritative reference.** What the kernel is, and the entry point to the five pages below |
+| [Using the kernel](doc/api.md) | Every API: tasks, priorities, mutexes, queues, message buffers, notifications, atomics, timers, deferred calls, the heap, diagnostics and debugging |
+| [How the kernel works](doc/design.md) | Boot, the scheduler, the context switch, the tick, blocking and waking, priority inheritance, and where the RAM goes |
+| [What the kernel needs from a platform](doc/integration.md) | The reference behind the install: non-CMake build inputs, every `os_config.h` option, and the two-item integration contract |
+| [Platform support](doc/porting.md) | The callbacks a platform must supply, the clock, TrustZone, multi-core and tickless idle |
+| [Source layout](doc/source.md) | What each directory and each `kernel/` source file is, and why `os_internal.h` is reachable from none of them |
+| **SoC packages** | |
+| [SoC packages](doc/soc.md) | The optional per-silicon layer under `soc/`: who owns which callback, what may and may not live there, and how to write one |
+| [Raspberry Pi RP2040](doc/soc-rp2040.md) | `raspberrypi/rp2040` - Pico, Pico W, dual Cortex-M0+, IPI on the SIO FIFO |
+| [Raspberry Pi RP2350 - Arm](doc/soc-rp235x-arm.md) | `raspberrypi/rp235x_arm` - Pico 2 and every other RP235x board, dual Cortex-M33, doorbell IPI |
+| [Raspberry Pi RP2350 - RISC-V](doc/soc-rp235x-riscv.md) | `raspberrypi/rp235x_riscv` - the same boards booting their Hazard3 cores instead |
+| [STMicroelectronics STM32](doc/soc-stm32.md) | `st/stm32` - every STM32: a clock refresh, tickless HAL hooks, and the two CubeMX settings that are not optional |
+| **Testing and examples** | |
+| [Testing and examples](doc/testing.md) | The self-test suite and the runnable examples, together |
+| [Examples](doc/examples.md) | One runnable `os_main.c` per kernel feature, and how to run them |
+| **The project** | |
+| [Platforms](doc/platforms.md) | Which cores, vendors and toolchains are supported today, what is planned, and what is experimental |
+| [Roadmap](doc/roadmap.md) | The three phases, the known gaps tracked for later, and the current status |
+| [C style](CSTYLE.md) | The style every file in this repository is written to |
 
 ## Repository layout
 
