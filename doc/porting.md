@@ -3,7 +3,7 @@
 [← Back to the documentation index](README.md) · [Kernel reference](kernel.md)
 
 What the kernel asks of a platform: the callbacks it needs, the clock, TrustZone,
-the multi-core (SMP) paths and the experimental tickless path. For which cores and
+the multi-core (SMP) paths and the unfinished tickless path. For which cores and
 toolchains are supported see [Platforms](platforms.md).
 
 
@@ -41,13 +41,13 @@ one-line fallback (see [Platform clock](#platform-clock)).
 
 The dividing line is GCC-style inline assembly, which armclang and Clang both
 implement and `armcc`/`iccarm` do not. The port layer needs it for the context
-switch and the atomics; the entire `core/` tree is ordinary portable C11 and
+switch and the atomics; the entire `kernel/` tree is ordinary portable C11 and
 would build anywhere. Everything else the kernel relies on -
 `__attribute__((weak))`, `__builtin_clz`/`__builtin_ctz`, the `__ARM_ARCH_*` and
 `__ARM_FP` predefined macros - is common to those three compilers.
 
 An IAR port is a contained piece of work: `os_arch_port_common.h` plus the three
-files under `arch/arm/common/`. Nothing in `core/` would change.
+files under `arch/arm/common/`. Nothing in `kernel/` would change.
 
 ### Application callbacks
 
@@ -211,14 +211,14 @@ task may run:
 
 There is one constraint worth knowing: a task currently executing on another
 core cannot be paused or deleted from this one, and the call returns
-`OS_ERR_BUSY`. Suspend it from its own core first. The SMP paths compile in
-the CI matrix and have been exercised end-to-end on the RP2350's dual
-Cortex-M33 (raspberrypi/rp235x_arm package), including a dedicated cross-core
-stress section in the self-test; the RP2040's ARMv6-M glue compiles and is
-exercised in CI but has not run on multi-core silicon. Treat a new multi-core
-port as experimental until it has run the self-test on silicon.
+`OS_ERR_BUSY`. Suspend it from its own core first. The SMP paths have been
+exercised end-to-end on silicon on three dual-core targets - the RP2350's
+Cortex-M33 pair, the same chip's Hazard3 pair, and the RP2040's Cortex-M0+ pair
+- each including the self-test's dedicated cross-core stress section. Treat a
+new multi-core port as experimental until it has run that suite on silicon
+itself.
 
-### Tickless idle (experimental)
+### Tickless idle (unfinished)
 
 Config options: `OS_CONFIG_TICKLESS_ENABLE` (default 0),
 `OS_CONFIG_TICKLESS_MIN_IDLE` (the shortest idle worth sleeping for), and

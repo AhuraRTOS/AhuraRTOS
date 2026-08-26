@@ -13,7 +13,7 @@ static library `os_test` that links against `ahura_kernel` and supplies
 `os_test()`. Any project that already builds the kernel can add it:
 
 ```cmake
-add_subdirectory(AhuraRTOS/kernel)
+add_subdirectory(AhuraRTOS)
 add_subdirectory(AhuraRTOS/test)   # builds the os_test library
 
 target_link_libraries(my_app PRIVATE

@@ -9,7 +9,7 @@ application writes that group itself.
 
 ```cmake
 set(AHURA_SOC raspberrypi/rp235x_arm)
-add_subdirectory(AhuraRTOS/kernel)
+add_subdirectory(AhuraRTOS)
 ```
 
 That is the whole integration. The application still links `ahura_kernel` and
@@ -207,10 +207,13 @@ an assembler error, because nothing had ever asked a compiler to look at it.
 | [`raspberrypi/rp235x_arm`](soc-rp235x-arm.md) | RP2350, RP2354 - Arm cores (Pico 2) | `isr_pendsv`, `isr_systick`, `SystemCoreClock`, core id, doorbell IPI, SIO spinlocks. Verified on silicon, single-core and dual-core SMP |
 | [`raspberrypi/rp235x_riscv`](soc-rp235x-riscv.md) | RP2350, RP2354 - Hazard3 RISC-V cores | The same chip, the other core: the machine software interrupt instead of PendSV, the tick off `SIO_MTIMECMP`, SIO spinlocks, and the context-switch handler placed in RAM - a link-time requirement on this part, not a preference. Verified on silicon, single-core and dual-core SMP |
 | [`raspberrypi/rp2040`](soc-rp2040.md) | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO. Verified on silicon, single-core and dual-core SMP |
-| [`st/stm32`](soc-stm32.md) | Every STM32 | Contributes no code. CMSIS-Pack startup already satisfies the kernel |
+| [`st/stm32`](soc-stm32.md) | Every STM32 | CMSIS-Pack startup already gives the kernel its vector, clock and tick, so the package is small: a `SystemCoreClock` refresh at start-up and tickless HAL hooks. Verified on a NUCLEO-H503RB |
 
-Installing either `raspberrypi` package is one command - see
-**[Raspberry Pi Pico SDK](pico-sdk.md)**.
+Every one of these has the same three install routes - one command, offline, or
+by hand. **[Installing AhuraRTOS](installation.md#pick-your-chip)** is the table
+that names all three per chip; each page above then covers what that package
+*is*, in the same five sections: Layout, What it supplies, Using it, Notes,
+Status.
 
 An unpackaged part is not an unsupported part. Leave `AHURA_SOC` unset, copy
 `template/soc_cb.c`, and the kernel behaves as it always has - which is what

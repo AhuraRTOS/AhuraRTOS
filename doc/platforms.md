@@ -27,6 +27,18 @@ Eleven cores across three files is itself the evidence that the port interface
 is small: what differs between them is the instruction set, not the kernel.
 The Cortex-M1 (ARMv6-M, FPGA) is deliberately not supported.
 
+### RISC-V
+
+RV32, on the Hazard3 cores of the RP2350 / RP2354:
+
+| Architecture | Cores | Port | Notes |
+|---|---|---|---|
+| RV32 | Hazard3 | `hazard3` | Machine software interrupt instead of PendSV, `mtime`/`mtimecmp` tick, `mhartid` core id |
+
+The port exists to prove the boundary rather than to serve one chip: the kernel
+above it did not change to gain a second instruction set. Dual-core SMP is
+verified on silicon here as well as on the Arm side.
+
 ### Every vendor
 
 **Every one of those cores is supported on every silicon vendor.** Nothing in
@@ -60,14 +72,15 @@ on hand - not because anything in the kernel is STM32-specific.
 
 The dividing line is GCC-style inline assembly, which armclang and Clang both
 implement and `armcc` / `iccarm` do not. The port layer needs it for the context
-switch and the atomics; the entire `core/` tree is ordinary portable C11 and
+switch and the atomics; the entire `kernel/` tree is ordinary portable C11 and
 would build anywhere. An IAR port is therefore a contained piece of work,
-confined to four files, with nothing in `core/` changing.
+confined to four files, with nothing in `kernel/` changing.
 
 ## Planned
 
-**RISC-V and Xtensa (ESP32)** are the next architectures, since a portable
-kernel has to prove itself against a different instruction set.
+**Xtensa (ESP32)** is the next architecture. RISC-V was the first proof that
+the port boundary holds against a different instruction set, and it is now in
+the supported list above rather than this one.
 
 Note that vendor families built on Cortex-M - NXP, TI, Nordic, Renesas and the
 rest - are already covered by the ARM ports today: what a new port adds is a new
@@ -75,16 +88,15 @@ rest - are already covered by the ARM ports today: what a new port adds is a new
 
 ## Experimental
 
-- **Multi-core (SMP) on the RP2040.** The ARMv6-M SMP glue (SIO hardware
-  spinlocks, the FIFO IPI) compiles and is exercised in CI, but has not run on
-  real multi-core silicon. The same kernel paths ARE verified on the RP2350's
-  dual Cortex-M33 - see the
-  [RP2350 package](soc-rp235x-arm.md), and
-  [Pico SDK → running both cores](pico-sdk.md#running-both-cores) for how to
-  turn it on.
 - **Tickless idle.** Real SysTick suppression is implemented on the ARMv8-M
   mainline port; the v6m and v7m ports still need the same change, and the idle
-  task does not yet call into it.
+  task does not yet call into it - so the switch changes nothing at run time.
+- **TrustZone.** Compiles, and the secure-context callbacks are wired, but it
+  has never been exercised on a part with the Security Extension enabled.
 
-Both are documented in full in the
-[kernel reference](porting.md).
+Multi-core (SMP) is no longer on this list: it is verified on silicon on the
+RP2350's Cortex-M33 pair, the same chip's Hazard3 pair, and the RP2040's
+Cortex-M0+ pair. See [Pico SDK → running both
+cores](pico-sdk.md#running-both-cores) for how to turn it on.
+
+Both of the above are documented in full in [Platform support](porting.md).

@@ -415,7 +415,7 @@ set(AHURA_SOC raspberrypi/rp235x_arm)
 # OS_CONFIG_DIR must be set BEFORE add_subdirectory, so the kernel library and
 # the application compile against the same os_config.h.
 set(OS_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR})
-add_subdirectory(AhuraRTOS/kernel)
+add_subdirectory(AhuraRTOS)
 
 # Editing os_config.h then re-runs CMake by itself.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${OS_CONFIG_DIR}/os_config.h)

@@ -19,7 +19,8 @@ thing: a periodic call to `os_tick_handler()`. It claims no `SVC_Handler`, no
 > **This page is the entry point to the kernel reference.**
 > For step-by-step installation - vendor by vendor, IDE by IDE - see the
 > [documentation index](README.md).
-> [Getting the kernel into a project](integration.md) is the short version of it.
+> [What the kernel needs from a platform](integration.md) is the reference half;
+> [Installing AhuraRTOS](installation.md#pick-your-chip) is the procedure.
 
 ---
 
@@ -51,11 +52,14 @@ thing: a periodic call to `os_tick_handler()`. It claims no `SVC_Handler`, no
 - **Self-testing.** A built-in suite exercises every enabled feature on real
   hardware with no board or HAL dependencies, and ends with a cycle-accurate
   benchmark table.
-- **Broad Cortex-M coverage.** M0/M0+/M23, M3/M4/M7, and M33/M35P/M52/M55/M85
-  all share just three portable port implementations.
-- **Experimental:** tickless idle. Multi-core (SMP) scheduling is verified on
-  the RP2350's dual Cortex-M33; the RP2040's ARMv6-M path has not run on
-  silicon.
+- **Broad core coverage.** M0/M0+/M23, M3/M4/M7, and M33/M35P/M52/M55/M85 all
+  share just three portable port implementations, and RV32 (Hazard3) adds a
+  fourth alongside them.
+- **Multi-core (SMP)** is verified on silicon on three dual-core targets: the
+  RP2350's Cortex-M33 pair, the same chip's Hazard3 pair, and the RP2040's
+  Cortex-M0+ pair.
+- **Unfinished:** tickless idle - implemented on the ARMv8-M port, but not yet
+  wired into the idle task.
 
 **No dynamic allocation anywhere in the kernel itself.** Task control blocks,
 ready lists, timer objects, the log ring and the optional heap are all static.
@@ -71,7 +75,7 @@ own.
 
 | Page | What is in it |
 |---|---|
-| **[Getting the kernel into a project](integration.md)** | Quick start, adding it to a build, every `os_config.h` option, and the integration contract |
+| **[What the kernel needs from a platform](integration.md)** | The reference behind the install: non-CMake build inputs, every `os_config.h` option, and the two-item integration contract |
 | **[Using the kernel](api.md)** | Every API: tasks, priorities, mutexes, queues, notifications, atomics, timers, deferred calls, the heap, diagnostics and debugging |
 | **[How the kernel works](design.md)** | Boot, the scheduler, the context switch, the tick, blocking and waking, priority inheritance, where the RAM goes, and the source layout |
 | **[Platform support](porting.md)** | The callbacks a platform must supply, the clock, TrustZone, multi-core and tickless idle |

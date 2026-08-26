@@ -12,31 +12,41 @@ This page is the procedure itself: **six steps, by hand, for any vendor, IDE and
 build system.** CMake gets the exact lines to paste; everything else gets the
 source and include lists it needs.
 
-> **On a Raspberry Pi Pico or an STM32CubeMX project?** There is a one-command
-> installer for each, and it does all six steps for you:
->
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_rpi_online.py | python3 -     # Pico SDK
-> curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python3 -   # STM32CubeMX
-> ```
->
-> On Windows, `irm <url> | python -`. **No internet on the build machine?** Each
-> has an offline twin that runs from a local copy of the repository:
-> `python3 AhuraRTOS/tools/install_rpi_offline.py`, or the `_stm32_` one.
->
-> Details: **[Pico SDK](pico-sdk.md#automatic---one-command)**
-> ([offline](pico-sdk.md#offline---no-internet-on-the-machine)) ·
-> **[STM32CubeMX](stm32cubemx.md#automatic---one-command)**
-> ([offline](stm32cubemx.md#offline---no-internet-on-the-machine)).
-> This page is still worth reading as the reference for what they did.
+## Pick your chip
 
-Three companion pages go with this one:
+Every packaged chip has the same three routes. Pick the row, pick the column:
+
+| Your chip | `AHURA_SOC` | One command | No internet | By hand |
+|---|---|---|---|---|
+| RP2040 - Pico, Pico W | [`raspberrypi/rp2040`](soc-rp2040.md) | [automatic](pico-sdk.md#automatic---one-command) | [offline](pico-sdk.md#offline---no-internet-on-the-machine) | [manual](pico-sdk.md#manual---step-by-step) |
+| RP2350 / RP2354, Arm - Pico 2 | [`raspberrypi/rp235x_arm`](soc-rp235x-arm.md) | [automatic](pico-sdk.md#automatic---one-command) | [offline](pico-sdk.md#offline---no-internet-on-the-machine) | [manual](pico-sdk.md#manual---step-by-step) |
+| RP2350 / RP2354, RISC-V | [`raspberrypi/rp235x_riscv`](soc-rp235x-riscv.md) | [automatic](pico-sdk.md#automatic---one-command) | [offline](pico-sdk.md#offline---no-internet-on-the-machine) | [manual](pico-sdk.md#manual---step-by-step) |
+| Any STM32 - CubeMX / CubeIDE | [`st/stm32`](soc-stm32.md) | [automatic](stm32cubemx.md#automatic---one-command) | [offline](stm32cubemx.md#offline---no-internet-on-the-machine) | [manual](stm32cubemx.md#manual---step-by-step) |
+| **Anything else** | *leave unset* | - | - | **the six steps on this page** |
+
+An unpackaged part is not an unsupported part: leave `AHURA_SOC` unset, copy
+`template/soc_cb.c`, and follow the six steps below. That is the route [every
+core on every vendor](platforms.md) takes, and it is what the packaged rows
+above automate rather than replace.
+
+**One command, in full:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_rpi_online.py | python3 -     # Pico SDK
+curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python3 -   # STM32CubeMX
+```
+
+On Windows, `irm <url> | python -`. The offline twins run the same steps from a
+local copy of the repository: `python3 AhuraRTOS/tools/install_rpi_offline.py`,
+or the `_stm32_` one. Either way this page stays worth reading as the reference
+for what they did.
+
+Two companion pages go with this one:
 
 | Page | When to read it |
 |---|---|
 | **[Vendor notes](vendor-notes.md)** | The one thing that differs per vendor, and what to do about it on STM32, Nordic, NXP and everything else |
-| **[Raspberry Pi Pico SDK](pico-sdk.md)** | RP2040, RP2350 and RP2354: the two installers, then the same steps by hand. Steps 4 and 5 below are already done for you there, by the SoC package |
-| **[STM32CubeMX / STM32CubeIDE](stm32cubemx.md)** | ST tooling, on a concrete board: the two installers, then the same steps by hand with exact checkboxes and file paths |
+| **[SoC packages](soc.md)** | What a package is, what it may and may not contain, and how to write one for a chip not in the table |
 
 Paths below assume the kernel tree sits at `AhuraRTOS/` in your project, which
 is what step 1 produces. Nothing depends on that layout - only on the build
@@ -125,7 +135,7 @@ application saw `os_config.h`, their structure sizes would silently disagree.
 
 ```cmake
 set(OS_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc)   # wherever your copy lives
-add_subdirectory(AhuraRTOS/kernel)
+add_subdirectory(AhuraRTOS)
 
 target_sources(my_firmware PRIVATE
     Core/Src/os_cb.c
@@ -172,23 +182,23 @@ generation, so Keil, MPLAB X, SEGGER Embedded Studio or a hand-written Makefile
 all work. Compile:
 
 ```text
-AhuraRTOS/kernel/*.c                        <- all 15 files
-AhuraRTOS/arch/arm/<core>/os_arch_port.c    <- exactly ONE, matching the device
+AhuraRTOS/kernel/*.c                          <- all 16 files
+AhuraRTOS/arch/<isa>/<core>/os_arch_port.c    <- exactly ONE, matching the device
 ```
 
-`<core>` is one of `cortex_m0`, `cortex_m0plus`, `cortex_m3`, `cortex_m4`,
-`cortex_m7`, `cortex_m23`, `cortex_m33`, `cortex_m35p`, `cortex_m52`,
-`cortex_m55`, `cortex_m85`. Each carries an `#error` guard, so a mismatch with
-`-mcpu` fails at compile time rather than producing a subtly wrong context
-switch. **Do not add `arch/arm/common/*.c` to the build** - those are textual
-includes pulled in by the wrapper above, and compiling them separately produces
-duplicate symbols.
+`<isa>/<core>` is `arm/` plus one of `cortex_m0`, `cortex_m0plus`, `cortex_m3`,
+`cortex_m4`, `cortex_m7`, `cortex_m23`, `cortex_m33`, `cortex_m35p`,
+`cortex_m52`, `cortex_m55`, `cortex_m85` - or `riscv/hazard3`. Each carries an
+`#error` guard, so a mismatch with `-mcpu` / `-march` fails at compile time
+rather than producing a subtly wrong context switch. **Do not add
+`arch/<isa>/common/*.c` to the build** - those are textual includes pulled in by
+the wrapper above, and compiling them separately produces duplicate symbols.
 
 Three include paths:
 
 ```text
 AhuraRTOS/                           <- ahura.h
-AhuraRTOS/arch/arm/<core>/           <- os_arch_port.h
+AhuraRTOS/arch/<isa>/<core>/         <- os_arch_port.h
 <the directory holding your os_config.h>/
 ```
 

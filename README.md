@@ -1,15 +1,26 @@
-# AhuraRTOS
+<div align="center">
 
-A small preemptive real-time operating system for microcontrollers, built around
-an architecture-independent core, a single public header, and an explicit
-boundary between the application and the kernel.
+# ⚡ AhuraRTOS
 
-There are no editable kernel files and no hidden configuration. **Everything a
-CPU changes** - the context switch, the tick, critical sections, atomics,
-low-power entry - **is confined to a small port layer**, and the rest of the
-kernel is ordinary portable C. ARM Cortex-M is the first architecture ported and
-the one that works today; others follow on the same interface, without touching
-the core.
+**A small, portable, preemptive RTOS for microcontrollers.**
+
+One public header · no editable kernel files · every feature a compile-time switch
+
+![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)
+![Standard: C11](https://img.shields.io/badge/standard-C11-blue.svg)
+![Architectures: Cortex-M | RISC-V](https://img.shields.io/badge/arch-Cortex--M%20%7C%20RISC--V-informational.svg)
+![Toolchains: GCC | Clang | armclang](https://img.shields.io/badge/toolchains-GCC%20%7C%20Clang%20%7C%20armclang-informational.svg)
+![Status: under development](https://img.shields.io/badge/status-under%20development-orange.svg)
+
+**[Install](#install-it)** ·
+**[Documentation](doc/README.md)** ·
+**[Kernel reference](doc/kernel.md)** ·
+**[Self-test](doc/self-test.md)** ·
+**[Roadmap](doc/roadmap.md)**
+
+</div>
+
+---
 
 ```c
 int main(void)
@@ -30,27 +41,47 @@ void os_main(void)  /* your application - already a running task */
 }
 ```
 
-> **Status:** early and under active development. The kernel is functional and
-> self-testing across the Cortex-M range, but APIs may still change, and no
-> other architecture is ported yet. Not yet recommended for production use.
+That is a complete application. `os_init()` creates and starts a default task
+for you, so there is nothing to declare just to get moving.
 
----
+> [!WARNING]
+> **Early and under active development.** The kernel is functional and
+> self-testing on every board in the table below, but **APIs may still change**
+> and it is not yet recommended for production use.
+
+## Verified on hardware
+
+The self-test suite is not a CI badge - it runs on the board. Every row below is
+a real part that has run the full suite to completion:
+
+| Board | Cores | Self-test | Dual-core SMP |
+|---|---|---|---|
+| **Raspberry Pi Pico 2** | 2 × Cortex-M33 (RP2350) | ✅ | ✅ |
+| **Raspberry Pi Pico 2** | 2 × Hazard3 RV32 (RP2350) | ✅ | ✅ |
+| **Raspberry Pi Pico** | 2 × Cortex-M0+ (RP2040) | ✅ | ✅ |
+| **NUCLEO-H503RB** | Cortex-M33 (STM32H5) | ✅ | single-core part |
+
+Not yet run on silicon: **TrustZone** (builds, callbacks wired, never exercised
+on a part with the Security Extension) and **tickless idle** (implemented on the
+ARMv8-M port, not yet wired into the idle task). Both are listed in the
+[roadmap](doc/roadmap.md) rather than claimed here.
 
 ## Why AhuraRTOS
 
-**It costs one exception vector.** The kernel takes over PendSV and nothing
-else. `SVC` is left entirely to the application, which keeps it compatible with
-everything that legitimately wants it - Nordic's SoftDevice, TF-M and other
-secure firmware, vendor bootloaders and ROM APIs. The tick is a single
-application call to `os_tick_handler()`, and its timer is configurable, so parts
-whose SysTick stops in low-power modes are first-class rather than special
-cases. No HAL, no CMSIS dependency, no linker-script edits.
+**It costs one exception vector.** The kernel takes over the lowest-priority
+exception - PendSV on Cortex-M, the machine software interrupt on RISC-V - and
+nothing else. `SVC` is left entirely to the application, which keeps it
+compatible with everything that legitimately wants it: Nordic's SoftDevice,
+TF-M and other secure firmware, vendor bootloaders and ROM APIs. The tick is a
+single application call to `os_tick_handler()`, and its timer is configurable,
+so parts whose SysTick stops in low-power modes are first-class rather than
+special cases. No HAL, no CMSIS dependency, no linker-script edits.
 
 **Misintegration fails loudly.** The kernel checks at boot that the vector table
-really routes PendSV to it, and traps at the cause if not. The usual alternative
-is a board that reaches `os_start()` and stops dead - no fault, no output,
-nothing to attach a debugger to. The same principle runs through the API:
-missing callbacks are link errors naming the function, an incomplete
+really routes the switch to it, and traps at the cause if not. The usual
+alternative is a board that reaches `os_start()` and stops dead - no fault, no
+output, nothing to attach a debugger to. The same principle runs through the
+API: missing callbacks are link errors naming the function, an incomplete
 `os_config.h` is a compile error, and a port/`-mcpu` mismatch fails to compile
 rather than producing a subtly wrong context switch.
 
@@ -82,31 +113,33 @@ calling the object a mutex, and the accounting stays correct when one task holds
 several contended mutexes at once. What inheritance cannot do is prevent a
 *deadlock* - that is a lock-ordering fault, not a timing one - so development
 builds detect that instead: blocking on a mutex whose wait chain leads back to
-you asserts the moment the cycle would form, while the guilty call stack is still
-there to read, rather than leaving a board that silently stops.
+you asserts the moment the cycle would form, while the guilty call stack is
+still there to read, rather than leaving a board that silently stops.
 
 **It proves itself on your board.** A built-in self-test suite exercises every
 enabled feature over `printf`, with no application code and no board support,
 and finishes with a cycle-accurate benchmark table for every hot kernel path.
 Bring-up is: flash it, read the console, then start writing firmware.
 
-**One kernel, every Cortex-M, every vendor.** M0 through M85 - ARMv6-M to
-ARMv8.1-M - across just three shared port implementations, with TrustZone
-support on ARMv8-M. Nothing in the kernel names a vendor, a family, or a HAL.
+**Two instruction sets, one kernel.** M0 through M85 - ARMv6-M to ARMv8.1-M -
+across three shared port implementations, plus RV32 on Hazard3. Nothing in the
+kernel names a vendor, a family, or a HAL, and adding an architecture is a new
+port rather than a kernel change.
 
 ## What you get
 
-Preemptive priority scheduling with 31 levels and configurable round-robin ·
-mutexes with priority inheritance, counting semaphores, queues, events and
-per-task notifications, all with millisecond timeouts · one-shot and periodic
-software timers plus caller-owned deferred-call pools, all delivered on one
-service task so callbacks run in task context · an optional first-fit kernel heap with
-coalescing · stack watermarking, stack-overflow detection, mutex deadlock
-detection and CPU-load sampling · buffered logging that never stalls the caller ·
-multi-core (SMP) scheduling verified on the RP2350 · experimental tickless idle.
+| | |
+|---|---|
+| **Scheduling** | Preemptive, 31 priority levels, one FIFO ready list per priority, O(1) pick, configurable round-robin |
+| **Sync & IPC** | Mutexes with priority inheritance · counting semaphores · queues, static or heap-backed · variable-length message buffers · event groups · per-task notifications - all with millisecond timeouts |
+| **Timers** | One-shot and periodic software timers, plus caller-owned deferred-call pools, all delivered on one service task so callbacks run in task context |
+| **Memory** | An optional first-fit kernel heap with coalescing. Everything else is static |
+| **Diagnostics** | Stack watermarking · stack-overflow detection · mutex deadlock detection · CPU-load sampling · buffered logging that never stalls the caller |
+| **Multi-core** | SMP scheduling with a per-task core-affinity mask over shared ready lists |
+| **Security** | TrustZone on ARMv8-M: secure, non-secure or disabled, per build |
 
 Every one of these is described in full, with the mechanism behind it, in the
-[kernel reference](doc/kernel.md).
+**[kernel reference](doc/kernel.md)**.
 
 ## Install it
 
@@ -114,9 +147,9 @@ One command, from the root of your project. It prints the exact diff it wants to
 apply and waits for a `y` before touching anything - Python 3.8 or newer and
 nothing else, no `pip install`, and no installer file left behind.
 
-**Raspberry Pi Pico SDK** - RP2040, RP2350, RP2354. The chip is read out of
-`PICO_BOARD` / `PICO_PLATFORM`. No project yet? The Pico page lists the
-[*New C/C++ Project* wizard settings](doc/pico-sdk.md#starting-from-a-new-project)
+**Raspberry Pi Pico SDK** - RP2040, RP2350, RP2354, Arm or RISC-V. The chip is
+read out of `PICO_BOARD` / `PICO_PLATFORM`. No project yet? The Pico page lists
+the [*New C/C++ Project* wizard settings](doc/pico-sdk.md#starting-from-a-new-project)
 the kernel is verified against:
 
 ```powershell
@@ -143,11 +176,11 @@ out. Re-running is safe: it fills in only what is missing.
 only ever reads a copy already on disk - clone or download the repository
 somewhere with a connection, copy it into your project, and run
 `python3 AhuraRTOS/tools/install_rpi_offline.py` (or `install_stm32_offline.py`).
-Details: **[Pico SDK → offline](doc/pico-sdk.md#offline---no-internet-on-the-machine)**,
-**[STM32 → offline](doc/stm32cubemx.md#offline---no-internet-on-the-machine)**.
 
-**Any other vendor, IDE or build system:** the same integration by hand, in six
-steps - **[Installation](doc/installation.md)**.
+**Any other vendor, IDE or build system?**
+**[Installing AhuraRTOS → Pick your chip](doc/installation.md#pick-your-chip)**
+is the table that names all three routes - one command, offline, by hand - for
+every packaged chip, and the six generic steps for everything else.
 
 ## Documentation
 
@@ -155,21 +188,23 @@ steps - **[Installation](doc/installation.md)**.
 
 | Getting it running | |
 |---|---|
-| **[Installation](doc/installation.md)** | **The general procedure.** The manual install with CMake: six steps, any vendor, IDE and build system. Get the source, copy three files, add them to the build, route the tick, check `PendSV`, boot |
-| **[STM32CubeMX / CubeIDE](doc/stm32cubemx.md)** | On ST tooling, three ways: **[automatic](doc/stm32cubemx.md#automatic---one-command)** - one command does the lot - **[offline](doc/stm32cubemx.md#offline---no-internet-on-the-machine)**, or **[manual](doc/stm32cubemx.md#manual---step-by-step)**, checkbox by checkbox on real hardware |
-| **[Raspberry Pi Pico SDK](doc/pico-sdk.md)** | RP2040, RP2350 and RP2354, three ways: **[automatic](doc/pico-sdk.md#automatic---one-command)** - one command detects the board and does the lot - **[offline](doc/pico-sdk.md#offline---no-internet-on-the-machine)**, or **[manual](doc/pico-sdk.md#manual---step-by-step)**. The SoC package supplies the vector names and the tick, so there is no PendSV or SysTick step to do by hand |
+| **[Installation](doc/installation.md)** | **Start here.** The pick-your-chip table, then the general procedure: six steps, any vendor, IDE and build system |
+| **[STM32CubeMX / CubeIDE](doc/stm32cubemx.md)** | On ST tooling, three ways: **[automatic](doc/stm32cubemx.md#automatic---one-command)**, **[offline](doc/stm32cubemx.md#offline---no-internet-on-the-machine)**, or **[manual](doc/stm32cubemx.md#manual---step-by-step)**, checkbox by checkbox on real hardware |
+| **[Raspberry Pi Pico SDK](doc/pico-sdk.md)** | RP2040, RP2350 and RP2354, three ways: **[automatic](doc/pico-sdk.md#automatic---one-command)**, **[offline](doc/pico-sdk.md#offline---no-internet-on-the-machine)**, or **[manual](doc/pico-sdk.md#manual---step-by-step)**. The SoC package supplies the vector names and the tick, so there is nothing to route by hand |
 | [Vendor notes](doc/vendor-notes.md) | The one thing that differs per vendor, and what to do about it |
 | [Self-test suite](doc/self-test.md) | Prove a fresh port before writing anything on top of it |
+
+| The kernel | |
+|---|---|
+| [Kernel reference](doc/kernel.md) | **The authoritative reference:** how the kernel works inside, every API, every configuration option |
+| [What the kernel needs from a platform](doc/integration.md) | Non-CMake build inputs, every `os_config.h` option, and the two-item integration contract |
+| [SoC packages](doc/soc.md) | What a package is, the ones that ship, and how to write one |
+| [Examples](doc/examples.md) | One runnable `os_main.c` per feature, and how to run them |
 
 | The project | |
 |---|---|
 | [Platforms](doc/platforms.md) | Cores, vendors and toolchains: supported, planned, experimental |
 | [Roadmap](doc/roadmap.md) | The three phases, the known gaps, the current status |
-
-| The kernel | |
-|---|---|
-| [Kernel reference](doc/kernel.md) | **The authoritative reference:** how the kernel works inside, every API, every configuration option |
-| [Examples](doc/examples.md) | One runnable `os_main.c` per feature, and how to run them |
 
 ## Repository layout
 
@@ -206,11 +241,7 @@ One repository, no submodules - a plain clone gives you everything:
 
 ```bash
 git clone https://github.com/AhuraRTOS/AhuraRTOS.git
-cd AhuraRTOS
 ```
-
-To put the kernel in your own project, see
-**[Installation](doc/installation.md)**.
 
 ## Contributing
 

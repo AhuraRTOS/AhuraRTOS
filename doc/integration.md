@@ -1,84 +1,17 @@
-# Getting the kernel into a project
+# What the kernel needs from a platform
 
-[← Back to the documentation index](README.md) · [Kernel reference](kernel.md)
+[← Documentation index](README.md) · [Kernel reference](kernel.md)
 
-Getting the kernel into a build, what it needs from the platform, and every
-`os_config.h` option. For the step-by-step manual install see
-[Installation](installation.md).
+The kernel-side reference behind the install: what to feed a build that is not
+CMake, every `os_config.h` option, and the two-item contract between the kernel
+and the device.
 
-
-Full installation - CubeMX checkboxes, per-vendor notes, exact CMake blocks,
-build and flash commands - lives in the AhuraRTOS documentation:
-[Installation](installation.md),
-[Vendor notes](vendor-notes.md),
-[STM32CubeMX step by step](stm32cubemx.md).
-This section is the short form plus the kernel-side reference those pages point
-back to.
-
-### Quick start
-
-Five steps. Steps 1-3 copy three files and point the build at them; steps 4-5
-are the only two places the kernel touches the device.
-
-1. **Copy three files** out of the kernel into the project. Any directories
-   work - the layout does not matter, only that the build can see them.
-
-   | Copy this template | into the project as | and add it to |
-   |---|---|---|
-   | [`template/os_config.h`](../template/os_config.h) | `os_config.h` | nothing (it is a header) |
-   | [`template/os_cb.c`](../template/os_cb.c) | `os_cb.c` | the **application** build |
-   | [`template/os_main.c`](../template/os_main.c) | `os_main.c` | the **application** build |
-
-   The kernel deliberately compiles none of the three. `os_config.h` is the
-   application's configuration, and `os_cb.c` / `os_main.c` hold application
-   code - see [Configuration](#configuration) and
-   [Application callbacks](porting.md#application-callbacks).
-
-2. **Build the kernel** and point it at `os_config.h`. With CMake that is two
-   lines, and `OS_CONFIG_DIR` must be set *before* `add_subdirectory` so the
-   kernel library and the application compile against the same configuration:
-
-   ```cmake
-   set(OS_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc)  # wherever the copy lives
-   add_subdirectory(AhuraRTOS/kernel)
-   target_link_libraries(my_firmware ahura_kernel)
-   ```
-
-   Not using CMake? See [Adding the kernel to a
-   build](#adding-the-kernel-to-a-build) for the plain file list - it is short.
-
-3. **Give the kernel its tick.** Route the tick interrupt to
-   `os_tick_handler()`. On a stock CMSIS device that is one line:
-
-   ```c
-   void SysTick_Handler(void) { os_tick_handler(); }
-   ```
-
-   If SysTick is unavailable or already taken - which is the case on Nordic
-   nRF5x, among others - use a different timer instead, see
-   [The integration contract](#the-integration-contract).
-
-4. **Make sure the kernel owns PendSV.** It is the one exception the kernel
-   must have, and on most projects there is nothing to do: the port defines
-   `PendSV_Handler`, which is the name every CMSIS startup file already puts in
-   the vector table. The exception is a vendor IDE that generates its own empty
-   `PendSV_Handler` - STM32CubeMX does - which must be turned off;
-   [Vendor notes](vendor-notes.md) covers it vendor by vendor.
-
-5. **Boot it** from `main()`, after the clock tree is configured:
-
-   ```c
-   os_init();
-   os_start();   /* never returns */
-   ```
-
-   `os_init()` already creates and starts a default application task, so there
-   is nothing else to create just to get moving. Write the application in
-   `os_main()`, in the `os_main.c` copied in step 1, and spawn further tasks
-   from there with `OS_TASK_DEFINE` and `os_task_create`.
-
-Not sure it worked? The [self-test suite](testing.md#self-test-suite) validates the whole
-port with no application code.
+**Installing is a different page.** For the procedure - one command, offline, or
+the six steps by hand - start at
+[Installing AhuraRTOS → Pick your chip](installation.md#pick-your-chip), with
+[vendor notes](vendor-notes.md) for what differs per vendor and
+[STM32CubeMX](stm32cubemx.md) / [Pico SDK](pico-sdk.md) for those toolchains end
+to end. This page is what those pages point back to.
 
 ### Adding the kernel to a build
 
@@ -88,35 +21,37 @@ build-time code generation, so any toolchain that can compile a C file can build
 it - Keil µVision, MPLAB X, SEGGER Embedded Studio, MCUXpresso, STM32CubeIDE
 without CMake, or a hand-written Makefile.
 
-**Source files to compile** (all of `core/`, plus exactly one arch file):
+**Source files to compile** (all of `kernel/`, plus exactly one arch file):
 
 ```text
-core/os_atomic.c      core/os_list.c        core/os_semaphore.c
-core/os_critical.c    core/os_log.c         core/os_task.c
-core/os_delay.c       core/os_mem.c         core/os_tick.c
-core/os_event.c       core/os_mutex.c       core/os_timer.c
-core/os_kernel.c      core/os_notify.c
-core/os_queue.c
+kernel/os_atomic.c    kernel/os_log.c       kernel/os_queue.c
+kernel/os_critical.c  kernel/os_mem.c       kernel/os_semaphore.c
+kernel/os_delay.c     kernel/os_msg.c       kernel/os_task.c
+kernel/os_event.c     kernel/os_mutex.c     kernel/os_tick.c
+kernel/os_kernel.c    kernel/os_notify.c    kernel/os_timer.c
+kernel/os_list.c
 
-arch/arm/<core>/os_arch_port.c    <- exactly ONE, matching the target
+arch/<isa>/<core>/os_arch_port.c    <- exactly ONE, matching the target
 ```
 
-Pick `<core>` to match the device: `cortex_m0`, `cortex_m0plus`, `cortex_m3`,
-`cortex_m4`, `cortex_m7`, `cortex_m23`, `cortex_m33`, `cortex_m35p`,
-`cortex_m52`, `cortex_m55`, or `cortex_m85`. Each is a two-line wrapper that
-pulls in the shared implementation for its architecture, and each carries an
-`#error` guard, so a mismatch with `-mcpu` fails loudly at compile time rather
-than producing a subtly wrong context switch.
+Pick `<isa>/<core>` to match the device: `arm/` plus `cortex_m0`,
+`cortex_m0plus`, `cortex_m3`, `cortex_m4`, `cortex_m7`, `cortex_m23`,
+`cortex_m33`, `cortex_m35p`, `cortex_m52`, `cortex_m55` or `cortex_m85` - or
+`riscv/hazard3`. Each is a two-line wrapper that pulls in the shared
+implementation for its architecture, and each carries an `#error` guard, so a
+mismatch with `-mcpu` / `-march` fails loudly at compile time rather than
+producing a subtly wrong context switch.
 
-Do **not** add the files under `common/` to the build. They are textual
-includes, pulled in by the wrapper above; compiling them separately produces
-duplicate symbols.
+Do **not** add the files under `arch/<isa>/common/` to the build. They are
+textual includes, pulled in by the wrapper above; compiling them separately
+produces duplicate symbols. `kernel/os_internal.h` is deliberately unreachable
+from any include path - nothing outside `kernel/` may include it.
 
 **Include directories** (three):
 
 ```text
-<kernel root>/                      <- ahura.h
-<kernel root>/arch/arm/<core>/      <- os_arch_port.h
+<kernel root>/                        <- ahura.h
+<kernel root>/arch/<isa>/<core>/      <- os_arch_port.h
 <path to your os_config.h>/
 ```
 
@@ -142,11 +77,11 @@ same model as `FreeRTOSConfig.h`:
    values in place.
 2. Make that directory visible to the **kernel library build**, not just the
    application, by setting `OS_CONFIG_DIR` before
-   `add_subdirectory(AhuraRTOS/kernel)`:
+   `add_subdirectory(AhuraRTOS)`:
 
    ```cmake
    set(OS_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc)  # wherever the copy lives
-   add_subdirectory(AhuraRTOS/kernel)
+   add_subdirectory(AhuraRTOS)
    ```
 
    If only the application saw the file, the kernel and the application would
@@ -201,11 +136,16 @@ feature off shows exactly which values stop mattering. PART 3 is the platform.
 | `OS_CONFIG_LOG_ENABLE` + `LOG_LEVEL`, `LOG_BUFFER_SIZE` `1024U`, `LOG_LINE_MAX` `128U`, `LOG_TASK_STACK_SIZE` `512U`, `LOG_TASK_PRIORITY` | `1U` | Buffered logging and the `tsk_log` service task |
 | `OS_CONFIG_TEST_ENABLE` + `TEST_STACK_SIZE` `2048U`, `TEST_PRIORITY` | `0U` | Run the self-test suite instead of `tsk_main` |
 | **PART 3 - platform** | | |
-| `OS_CONFIG_ARCH_PENDSV_HANDLER` | `PendSV_Handler` | Name of the context-switch vector |
+| `OS_CONFIG_ARCH_PENDSV_HANDLER` | `PendSV_Handler` | Name of the context-switch vector, Cortex-M only. The RISC-V port takes the machine software interrupt, whose name the startup file already declares weak |
 | `OS_CONFIG_ARCH_VECTOR_CHECK` | `1U` | Boot-time check that the vector table routes PendSV to the kernel |
 | `OS_CONFIG_TRUSTZONE` | `..._DISABLED` | Security state on ARMv8-M |
-| `OS_CONFIG_CORE_COUNT` + `SPINLOCK_SOC_BACKEND` | `1U` | SMP scheduling (verified on RP2350; RP2040 path not yet on silicon) |
-| `OS_CONFIG_TICKLESS_ENABLE` + `TICKLESS_MIN_IDLE`, `MAX_SUPPRESSED_TICKS` | `0U` | Tick suppression while idle (experimental) |
+| `OS_CONFIG_CORE_COUNT` + `SPINLOCK_SOC_BACKEND` | `1U` | SMP scheduling. Verified on silicon on the RP2350's Cortex-M33 pair, the same chip's Hazard3 pair, and the RP2040 |
+| `OS_CONFIG_TICKLESS_ENABLE` + `TICKLESS_MIN_IDLE`, `MAX_SUPPRESSED_TICKS` | `0U` | Tick suppression while idle. Implemented on the ARMv8-M port but **not yet wired into the idle task**, so today it changes nothing at run time |
+
+Two more `OS_CONFIG_ARCH_` names exist but are **not** yours to set in
+`os_config.h`: `OS_CONFIG_ARCH_CORE_ID_MHARTID` and `OS_CONFIG_ARCH_SWI_SECTION`
+are RISC-V facts about a chip, so the SoC package states them from its
+`soc.cmake` - see [SoC packages](soc.md).
 
 Three options are **optional** and may be left out, in which case the kernel
 supplies the default shown: `OS_CONFIG_TICK_SOURCE`,
@@ -219,11 +159,11 @@ misconfigure something, so the kernel rejects the build instead.
 ### The integration contract
 
 The whole contract between the kernel and the device is two items. Everything
-else in this README is behavior, not obligation.
+else on this page is behavior, not obligation.
 
 | # | What the kernel needs | Who provides it |
 |---|---|---|
-| 1 | The **PendSV** exception vector | The kernel (it defines `PendSV_Handler`) - the application must only avoid defining it too |
+| 1 | The **context-switch vector** - PendSV on Cortex-M, the machine software interrupt on RISC-V | The kernel (on Cortex-M it defines `PendSV_Handler`) - the application must only avoid defining it too |
 | 2 | `os_tick_handler()` called `OS_CONFIG_TICK_HZ` times a second | The application, from a timer ISR |
 
 That is all. The kernel does not use `SVC`, does not require `SysTick`, does not

@@ -62,7 +62,7 @@ nothing else.
 |---|---|
 | `arch/` | [How the kernel works → the port layer](design.md) |
 | `soc/` | [SoC packages](soc.md), then one page per part |
-| `template/` | [Getting the kernel into a project](integration.md) |
+| `template/` | [What the kernel needs from a platform](integration.md) |
 | `test/` | [Testing and examples](testing.md), [Self-test suite](self-test.md) |
 | `examples/` | [Examples](examples.md) |
 | `tools/` | [Installation](installation.md) |

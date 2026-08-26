@@ -418,7 +418,7 @@ wrote them:
 # OS_CONFIG_DIR must be set BEFORE add_subdirectory: the kernel library and the
 # application have to compile against the same os_config.h.
 set(OS_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc)
-add_subdirectory(AhuraRTOS/kernel)
+add_subdirectory(AhuraRTOS)
 
 # Editing os_config.h re-runs CMake by itself (see the self-test page).
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${OS_CONFIG_DIR}/os_config.h)

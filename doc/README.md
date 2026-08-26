@@ -42,18 +42,17 @@ python3 AhuraRTOS/tools/install_rpi_offline.py      # Pico SDK
 python3 AhuraRTOS/tools/install_stm32_offline.py    # STM32CubeMX
 ```
 
-| | Online | Offline | The page |
-|---|---|---|---|
-| **Raspberry Pi Pico SDK** | `install_rpi_online.py` | `install_rpi_offline.py` | **[Pico SDK](pico-sdk.md)** - [automatic](pico-sdk.md#automatic---one-command) · [offline](pico-sdk.md#offline---no-internet-on-the-machine) · [manual](pico-sdk.md#manual---step-by-step) |
-| **STM32CubeMX / CubeIDE** | `install_stm32_online.py` | `install_stm32_offline.py` | **[STM32CubeMX](stm32cubemx.md)** - [automatic](stm32cubemx.md#automatic---one-command) · [offline](stm32cubemx.md#offline---no-internet-on-the-machine) · [manual](stm32cubemx.md#manual---step-by-step) |
-| **Everything else** | - | - | **[Installation](installation.md)** - six steps by hand, any vendor, IDE and build system |
+**[Installing AhuraRTOS → Pick your chip](installation.md#pick-your-chip)** is
+the table that names all three routes - one command, offline, by hand - for
+every packaged chip, and the six generic steps for everything else. Start there
+if your chip is not one of the two above.
 
 ## Getting it running
 
 | Page | What is in it |
 |---|---|
-| **[Installation](installation.md)** | **The general procedure.** Six steps for any vendor, IDE and build system - get the source, copy three files, add them to the build, route the tick, check `PendSV`, boot. Ends with a build-error table |
-| **[Raspberry Pi Pico SDK](pico-sdk.md)** | RP2040, RP2350 and RP2354, three ways: **[automatic](pico-sdk.md#automatic---one-command)**, **[offline](pico-sdk.md#offline---no-internet-on-the-machine)**, or **[manual](pico-sdk.md#manual---step-by-step)**. The SoC package supplies the vector names, the tick and the multi-core glue, so there is no PendSV or SysTick step to do by hand. Verified on a Pico 2 |
+| **[Installation](installation.md)** | **Start here.** Opens with the [pick-your-chip table](installation.md#pick-your-chip) - all three routes for every packaged chip - then the general procedure: six steps for any vendor, IDE and build system. Ends with a build-error table |
+| **[Raspberry Pi Pico SDK](pico-sdk.md)** | RP2040, RP2350 and RP2354, three ways: **[automatic](pico-sdk.md#automatic---one-command)**, **[offline](pico-sdk.md#offline---no-internet-on-the-machine)**, or **[manual](pico-sdk.md#manual---step-by-step)**. The SoC package supplies the vector names, the tick and the multi-core glue, so there is no PendSV or SysTick step to do by hand. Verified on a Pico 2 and a Pico |
 | **[STM32CubeMX / STM32CubeIDE](stm32cubemx.md)** | On ST tooling, three ways: **[automatic](stm32cubemx.md#automatic---one-command)**, **[offline](stm32cubemx.md#offline---no-internet-on-the-machine)**, or **[manual](stm32cubemx.md#manual---step-by-step)** with the exact CubeMX checkboxes, file paths, CMake block and build commands. Verified end to end on a NUCLEO-H503RB |
 | **[Vendor notes](vendor-notes.md)** | The one thing that differs per vendor - whether its code generator emits a competing `PendSV_Handler` - on STM32, Nordic, NXP, TI, Silicon Labs, Renesas, Microchip, Infineon, GD32, and anything else |
 | **[Self-test suite](self-test.md)** | Prove a fresh port before writing anything on top of it. How to enable it, how to read the output, why a silent console is usually the libc, and how much flash to budget |
@@ -77,7 +76,7 @@ points at the five pages below.
 
 | Page | What is in it |
 |---|---|
-| **[Getting the kernel into a project](integration.md)** | Quick start, adding it to a build, every `os_config.h` option, and the integration contract |
+| **[What the kernel needs from a platform](integration.md)** | The reference behind the install: non-CMake build inputs, every `os_config.h` option, and the two-item integration contract |
 | **[Using the kernel](api.md)** | Every API: tasks, priorities, mutexes, queues, notifications, atomics, timers, deferred calls, the heap, diagnostics and debugging |
 | **[How the kernel works](design.md)** | Boot, the scheduler, the context switch, the tick, blocking and waking, priority inheritance, where the RAM goes, and the source layout |
 | **[Platform support](porting.md)** | The callbacks a platform must supply, the clock, TrustZone, multi-core and tickless idle |
@@ -91,7 +90,9 @@ points at the five pages below.
 
 ### The SoC packages, one page each
 
-Every packaged part has its own page here; the layer itself is
+Every packaged part has its own page here, and they all follow the same five
+sections - **Layout**, **What it supplies**, **Using it**, **Notes**,
+**Status** - after a short **Installing** pointer. The layer itself is
 [SoC packages](soc.md).
 
 | Page | Parts |
@@ -99,4 +100,4 @@ Every packaged part has its own page here; the layer itself is
 | **[RP2350 / RP2354, Arm](soc-rp235x-arm.md)** | `raspberrypi/rp235x_arm` - Pico 2 and every other RP235x board, Cortex-M33 |
 | **[RP2350 / RP2354, RISC-V](soc-rp235x-riscv.md)** | `raspberrypi/rp235x_riscv` - the same boards booting their Hazard3 cores instead |
 | **[RP2040](soc-rp2040.md)** | `raspberrypi/rp2040` - Pico, Pico W, Cortex-M0+ |
-| **[STM32](soc-stm32.md)** | `st/stm32` - every STM32, and why the package contributes no code |
+| **[STM32](soc-stm32.md)** | `st/stm32` - every STM32: a clock refresh, tickless HAL hooks, and the two CubeMX settings that are not optional |
