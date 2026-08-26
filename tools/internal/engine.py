@@ -1,6 +1,6 @@
 """
 ***************************************************************************************************
- * @file        _internal/engine.py
+ * @file        internal/engine.py
  * @author      Nima Askari
  * @github      https://github.com/AhuraRTOS/AhuraRTOS
  * @version     1.0.0
@@ -15,7 +15,7 @@ THIS FILE IS NOT AN INSTALLER. Run one of these instead:
 
 Each of those is a small bootstrap: it locates an AhuraRTOS checkout - downloading one if it has
 to - and then loads this file out of that checkout, together with the matching descriptor from
-tools/_internal/. So piping a bootstrap straight into Python still works with nothing else on
+tools/internal/. So piping a bootstrap straight into Python still works with nothing else on
 disk, while the machinery below exists in exactly one place.
 
 WHAT LIVES HERE
@@ -27,7 +27,7 @@ applying it with rollback, and the uninstall path.
 
 WHAT A PLATFORM ADDS
 
-tools/_internal/<name>.py supplies the parts that do name a vendor - how to recognise the
+tools/internal/<name>.py supplies the parts that do name a vendor - how to recognise the
 project, which files to copy, the CMake block, and the handful of C edits that differ - behind
 this contract:
 

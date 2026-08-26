@@ -1,6 +1,6 @@
 """
 ***************************************************************************************************
- * @file        _internal/stm32.py
+ * @file        internal/stm32.py
  * @author      Nima Askari
  * @github      https://github.com/AhuraRTOS/AhuraRTOS
  * @version     1.0.0
@@ -8,7 +8,7 @@
  * @brief       STMicroelectronics STM32 - CubeMX / CubeIDE projects.
  **************************************************************************************************
 
-A platform descriptor, not an installer. tools/_internal/engine.py drives it; the bootstraps in
+A platform descriptor, not an installer. tools/internal/engine.py drives it; the bootstraps in
 tools/ load both. Everything vendor-neutral - managed blocks, diffing, rollback, the download -
 lives in the engine and is not repeated here.
 

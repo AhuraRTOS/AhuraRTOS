@@ -198,7 +198,7 @@ AhuraRTOS/
 ├── tools/          <- the four install_*.py, and nothing else you need to open.
 │                      Each is a small bootstrap: it locates an AhuraRTOS checkout -
 │                      downloading one if it has to - then loads the engine and the
-│                      vendor descriptor out of tools/_internal/. Adding a platform
+│                      vendor descriptor out of tools/internal/. Adding a platform
 │                      is one file there; the engine and the bootstraps do not change
 ├── CSTYLE.md       <- the C style every file here is written to
 ├── LICENSE
