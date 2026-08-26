@@ -1,10 +1,12 @@
-# AhuraRTOS on the Raspberry Pi Pico SDK
+# AhuraRTOS on Raspberry Pi
 
 [← Documentation index](README.md) · [Installation](installation.md) ·
 [SoC packages](soc.md)
 
-The [six general installation steps](installation.md) carried out on a Pico SDK
-project - except that two of them are already done for you, because the SoC
+**RP2040, RP2350 and RP2354 - Arm or RISC-V.** Installing the kernel on a Pico
+SDK project, and the reference for the three SoC packages that cover these
+chips. The [six general installation steps](installation.md) carried out on a
+Pico SDK project - except that two of them are already done for you, because the SoC
 package supplies the PendSV vector name and the tick. **Three ways to do it -
 pick one:**
 
@@ -20,15 +22,20 @@ All three end in the same place. **No project yet?**
 
 ## Which chip, which package
 
-One SDK, two packages - the RP2040 and the RP235x are separate silicon
-generations, not two steppings, so the choice is real rather than cosmetic. The
-installer reads it out of `PICO_PLATFORM`, then `PICO_BOARD`, and stops with
-both names if it cannot tell:
+One SDK, three packages - the RP2040 and the RP235x are separate silicon
+generations, not two steppings, and the RP2350's two core complexes are further
+apart still, so the choice is real rather than cosmetic. The installer reads it
+out of `PICO_PLATFORM`, then `PICO_BOARD`, and stops with both names if it
+cannot tell:
 
 | `PICO_BOARD` / `PICO_PLATFORM` contains | Chip | `AHURA_SOC` | Status |
 |---|---|---|---|
 | `pico2`, `pico_2`, `rp2350`, `rp2354` | RP2350, RP2354 (Cortex-M33) | `raspberrypi/rp235x_arm` | Verified on silicon, single-core **and** dual-core SMP |
+| `rp2350-riscv` in `PICO_PLATFORM` | RP2350, RP2354 (Hazard3 RV32) | `raspberrypi/rp235x_riscv` | Verified on silicon, single-core **and** dual-core SMP |
 | `pico`, `rp2040` | RP2040 (Cortex-M0+) | `raspberrypi/rp2040` | Verified on silicon, single-core and dual-core SMP |
+
+Each package is described in full in
+[The packages, chip by chip](#the-packages-chip-by-chip).
 
 `--soc raspberrypi/rp235x_arm` overrides the detection if your project names its
 board some other way.
@@ -152,7 +159,7 @@ AhuraRTOS installer
 | 5 | Leaves the build to you |
 
 **There is no PendSV step and no tick step**, which is why this is shorter than
-the [STM32 procedure](stm32cubemx.md). CubeMX generates a competing
+the [STM32 procedure](stm32.md). CubeMX generates a competing
 `PendSV_Handler` that has to be disabled; the SDK's `crt0.S` declares its vector
 entry `isr_pendsv` **weak**, so the kernel's port simply replaces it at link
 time. The kernel does have to be *told* that name, and `set(AHURA_SOC ...)` in
@@ -520,6 +527,227 @@ single-core on a dual-core chip stays entirely reasonable, and is the default.
 Both paths have run the full [self-test suite](self-test.md) on RP2350 silicon,
 including its dedicated cross-core stress section - contention, wake integrity,
 migration and churn.
+
+## The packages, chip by chip
+
+Everything above is the same on all three packages. This section is what each
+one *is* - the files it compiles, what it hands the kernel, and what has run on
+silicon.
+
+**Splitting on the chip rather than `#if`-ing one file is deliberate.** The
+RP2040 and the RP235x are separate silicon generations, not two steppings -
+Cortex-M0+ against Cortex-M33, no Security Extension against TrustZone, no
+doorbells against doorbells. And the RP2350's two core complexes are further
+apart still: on Hazard3 there is no PendSV, no SysTick, no `WFI` on the same
+terms, and a fault report with nothing in common.
+
+### What your application owes any of them
+
+The same three rules on every chip here:
+
+```c
+#include "ahura.h"
+
+int main(void)
+{
+    stdio_init_all();
+
+    os_init();                 /* the package's start-up runs inside here */
+    os_start();                /* does not return */
+}
+```
+
+- Copy `template/os_cb.c` for your own half of the callback contract - log
+  output, assertions, stack overflow.
+- Do **not** copy `template/soc_cb.c`. The package *is* that file for these
+  chips, and copying it as well is the `multiple definition` in the table below.
+- Copy the package's `template/soc_config.h` beside your `os_config.h`. It is
+  required, and so is every option in it - a missing one is a compile error,
+  never a silent default.
+
+`OS_CONFIG_CORE_COUNT` at 2 is the whole of enabling the second core, on all
+three - see [Running both cores](#running-both-cores).
+
+**Cache coherency is not a concern on any of these chips** - there is no data
+cache between the cores and SRAM - so the second `OS_CONFIG_CORE_COUNT`
+precondition in `os_config.h` is satisfied for free. It is listed because it
+very much is not, on parts that do.
+
+### The RP2040 package
+
+```cmake
+set(AHURA_SOC raspberrypi/rp2040)
+```
+
+The chip in the original Pico and Pico W. Dual Cortex-M0+. Note this is a
+**chip** name, not a board: `pico`, `pico_w` and a long tail of third-party
+boards all carry an RP2040 and all use this package. There is no `rp2040_riscv`
+and never will be, which is why this one carries no architecture suffix.
+
+**Layout** - most of it is `soc/raspberrypi/common/`, compiled in alongside the
+file here:
+
+| | |
+|---|---|
+| `soc/raspberrypi/common/soc_common.c` | Core id, kernel spinlock, `SystemCoreClock`, `isr_systick`, core 1 launch - identical on every RP2 chip, because it is all SIO or plain SDK |
+| `soc_cb.c` | The RP2040's inter-core interrupt, carried on the SIO FIFO |
+
+**What it supplies:**
+
+| | |
+|---|---|
+| **Context-switch vector** | `isr_pendsv`. The SDK's `crt0.S` names entry 14 that, not the CMSIS-Pack `PendSV_Handler` the kernel defaults to. Without it the kernel builds cleanly and then **traps at `os_start()`** |
+| **Tick** | `isr_systick` calling `os_tick_handler()` |
+| **`SystemCoreClock`** | Defined by the package; the SDK only provides it in its optional CMSIS stub, which `pico_stdlib` does not pull in |
+| **Core id** | SIO `CPUID` via `get_core_num()` |
+| **IPI** | The inter-core FIFO. The handler drains it and pends PendSV |
+| **Spinlock** | The SDK's `spin_lock` API under `PICO_SPINLOCK_ID_OS1`, which it reserves for exactly this use. On this chip that resolves to a real SIO hardware spinlock. The Cortex-M0+ has no exclusive instructions at all, so the kernel's built-in backend could not work here in any case |
+| **Start-up** | `os_arch_soc_init_cb()`, which the kernel calls from `os_init()`. Nothing for the application to call |
+
+**Status** - the full self-test passes on silicon, single-core and dual-core.
+
+Getting there cost four bugs, all of them in code that had compiled for years
+and never executed - which is worth recording, because "it builds" was doing a
+lot of unearned work in this package's favour:
+
+- The shared HardFault vector was written in Thumb-2. It cannot assemble for
+  ARMv6-M at all, so this package had never been through a compiler.
+- The cycle counter synthesized from SysTick only advanced when somebody polled
+  it, so a period that elapsed unobserved was lost for good. It ran at a
+  hundredth of the CPU clock and could step backwards.
+- Core 0 armed its inter-core interrupt before `multicore_launch_core1()`. On
+  this chip the IPI shares the FIFO the launch handshake uses, so the handler
+  ate the words the launch was still reading and pended a context switch on a
+  core with no first task.
+- Core 1 armed its own before the kernel had primed PSP, so the first interrupt
+  it took drove a context switch through a stack pointer that had never been
+  one.
+
+The last two are the same mistake from opposite ends, and neither could appear
+on the RP2350: its IPI is a doorbell, entirely separate from the launch FIFO.
+
+### The RP2350 Arm package
+
+```cmake
+set(AHURA_SOC raspberrypi/rp235x_arm)
+```
+
+The RP2350 and RP2354 running their Cortex-M33 cores - the chips in the Pico 2
+and Pico 2 W. `rp235x` covers both because the SDK has no separate platform for
+the RP2354: it is an RP2350 die with stacked flash. `_arm` because the same
+silicon can boot Hazard3 RISC-V cores instead.
+
+**Layout** - most of it is `soc/raspberrypi/common/`, compiled in alongside the
+file here:
+
+| | |
+|---|---|
+| `soc/raspberrypi/common/soc_common.c` | Core id, kernel spinlock, `SystemCoreClock`, `isr_systick`, core 1 launch - identical on every RP2 chip, because it is all SIO or plain SDK |
+| `soc_cb.c` | The RP2350's inter-core interrupt, carried on a claimed doorbell. Also where RP2350-only work lands as it arrives - TrustZone first, since the Cortex-M33 has the Security Extension and the RP2040's M0+ does not |
+
+**What it supplies:**
+
+| | |
+|---|---|
+| **Context-switch vector** | `isr_pendsv`. The SDK's `crt0.S` names entry 14 that, not the CMSIS-Pack `PendSV_Handler` the kernel defaults to. Without it the kernel builds cleanly and then **traps at `os_start()`** |
+| **Tick** | `isr_systick` calling `os_tick_handler()` |
+| **`SystemCoreClock`** | Defined by the package; the SDK only provides it in its optional CMSIS stub, which `pico_stdlib` does not pull in |
+| **Core id** | SIO `CPUID` via `get_core_num()` |
+| **IPI** | A claimed doorbell, the chip's purpose-built inter-core interrupt, leaving the FIFO free for the SDK. `SOC_CONFIG_IPI_DOORBELL 0` falls back to the FIFO |
+| **Spinlock** | The SDK's `spin_lock` API under `PICO_SPINLOCK_ID_OS1`, which it reserves for exactly this use. On this chip the SDK defaults `PICO_USE_SW_SPIN_LOCKS` to 1 because of **errata E2**, so it is a software lock built on `LDAEXB`/`STREXB`. Going through the SDK's API is what makes the kernel inherit that workaround |
+| **Start-up** | `os_arch_soc_init_cb()`, which the kernel calls from `os_init()`. Nothing for the application to call |
+
+**Status** - both paths have run the full self-test on real silicon:
+single-core, and dual-core SMP including the suite's dedicated cross-core stress
+section (contention, wake integrity, migration, churn).
+
+### The RP2350 RISC-V package
+
+```cmake
+set(AHURA_SOC raspberrypi/rp235x_riscv)
+```
+
+The same RP2350 / RP2354 running their two Hazard3 RISC-V cores instead of their
+two Cortex-M33s. Same die, same package, same board: an RP2350 ships both core
+complexes and boots one of them, chosen by `PICO_PLATFORM=rp2350-riscv` at build
+time:
+
+```bash
+cmake -B build -DPICO_PLATFORM=rp2350-riscv -DPICO_BOARD=pico2
+```
+
+The Pico VS Code extension and the CMake cache both express it the same way. The
+package refuses a build for the wrong core rather than producing one that links
+and then misbehaves: selecting it with `PICO_PLATFORM` set to anything but a
+RISC-V platform is a `FATAL_ERROR` naming both the mistake and the fix.
+
+**Layout** - unlike the Arm sibling this package does **not** compile in
+`soc/raspberrypi/common/`: that file is SysTick, CMSIS `SystemCoreClock` and
+`isr_pendsv`, none of which exist on this core.
+
+| | |
+|---|---|
+| `soc_cb.c` | The whole package. Machine software interrupt, `mtime`/`mtimecmp` tick, `mhartid` core id, SIO spinlocks, per-core trap stacks, fault report |
+
+**What it supplies:**
+
+| | |
+|---|---|
+| **Context-switch vector** | The machine software interrupt, trap cause 3. `crt0_riscv.S` names it `isr_riscv_machine_soft_irq` and declares it weak, so the port's handler simply replaces it at link time - there is no vector name to set, because that name is already the RISC-V port's default |
+| **Tick** | `mtime`/`mtimecmp`, taken as ordinary system IRQ 29 (`SIO_IRQ_MTIMECMP`) rather than on `mip.MTIP` - see below. Installed as a *shared* handler, so an application handler already on that line is not displaced |
+| **CPU clock** | `os_arch_clock_hz_get()` off the live `clk_sys` |
+| **Core id** | `mhartid`, read inline by the kernel as a single CSR instruction. The package sets `OS_CONFIG_ARCH_CORE_ID_MHARTID` to say the two agree on this chip - the RISC-V spec does not promise it in general - and verifies the claim against SIO `CPUID` once per core at boot. `os_critical_enter()` and `os_critical_exit()` each need this core's index, so every kernel operation that takes a critical section pays for it twice; a CSR read costs one instruction where a callback costs a cross-module call and a bus access |
+| **Yield and IPI** | One register, `SIO_RISCV_SOFTIRQ`. It carries a set bit and a clear bit **per core**, so "reschedule me" and "reschedule the other core" are the same write with a different bit - which is why `os_arch_swi_request_cb()` and `os_arch_core_ipi_request_cb()` are one line each here, where the Arm side needs PendSV plus a doorbell |
+| **Spinlock** | The SDK's `spin_lock` API under `SOC_CONFIG_SPINLOCK_ID` (`PICO_SPINLOCK_ID_OS1`, which the SDK reserves for exactly this). Going through the SDK is what makes the kernel inherit the errata workarounds it carries for these locks, instead of keeping a second copy in the port's own `lr.w`/`sc.w` |
+| **Trap stack** | One per secondary core, sized by `SOC_CONFIG_HANDLER_STACK_SIZE` |
+| **Start-up** | `os_arch_soc_init_cb()`, called by the kernel from `os_init()`. Nothing for the application to call |
+
+**Two decisions worth knowing.**
+
+*The context-switch handler is placed in RAM*, and on this chip that is a
+link-time requirement rather than a preference. The SDK puts the vectored
+`mtvec` table in `.data` unless `PICO_NO_RAM_VECTOR_TABLE` is set, while code
+runs from flash - and those two are 256 MB apart. Each table entry is a `JAL`,
+which reaches ±1 MB, so a handler left in `.text` does not link:
+*relocation truncated to fit*. The package therefore sets
+
+```cmake
+OS_CONFIG_ARCH_SWI_SECTION=".time_critical.ahura_switch"
+```
+
+`.time_critical` is the SDK's own RAM-code section, the one
+`__not_in_flash_func()` uses, so the handler lands near the table. It is also
+where an RTOS wants its context switch anyway - the hottest path in the kernel
+stops paying XIP latency on every switch.
+
+*The tick is an external IRQ, not `mip.MTIP`.* `mtimecmp` can reach the core
+either way, and this package takes IRQ 29 for two reasons. The SDK recommends it
+- `crt0_riscv.S` says of MTIP that IRQ 29 "may be a better option, because it
+plays nicely with interrupt preemption". And it is what keeps `os_arch_in_isr()`
+correct: that function reads Hazard3's `meicontext`, which accounts for external
+IRQs and knows nothing about MTIP. A tick arriving on cause 7 would run with the
+kernel believing it was in task context.
+
+The comparator is armed per core, because `mtimecmp` is core-local - the
+datasheet is explicit that each core gets its own copy, routed to its own
+interrupt line - while the timer itself is shared and is enabled once, from
+core 0. It counts `clk_sys` rather than the 1 MHz `ticks` reference, so the tick
+period derives from the same number `os_arch_clock_hz_get()` reports and the
+kernel already uses for its microsecond waits.
+
+**Status** - the full self-test passes on silicon, single-core and dual-core,
+including the suite's cross-core stress section.
+
+Two bugs stood between it and that, both in code that had never executed: core 1
+was launched into `os_start()` - core 0's entry point - instead of
+`os_core_start()`, so it never ran `os_arch_init()` and its context-switch
+interrupt stayed masked forever; and the tick handler was registered from both
+cores into one shared vector table, which would have halved the real tick rate
+the moment core 1 did come up.
+
+The RISC-V port is newer than the Arm one. Prove a board with the
+[self-test suite](self-test.md) before building on it, which is what that suite
+is for.
 
 ## If it does not build - or builds and does nothing
 

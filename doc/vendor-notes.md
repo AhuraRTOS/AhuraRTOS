@@ -44,7 +44,7 @@ Note that `HAL_Delay()` still busy-waits - it does not yield. Use
 run before `os_start()`.
 
 📖 The full walkthrough on real hardware, with every checkbox and command:
-**[STM32CubeMX / STM32CubeIDE, step by step](stm32cubemx.md)**.
+**[AhuraRTOS on STM32](stm32.md)**.
 
 ## Nordic (nRF5x, nRF53, nRF91)
 

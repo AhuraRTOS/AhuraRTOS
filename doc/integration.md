@@ -10,7 +10,7 @@ and the device.
 the six steps by hand - start at
 [Installing AhuraRTOS → Pick your chip](installation.md#pick-your-chip), with
 [vendor notes](vendor-notes.md) for what differs per vendor and
-[STM32CubeMX](stm32cubemx.md) / [Pico SDK](pico-sdk.md) for those toolchains end
+[STM32CubeMX](stm32.md) / [Pico SDK](raspberry-pi.md) for those toolchains end
 to end. This page is what those pages point back to.
 
 ### Adding the kernel to a build

@@ -18,10 +18,10 @@ Every packaged chip has the same three routes. Pick the row, pick the column:
 
 | Your chip | `AHURA_SOC` | One command | No internet | By hand |
 |---|---|---|---|---|
-| RP2040 - Pico, Pico W | [`raspberrypi/rp2040`](soc-rp2040.md) | [automatic](pico-sdk.md#automatic---one-command) | [offline](pico-sdk.md#offline---no-internet-on-the-machine) | [manual](pico-sdk.md#manual---step-by-step) |
-| RP2350 / RP2354, Arm - Pico 2 | [`raspberrypi/rp235x_arm`](soc-rp235x-arm.md) | [automatic](pico-sdk.md#automatic---one-command) | [offline](pico-sdk.md#offline---no-internet-on-the-machine) | [manual](pico-sdk.md#manual---step-by-step) |
-| RP2350 / RP2354, RISC-V | [`raspberrypi/rp235x_riscv`](soc-rp235x-riscv.md) | [automatic](pico-sdk.md#automatic---one-command) | [offline](pico-sdk.md#offline---no-internet-on-the-machine) | [manual](pico-sdk.md#manual---step-by-step) |
-| Any STM32 - CubeMX / CubeIDE | [`st/stm32`](soc-stm32.md) | [automatic](stm32cubemx.md#automatic---one-command) | [offline](stm32cubemx.md#offline---no-internet-on-the-machine) | [manual](stm32cubemx.md#manual---step-by-step) |
+| RP2040 - Pico, Pico W | [`raspberrypi/rp2040`](raspberry-pi.md) | [automatic](raspberry-pi.md#automatic---one-command) | [offline](raspberry-pi.md#offline---no-internet-on-the-machine) | [manual](raspberry-pi.md#manual---step-by-step) |
+| RP2350 / RP2354, Arm - Pico 2 | [`raspberrypi/rp235x_arm`](raspberry-pi.md) | [automatic](raspberry-pi.md#automatic---one-command) | [offline](raspberry-pi.md#offline---no-internet-on-the-machine) | [manual](raspberry-pi.md#manual---step-by-step) |
+| RP2350 / RP2354, RISC-V | [`raspberrypi/rp235x_riscv`](raspberry-pi.md) | [automatic](raspberry-pi.md#automatic---one-command) | [offline](raspberry-pi.md#offline---no-internet-on-the-machine) | [manual](raspberry-pi.md#manual---step-by-step) |
+| Any STM32 - CubeMX / CubeIDE | [`st/stm32`](stm32.md) | [automatic](stm32.md#automatic---one-command) | [offline](stm32.md#offline---no-internet-on-the-machine) | [manual](stm32.md#manual---step-by-step) |
 | **Anything else** | *leave unset* | - | - | **the six steps on this page** |
 
 An unpackaged part is not an unsupported part: leave `AHURA_SOC` unset, copy
@@ -164,7 +164,7 @@ Leaving it unset is fully supported and is what an unpackaged part does. On a
 Pico, though, it is the difference between a build that runs and one that links
 cleanly and then traps at `os_start()`, because the SDK calls vector entry 14
 `isr_pendsv` rather than `PendSV_Handler`. See
-[SoC packages](soc.md) for the full list, and [Pico SDK](pico-sdk.md) for that
+[SoC packages](soc.md) for the full list, and [Raspberry Pi](raspberry-pi.md) for that
 case end to end.
 
 The kernel library picks its own architecture port from the `-mcpu` / `-march`

@@ -97,6 +97,6 @@ rest - are already covered by the ARM ports today: what a new port adds is a new
 Multi-core (SMP) is no longer on this list: it is verified on silicon on the
 RP2350's Cortex-M33 pair, the same chip's Hazard3 pair, and the RP2040's
 Cortex-M0+ pair. See [Pico SDK → running both
-cores](pico-sdk.md#running-both-cores) for how to turn it on.
+cores](raspberry-pi.md#running-both-cores) for how to turn it on.
 
 Both of the above are documented in full in [Platform support](porting.md).

@@ -1,13 +1,15 @@
-# AhuraRTOS on STM32CubeMX / STM32CubeIDE
+# AhuraRTOS on STM32
 
 [← Documentation index](README.md) · [Installation](installation.md) ·
 [Vendor notes](vendor-notes.md)
 
 > On a Raspberry Pi Pico instead? The same two installers exist for the Pico SDK
-> - see **[Raspberry Pi Pico SDK](pico-sdk.md)**.
+> - see **[AhuraRTOS on Raspberry Pi](raspberry-pi.md)**.
 
-The [six general installation steps](installation.md) carried out on real ST
-hardware. **Three ways to do it - pick one:**
+**Everything STM32 in one page:** the [six general installation
+steps](installation.md) carried out on real ST hardware, then
+[the `st/stm32` SoC package](#the-soc-package) itself. **Three ways to install -
+pick one:**
 
 | | Route | Good for |
 |---|---|---|
@@ -15,7 +17,7 @@ hardware. **Three ways to do it - pick one:**
 | **B** | **[Offline](#offline---no-internet-on-the-machine)** - one command, no network | The same project on a machine with no route out: an air-gapped lab, a locked-down corporate network, a CI agent |
 | **C** | **[Manual](#manual---step-by-step)** - eight steps by hand | CubeIDE projects, non-CMake builds, or when you want to make every edit yourself |
 
-Both end in the same place. Verified end to end on a **NUCLEO-H503RB**
+All three end in the same place. Verified end to end on a **NUCLEO-H503RB**
 (Cortex-M33) built with `arm-none-eabi-gcc` 14.3.1 from the STM32Cube toolchain;
 the only board-specific names below are the `stm32h5xx_*` file names and `TIM7`.
 
@@ -527,6 +529,72 @@ The green LED blinks at 1 Hz, and COM1 (115200 8N1 on the ST-LINK VCP) carries
 whatever `OS_LOG_*` emits.
 
 ---
+
+## The SoC package
+
+```cmake
+set(AHURA_SOC st/stm32)
+```
+
+One package covers every STM32, from a C0 to an H7, and it is deliberately
+small: **CMSIS-Pack startup files already give the kernel most of what it
+needs.** The PendSV vector already carries `PendSV_Handler`, the kernel's
+default; `SystemCoreClock` is already defined and kept current by the generated
+`SystemInit()`; and single-core parts need no core id, no IPI and no spinlock.
+STM32 is the kernel's primary bring-up target precisely because it asks so
+little.
+
+**Layout:**
+
+| | |
+|---|---|
+| `soc_cb.c` | The whole package: a clock refresh at start-up and two tickless sleep hooks. Every entry point is `OS_WEAK`, so an application that wants its own simply defines it |
+| `template/soc_config.h` | Four options, copied beside your `os_config.h` |
+
+There is no public header, because the package has nothing for the application
+to call - every entry point is a `_cb` the kernel invokes itself.
+
+`AHURA_SOC_ARCH` is deliberately **not** set. The core varies across the range -
+M0+ on C0/G0/L0, M4 on F4/L4/G4, M7 on F7/H7, M33 on H5/U5/WBA - and CubeMX
+always puts a `-mcpu` in `CMAKE_C_FLAGS` for the kernel's own detection to read,
+so a value here could only be wrong.
+
+**What it supplies:**
+
+| | |
+|---|---|
+| **Context-switch vector** | Nothing to supply. CMSIS-Pack startup already names it `PendSV_Handler`, which is the kernel's default - but CubeMX will *generate its own* unless told not to, and that one wins at link time. This is step [2. CubeMX: stop generating `PendSV_Handler`](#2-cubemx-stop-generating-pendsv_handler) |
+| **Tick** | Nothing to supply, but the HAL competes for SysTick and must be moved off it. This is step [3. CubeMX: move the HAL time base off SysTick](#3-cubemx-move-the-hal-time-base-off-systick) |
+| **`SystemCoreClock`** | Already defined by CMSIS-Pack. The package refreshes it in `os_arch_soc_init_cb()` before the kernel programs its tick, so a clock tree brought up after `SystemInit()` is still reflected. `SOC_CONFIG_CLOCK_AUTO_UPDATE 0` turns that off |
+| **Core id** | Not needed - single-core parts |
+| **IPI** | Not needed - single-core parts |
+| **Spinlock** | Not needed - the kernel's own backend is correct on one core |
+| **Tickless hooks** | `os_tickless_pre_sleep_cb()` / `os_tickless_post_sleep_cb()` suspend and resume the HAL timebase, so a suppressed sleep is not cut short at that timer's period. `SOC_CONFIG_TICKLESS_HAL_TICK 0` turns that off |
+| **HAL include path** | The kernel library compiles `soc_cb.c`, which reaches the HAL through `SOC_CONFIG_HAL_HEADER`. The package links CubeMX's `stm32cubemx` INTERFACE target when it exists, so the kernel sees the same HAL tree the application does |
+
+Everything here degrades to nothing when the HAL is absent, which is what makes
+the package safe on a hand-written project. `SOC_CONFIG_HAL_HEADER` is the
+option to check first; on a CubeMX project it is `"main.h"`.
+
+**Why it exists at all**, given how little it contributes:
+
+1. **To say so.** "STM32 needs almost no SoC glue" is worth stating where it can
+   be checked, rather than left to be inferred from an absence.
+2. **For the installers.** `install_stm32_online.py` and `install_rpi_online.py`
+   write the same shape of CMake block, with one `AHURA_SOC` line that differs
+   only in its value.
+3. **As the landing site** for the STM32-specific work that is genuinely coming:
+   an **LPTIM or RTC tick** for the low-power L and U families, where SysTick
+   stops in STOP mode - the same problem Nordic has, and the reason
+   `OS_CONFIG_TICK_SOURCE_EXTERNAL` exists; and the **dual-core H7 parts**
+   (Cortex-M7 plus Cortex-M4), which are asymmetric - two kernels, or one kernel
+   and bare-metal - not the shared ready lists `OS_CONFIG_CORE_COUNT` describes,
+   so that needs a design decision before it needs code.
+
+**Status** - verified end to end on a **NUCLEO-H503RB**: the full self-test
+passes on silicon, both from the one-command installer and from the manual
+route. Single-core only. The tickless hooks are wired but share the kernel's
+overall tickless status - implemented, not yet driven by the idle task.
 
 ## What regeneration touches
 

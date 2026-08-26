@@ -148,7 +148,7 @@ soc/<vendor>/<family>/
 ```
 
 The package's own page - what it assumes, what it claims, what has run on
-silicon - lives in [`doc/`](README.md#the-soc-packages-one-page-each) with the
+silicon - lives in [`doc/`](README.md#the-soc-packages) with the
 rest of the documentation, not beside the sources.
 
 Vendor names use the standard vendor prefixes - `raspberrypi`, `infineon`,
@@ -204,10 +204,10 @@ an assembler error, because nothing had ever asked a compiler to look at it.
 
 | `AHURA_SOC` | Parts | Notes |
 |---|---|---|
-| [`raspberrypi/rp235x_arm`](soc-rp235x-arm.md) | RP2350, RP2354 - Arm cores (Pico 2) | `isr_pendsv`, `isr_systick`, `SystemCoreClock`, core id, doorbell IPI, SIO spinlocks. Verified on silicon, single-core and dual-core SMP |
-| [`raspberrypi/rp235x_riscv`](soc-rp235x-riscv.md) | RP2350, RP2354 - Hazard3 RISC-V cores | The same chip, the other core: the machine software interrupt instead of PendSV, the tick off `SIO_MTIMECMP`, SIO spinlocks, and the context-switch handler placed in RAM - a link-time requirement on this part, not a preference. Verified on silicon, single-core and dual-core SMP |
-| [`raspberrypi/rp2040`](soc-rp2040.md) | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO. Verified on silicon, single-core and dual-core SMP |
-| [`st/stm32`](soc-stm32.md) | Every STM32 | CMSIS-Pack startup already gives the kernel its vector, clock and tick, so the package is small: a `SystemCoreClock` refresh at start-up and tickless HAL hooks. Verified on a NUCLEO-H503RB |
+| [`raspberrypi/rp235x_arm`](raspberry-pi.md#the-rp2350-arm-package) | RP2350, RP2354 - Arm cores (Pico 2) | `isr_pendsv`, `isr_systick`, `SystemCoreClock`, core id, doorbell IPI, SIO spinlocks. Verified on silicon, single-core and dual-core SMP |
+| [`raspberrypi/rp235x_riscv`](raspberry-pi.md#the-rp2350-risc-v-package) | RP2350, RP2354 - Hazard3 RISC-V cores | The same chip, the other core: the machine software interrupt instead of PendSV, the tick off `SIO_MTIMECMP`, SIO spinlocks, and the context-switch handler placed in RAM - a link-time requirement on this part, not a preference. Verified on silicon, single-core and dual-core SMP |
+| [`raspberrypi/rp2040`](raspberry-pi.md#the-rp2040-package) | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO. Verified on silicon, single-core and dual-core SMP |
+| [`st/stm32`](stm32.md#the-soc-package) | Every STM32 | CMSIS-Pack startup already gives the kernel its vector, clock and tick, so the package is small: a `SystemCoreClock` refresh at start-up and tickless HAL hooks. Verified on a NUCLEO-H503RB |
 
 Every one of these has the same three install routes - one command, offline, or
 by hand. **[Installing AhuraRTOS](installation.md#pick-your-chip)** is the table

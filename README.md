@@ -158,8 +158,8 @@ that names all three routes for every packaged chip.
 |---|---|
 | **Start here** | |
 | [Installing AhuraRTOS](doc/installation.md) | The pick-your-chip table - all three routes per chip - then the general procedure: six steps, any vendor, IDE and build system |
-| [STM32CubeMX / CubeIDE](doc/stm32cubemx.md) | On ST tooling, three ways: [automatic](doc/stm32cubemx.md#automatic---one-command), [offline](doc/stm32cubemx.md#offline---no-internet-on-the-machine), or [manual](doc/stm32cubemx.md#manual---step-by-step) with the exact CubeMX checkboxes, file paths and CMake block |
-| [Raspberry Pi Pico SDK](doc/pico-sdk.md) | RP2040, RP2350 and RP2354, three ways: [automatic](doc/pico-sdk.md#automatic---one-command), [offline](doc/pico-sdk.md#offline---no-internet-on-the-machine), or [manual](doc/pico-sdk.md#manual---step-by-step). The SoC package supplies the vectors and the tick, so there is nothing to route by hand |
+| [AhuraRTOS on STM32](doc/stm32.md) | **Everything STM32 in one page.** Three install routes - [automatic](doc/stm32.md#automatic---one-command), [offline](doc/stm32.md#offline---no-internet-on-the-machine), [manual](doc/stm32.md#manual---step-by-step) with the exact CubeMX checkboxes - then [the `st/stm32` package](doc/stm32.md#the-soc-package) |
+| [AhuraRTOS on Raspberry Pi](doc/raspberry-pi.md) | **Everything RP2040 / RP2350 / RP2354 in one page.** Three install routes - [automatic](doc/raspberry-pi.md#automatic---one-command), [offline](doc/raspberry-pi.md#offline---no-internet-on-the-machine), [manual](doc/raspberry-pi.md#manual---step-by-step) - then [the three packages](doc/raspberry-pi.md#the-packages-chip-by-chip), Arm and RISC-V |
 | [Vendor notes](doc/vendor-notes.md) | The one thing that differs per vendor - whether its code generator emits a competing `PendSV_Handler` - on STM32, Nordic, NXP, TI, Silicon Labs, Renesas, Microchip, Infineon, GD32 and anything else |
 | [Running the self-test suite](doc/self-test.md) | Prove a fresh port before writing anything on top of it: how to enable it, how to read the output, why a silent console is usually the libc, and how much flash to budget |
 | **The kernel** | |
@@ -169,12 +169,7 @@ that names all three routes for every packaged chip.
 | [What the kernel needs from a platform](doc/integration.md) | The reference behind the install: non-CMake build inputs, every `os_config.h` option, and the two-item integration contract |
 | [Platform support](doc/porting.md) | The callbacks a platform must supply, the clock, TrustZone, multi-core and tickless idle |
 | [Source layout](doc/source.md) | What each directory and each `kernel/` source file is, and why `os_internal.h` is reachable from none of them |
-| **SoC packages** | |
-| [SoC packages](doc/soc.md) | The optional per-silicon layer under `soc/`: who owns which callback, what may and may not live there, and how to write one |
-| [Raspberry Pi RP2040](doc/soc-rp2040.md) | `raspberrypi/rp2040` - Pico, Pico W, dual Cortex-M0+, IPI on the SIO FIFO |
-| [Raspberry Pi RP2350 - Arm](doc/soc-rp235x-arm.md) | `raspberrypi/rp235x_arm` - Pico 2 and every other RP235x board, dual Cortex-M33, doorbell IPI |
-| [Raspberry Pi RP2350 - RISC-V](doc/soc-rp235x-riscv.md) | `raspberrypi/rp235x_riscv` - the same boards booting their Hazard3 cores instead |
-| [STMicroelectronics STM32](doc/soc-stm32.md) | `st/stm32` - every STM32: a clock refresh, tickless HAL hooks, and the two CubeMX settings that are not optional |
+| [SoC packages](doc/soc.md) | The optional per-silicon layer under `soc/`: who owns which callback, what may and may not live there, and how to write one. The four packaged parts are documented in the two vendor pages above |
 | **Testing and examples** | |
 | [Testing and examples](doc/testing.md) | The self-test suite and the runnable examples, together |
 | [Examples](doc/examples.md) | One runnable `os_main.c` per kernel feature, and how to run them |

@@ -52,8 +52,8 @@ if your chip is not one of the two above.
 | Page | What is in it |
 |---|---|
 | **[Installation](installation.md)** | **Start here.** Opens with the [pick-your-chip table](installation.md#pick-your-chip) - all three routes for every packaged chip - then the general procedure: six steps for any vendor, IDE and build system. Ends with a build-error table |
-| **[Raspberry Pi Pico SDK](pico-sdk.md)** | RP2040, RP2350 and RP2354, three ways: **[automatic](pico-sdk.md#automatic---one-command)**, **[offline](pico-sdk.md#offline---no-internet-on-the-machine)**, or **[manual](pico-sdk.md#manual---step-by-step)**. The SoC package supplies the vector names, the tick and the multi-core glue, so there is no PendSV or SysTick step to do by hand. Verified on a Pico 2 and a Pico |
-| **[STM32CubeMX / STM32CubeIDE](stm32cubemx.md)** | On ST tooling, three ways: **[automatic](stm32cubemx.md#automatic---one-command)**, **[offline](stm32cubemx.md#offline---no-internet-on-the-machine)**, or **[manual](stm32cubemx.md#manual---step-by-step)** with the exact CubeMX checkboxes, file paths, CMake block and build commands. Verified end to end on a NUCLEO-H503RB |
+| **[AhuraRTOS on Raspberry Pi](raspberry-pi.md)** | **Everything RP2040 / RP2350 / RP2354 in one page.** Three install routes - **[automatic](raspberry-pi.md#automatic---one-command)**, **[offline](raspberry-pi.md#offline---no-internet-on-the-machine)**, **[manual](raspberry-pi.md#manual---step-by-step)** - then **[the three packages](raspberry-pi.md#the-packages-chip-by-chip)**, Arm and RISC-V. The package supplies the vectors, the tick and the multi-core glue, so there is nothing to route by hand. Verified on a Pico 2 and a Pico |
+| **[AhuraRTOS on STM32](stm32.md)** | **Everything STM32 in one page.** Three install routes - **[automatic](stm32.md#automatic---one-command)**, **[offline](stm32.md#offline---no-internet-on-the-machine)**, **[manual](stm32.md#manual---step-by-step)** with the exact CubeMX checkboxes - then **[the `st/stm32` package](stm32.md#the-soc-package)**. Verified end to end on a NUCLEO-H503RB |
 | **[Vendor notes](vendor-notes.md)** | The one thing that differs per vendor - whether its code generator emits a competing `PendSV_Handler` - on STM32, Nordic, NXP, TI, Silicon Labs, Renesas, Microchip, Infineon, GD32, and anything else |
 | **[Self-test suite](self-test.md)** | Prove a fresh port before writing anything on top of it. How to enable it, how to read the output, why a silent console is usually the libc, and how much flash to budget |
 
@@ -88,16 +88,14 @@ points at the five pages below.
 - **[Examples](examples.md)** - one runnable `os_main.c` per kernel feature,
   and how to run them.
 
-### The SoC packages, one page each
+### The SoC packages
 
-Every packaged part has its own page here, and they all follow the same five
-sections - **Layout**, **What it supplies**, **Using it**, **Notes**,
-**Status** - after a short **Installing** pointer. The layer itself is
-[SoC packages](soc.md).
+One page per vendor, each carrying that vendor's install routes *and* its
+package reference. The layer itself is [SoC packages](soc.md).
 
-| Page | Parts |
-|---|---|
-| **[RP2350 / RP2354, Arm](soc-rp235x-arm.md)** | `raspberrypi/rp235x_arm` - Pico 2 and every other RP235x board, Cortex-M33 |
-| **[RP2350 / RP2354, RISC-V](soc-rp235x-riscv.md)** | `raspberrypi/rp235x_riscv` - the same boards booting their Hazard3 cores instead |
-| **[RP2040](soc-rp2040.md)** | `raspberrypi/rp2040` - Pico, Pico W, Cortex-M0+ |
-| **[STM32](soc-stm32.md)** | `st/stm32` - every STM32: a clock refresh, tickless HAL hooks, and the two CubeMX settings that are not optional |
+| `AHURA_SOC` | Parts | Section |
+|---|---|---|
+| `raspberrypi/rp235x_arm` | RP2350, RP2354 - Cortex-M33 (Pico 2) | [The RP2350 Arm package](raspberry-pi.md#the-rp2350-arm-package) |
+| `raspberrypi/rp235x_riscv` | RP2350, RP2354 - Hazard3 RV32 | [The RP2350 RISC-V package](raspberry-pi.md#the-rp2350-risc-v-package) |
+| `raspberrypi/rp2040` | RP2040 - Pico, Pico W, Cortex-M0+ | [The RP2040 package](raspberry-pi.md#the-rp2040-package) |
+| `st/stm32` | Every STM32 | [The SoC package](stm32.md#the-soc-package) |
