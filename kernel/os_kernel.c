@@ -37,7 +37,9 @@ static void      os_test_task_entry(void *context);
  * ***********************************************************************************************************
 */
 
-static __IO bool os_kernel_running = false;
+/* Not static: os_internal.h declares it so os_internal_can_block() can read it
+ * without a cross-module call - the same arrangement as os_kernel_lock_count. */
+__IO bool os_kernel_running = false;
 
 /* Scheduler lock, per core. Nonzero means this core defers its own context switches with
  * interrupts left fully live; the pending flag remembers a switch that was swallowed while

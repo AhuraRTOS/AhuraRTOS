@@ -1,5 +1,5 @@
 /**
- * @file os_semaphore.c
+ * @file os_sem.c
  * @brief Semaphore module implementation with timeouts.
  *
  * @copyright (c) 2026 Ahura Project Contributors
@@ -15,7 +15,7 @@
 
 #include "os_internal.h"
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
 
 /*
  * ***********************************************************************************************************
@@ -32,7 +32,7 @@
  * @param[in]     max_count      Maximum token count.
  * @return os_err_t        Status code.
  */
-os_err_t os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, uint32_t max_count)
+os_err_t os_sem_init(os_sem_t *semaphore, uint32_t initial_count, uint32_t max_count)
 {
     os_err_t status = OS_ERR_INVALID_ARG;
 
@@ -69,7 +69,7 @@ os_err_t os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, ui
  * @param[in,out] semaphore  Semaphore object.
  * @return os_err_t    Status code.
  */
-os_err_t os_semaphore_give(os_semaphore_t *semaphore)
+os_err_t os_sem_give(os_sem_t *semaphore)
 {
     os_err_t status = OS_ERR_INVALID_ARG;
 
@@ -110,7 +110,7 @@ os_err_t os_semaphore_give(os_semaphore_t *semaphore)
  * @return os_err_t  OK on take, EMPTY when unavailable without waiting,
  *                    TIMEOUT when the wait elapsed.
  */
-os_err_t os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms)
+os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms)
 {
     os_err_t status = OS_ERR_INVALID_ARG;
 
@@ -181,4 +181,4 @@ os_err_t os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms)
     return status;
 }
 
-#endif /* OS_CONFIG_SEMAPHORE_ENABLE */
+#endif /* OS_CONFIG_SEM_ENABLE */

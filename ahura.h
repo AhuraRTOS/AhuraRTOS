@@ -42,7 +42,7 @@ extern "C"
  *
  * The kernel is C11, where it is _Static_assert. C++ has had static_assert as a keyword since
  * C++11 and does not declare _Static_assert at all, so a C++ application including this header
- * would fail on the assertions below and inside OS_QUEUE_DEFINE_BUFFER, OS_TIMER_DEFINE and
+ * would fail on the assertions below and inside OS_TIMER_DEFINE and
  * OS_DEFERRED_POOL_DEFINE. The extern "C" block above keeps the LINKAGE right and says nothing
  * about the syntax, which is why the guard alone was not enough. Both forms take the same two
  * arguments, so this is a rename and nothing more. */
@@ -50,26 +50,6 @@ extern "C"
 #define OS_STATIC_ASSERT(condition, message)    static_assert(condition, message)
 #else
 #define OS_STATIC_ASSERT(condition, message)    _Static_assert(condition, message)
-#endif
-
-/* Compile-time proof that "array" is an array and not a pointer to one.
- *
- * Every DEFINE macro that derives its geometry from the storage it is handed - OS_QUEUE_DEFINE_BUFFER,
- * OS_MSG_DEFINE_BUFFER - reads that geometry with sizeof, and sizeof on a POINTER to the array
- * yields the pointer's own size instead. It derives a nonsense capacity in silence, and every write
- * past the first then runs off the end of the storage: exactly the failure deriving the geometry
- * exists to prevent, so it is worth refusing to build over.
- *
- * It lives up here rather than beside either user because both need it and their two features
- * switch on independently. Evaluates to a permitted 1 on compilers without the builtin, where the
- * check simply does not run. */
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(__cplusplus)
-#define OS_IS_ARRAY(array)    \
-    (!__builtin_types_compatible_p(__typeof__(array), __typeof__(&(array)[0])))
-#else
-/* C++ lands here too: __builtin_types_compatible_p is a C-only builtin, so the check does not run
- * there and the macro permits the definition, exactly as on a non-GNU compiler. */
-#define OS_IS_ARRAY(array) 1
 #endif
 
 /*
@@ -169,13 +149,17 @@ typedef void (*os_task_entry_t)(void *context);
  * OS_TASK_DEFINE fills one of these in at compile time and points the handle at it, which is why
  * os_task_create needs neither a name nor a stack. Const, so it costs flash rather than RAM.
  *
- * The layout is the same in every build. Only the VALUE of name follows OS_CONFIG_TASK_NAME_ENABLE,
- * so an application that turns names off does not also get a differently shaped public type.
+ * OS_CONFIG_TASK_NAME_ENABLE at 0 removes the name field outright rather than setting it to NULL,
+ * so a build without names spends nothing on them - not the strings, and not a pointer per task
+ * that nothing could read. The two DEFINE macros fill this in with designated initializers, so the
+ * shape change cannot silently write the wrong field; a hand-rolled descriptor naming .name in
+ * such a build fails to compile, which is the intended answer.
  */
 typedef struct
 {
-    const char *name;           /**< Handle's own spelling, or NULL when
-                                     OS_CONFIG_TASK_NAME_ENABLE is 0. */
+#if (OS_CONFIG_TASK_NAME_ENABLE == 1U)
+    const char *name;           /**< Handle's own spelling, as written in OS_TASK_DEFINE. */
+#endif
     void       *stack_memory;
     size_t     stack_bytes;
 
@@ -356,21 +340,21 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
 #define OS_STACK_ALIGNED
 #endif
 
-/** What the two DEFINE macros below write into the storage descriptor's name field.
+/** The .name line the two DEFINE macros below emit, or nothing at all.
  *
- *  Dropping the reference is what removes the NAME, not just the pointer to it: a string literal
- *  nothing points at is never emitted, so OS_CONFIG_TASK_NAME_ENABLE at 0 takes the task-name
- *  strings out of flash as well as the pointer out of every TCB. The field itself stays in both
- *  builds - see os_task_storage_t. */
+ *  A whole initializer rather than just its value, because OS_CONFIG_TASK_NAME_ENABLE at 0 takes
+ *  the field out of os_task_storage_t as well - so there is no field left to give a value to. What
+ *  that removes is the name AND the pointer to it: a string literal nothing references is never
+ *  emitted, and the descriptor loses a word per task. */
 #if (OS_CONFIG_TASK_NAME_ENABLE == 1U)
-#define OS_TASK_NAME_LITERAL(task_name)     #task_name
+#define OS_TASK_NAME_INIT(task_name)        .name = #task_name,
 #else
-#define OS_TASK_NAME_LITERAL(task_name)     NULL
+#define OS_TASK_NAME_INIT(task_name)
 #endif
 
 /** Define a task: its handle, its stack, and the storage descriptor tying the two together.
  *
- *  The handle is plain "task_name"; the stack gets the decorated "task_name_STACK", which nothing
+ *  The handle is plain "task_name"; the stack gets the decorated "task_name_stack_buf", which nothing
  *  should name by hand. stack_size is in bytes, rounded up to a multiple of 8, and must be at
  *  least OS_CONFIG_MIN_STACK_SIZE.
  *
@@ -381,14 +365,14 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *  task's handle another task's stack is no longer expressible. (Parameters are task_name and
  *  stack_size, not name and stack_bytes: a parameter named after a struct field would be
  *  substituted inside the initializers below.) */
-#define OS_TASK_DEFINE(task_name, stack_size)                                        \
-    static uint8_t task_name##_STACK[(((stack_size) + (OS_ARCH_STACK_ALIGNMENT_BYTES - 1U)) & ~(OS_ARCH_STACK_ALIGNMENT_BYTES - 1U))] OS_STACK_ALIGNED;  \
-    static const os_task_storage_t task_name##_STORAGE = {                           \
-        .name         = OS_TASK_NAME_LITERAL(task_name),                             \
-        .stack_memory = (void *)(task_name##_STACK),                                 \
-        .stack_bytes  = sizeof(task_name##_STACK)                                    \
-    };                                                                               \
-    static os_task_t task_name = { .storage = &task_name##_STORAGE }
+#define OS_TASK_DEFINE(task_name, stack_size)                   \
+    static uint8_t task_name##_stack_buf[(((stack_size) + (OS_ARCH_STACK_ALIGNMENT_BYTES - 1U)) & ~(OS_ARCH_STACK_ALIGNMENT_BYTES - 1U))] OS_STACK_ALIGNED;  \
+    static const os_task_storage_t task_name##_task_storage = { \
+        OS_TASK_NAME_INIT(task_name)                            \
+        .stack_memory = (void *)(task_name##_stack_buf),        \
+        .stack_bytes  = sizeof(task_name##_stack_buf)           \
+    };                                                          \
+    static os_task_t task_name = { .storage = &task_name##_task_storage }
 
 /** OS_TASK_DEFINE, plus attributes on the stack - for when WHERE the stack lives matters as much
  *  as how big it is: fast on-chip RAM (DTCM, CCM), a no-init section that survives a reset, a
@@ -406,15 +390,15 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *  Variadic on purpose: attributes are taken as the rest of the line, so several may be given
  *  (__attribute__((aligned(32))) __attribute__((section(".noinit")))) whatever commas they
  *  contain. */
-#define OS_TASK_DEFINE_ATTR(task_name, stack_size, ...)                              \
-    static uint8_t task_name##_STACK[(((stack_size) + (OS_ARCH_STACK_ALIGNMENT_BYTES - 1U)) & ~(OS_ARCH_STACK_ALIGNMENT_BYTES - 1U))]                    \
-        OS_STACK_ALIGNED __VA_ARGS__;                                                \
-    static const os_task_storage_t task_name##_STORAGE = {                           \
-        .name         = OS_TASK_NAME_LITERAL(task_name),                             \
-        .stack_memory = (void *)(task_name##_STACK),                                 \
-        .stack_bytes  = sizeof(task_name##_STACK)                                    \
-    };                                                                               \
-    static os_task_t task_name = { .storage = &task_name##_STORAGE }
+#define OS_TASK_DEFINE_ATTR(task_name, stack_size, ...)             \
+    static uint8_t task_name##_stack_buf[(((stack_size) + (OS_ARCH_STACK_ALIGNMENT_BYTES - 1U)) & ~(OS_ARCH_STACK_ALIGNMENT_BYTES - 1U))] \
+        OS_STACK_ALIGNED __VA_ARGS__;                               \
+    static const os_task_storage_t task_name##_task_storage = {     \
+        OS_TASK_NAME_INIT(task_name)                                \
+        .stack_memory = (void *)(task_name##_stack_buf),            \
+        .stack_bytes  = sizeof(task_name##_stack_buf)               \
+    };                                                              \
+    static os_task_t task_name = { .storage = &task_name##_task_storage }
 
 /** Task behaviour for os_task_create: what the task runs, with what, and at what priority. What it
  *  is called and where its stack lives came from OS_TASK_DEFINE, so neither appears here.
@@ -583,7 +567,7 @@ os_task_state_t os_task_state_get(const os_task_t *task);
  * @brief Get a task's name (NULL means the calling task). NULL when the task is unknown, or in
  *        any build with OS_CONFIG_TASK_NAME_ENABLE at 0.
  */
-const char *os_task_name_get(const os_task_t *task);
+const char* os_task_name_get(const os_task_t *task);
 
 /*
  * ***********************************************************************************************************
@@ -811,11 +795,11 @@ os_err_t os_mutex_unlock(os_mutex_t *mutex);
 
 /*
  * ***********************************************************************************************************
- * Semaphore          - OS_CONFIG_SEMAPHORE_ENABLE
+ * Semaphore          - OS_CONFIG_SEM_ENABLE
  * ***********************************************************************************************************
 */
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
 
 /******************************************************************************************************/
 /**
@@ -827,27 +811,27 @@ typedef struct
     uint32_t  max_count;
     os_list_t waiters; /**< Tasks blocked waiting for a token. */
 
-} os_semaphore_t;
+} os_sem_t;
 
 /******************************************************************************************************/
 /**
  * @brief Initialize a semaphore object.
  */
-os_err_t os_semaphore_init(os_semaphore_t *semaphore, uint32_t initial_count, uint32_t max_count);
+os_err_t os_sem_init(os_sem_t *semaphore, uint32_t initial_count, uint32_t max_count);
 
 /******************************************************************************************************/
 /**
  * @brief Give one token to semaphore (ISR-safe, never blocks).
  */
-os_err_t os_semaphore_give(os_semaphore_t *semaphore);
+os_err_t os_sem_give(os_sem_t *semaphore);
 
 /******************************************************************************************************/
 /**
  * @brief Take one token from semaphore, waiting up to timeout_ms when empty.
  */
-os_err_t os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms);
+os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms);
 
-#endif /* OS_CONFIG_SEMAPHORE_ENABLE */
+#endif /* OS_CONFIG_SEM_ENABLE */
 
 /*
  * ***********************************************************************************************************
@@ -860,10 +844,9 @@ os_err_t os_semaphore_take(os_semaphore_t *semaphore, uint32_t timeout_ms);
  *   STATIC    OS_QUEUE_DEFINE_STATIC(sensor_q, sample_t, 8);
  *             / the macro declares the buffer too; usable where it stands
  *
- *   BUFFER    static sample_t dma_area[8] __attribute__((section(".dma")));
- *             OS_QUEUE_DEFINE_BUFFER(rx_q, dma_area);
- *             / you declare the buffer, for storage the line above cannot
- *               express; still usable where it stands
+ *   ATTR      OS_QUEUE_DEFINE_STATIC_ATTR(rx_q, sample_t, 8,
+ *                                  __attribute__((section(".dma"))));
+ *             / the same, with the array placed where you need it
  *
  *   DYNAMIC   OS_QUEUE_DEFINE_DYNAMIC(log_q);
  *             os_queue_init_dynamic(&log_q, item_size, capacity);
@@ -916,7 +899,7 @@ typedef struct
 
 /** Define a queue with statically allocated storage, ready to use where it stands. The queue
  *  object is declared as plain "name" (what every os_queue_* call takes the address of), and the
- *  backing array gets the decorated "name_BUFFER", which nothing should name by hand.
+ *  backing array gets the decorated "name_msg_buf", which nothing should name by hand.
  *
  *  No init call to pair it with, and no geometry to pass: both values are read off the array, so
  *  they cannot disagree with the storage that exists. "type" is the item type, not a byte count,
@@ -925,29 +908,30 @@ typedef struct
  *      OS_QUEUE_DEFINE_STATIC(sensor_q, sensor_sample_t, 8);
  *      status = os_queue_send(&sensor_q, &sample, 10U);
  *
- *  Both objects are static, so this belongs at file scope. Use OS_QUEUE_DEFINE_BUFFER to place the
- *  buffer yourself, or OS_QUEUE_DEFINE_DYNAMIC for a run-time geometry. */
-#define OS_QUEUE_DEFINE_STATIC(name, type, item_count)    \
-    static type       name##_BUFFER[(item_count)];        \
-    static os_queue_t name = OS_QUEUE_INITIALIZER(name##_BUFFER)
+ *  Both objects are static, so this belongs at file scope. Use OS_QUEUE_DEFINE_STATIC_ATTR to place the
+ *  array somewhere particular, or OS_QUEUE_DEFINE_DYNAMIC for a run-time geometry. */
+#define OS_QUEUE_DEFINE_STATIC(name, type, item_count)      \
+    static type       name##_queue_buf[(item_count)];       \
+    static os_queue_t name = OS_QUEUE_INITIALIZER(name##_queue_buf)
 
-/** Define a queue over an item array you declared yourself, ready to use where it stands. The
- *  escape hatch for storage OS_QUEUE_DEFINE_STATIC cannot express - a named linker section,
- *  DMA-capable RAM, a particular alignment - since the array is yours to attribute however the
- *  platform needs.
+/** OS_QUEUE_DEFINE_STATIC, plus attributes on the item array - for when WHERE the storage lives
+ *  matters as much as how much of it there is: a named linker section, DMA-capable RAM, a
+ *  particular alignment. OS_QUEUE_DEFINE_STATIC puts its array in ordinary .bss with no way to say
+ *  otherwise; this puts whatever you pass on that same array.
  *
- *      static sample_t dma_area[8] __attribute__((section(".dma_buffers")));
- *      OS_QUEUE_DEFINE_BUFFER(rx_q, dma_area);
+ *      OS_QUEUE_DEFINE_STATIC_ATTR(rx_q, sample_t, 8, __attribute__((section(".dma_buffers"))));
  *      ...
  *      status = os_queue_send(&rx_q, &sample, 10U);
  *
- *  The array must be declared above this, at file scope, and must be an array rather than a
- *  pointer to one - the line below refuses to compile otherwise. Item size and capacity come from
- *  it, so there is nothing to keep in step by hand. */
-#define OS_QUEUE_DEFINE_BUFFER(name, array)                                                 \
-    OS_STATIC_ASSERT(OS_IS_ARRAY(array),                                                \
-                   "OS_QUEUE_DEFINE_BUFFER needs the item array itself, not a pointer");    \
-    static os_queue_t name = OS_QUEUE_INITIALIZER(array)
+ *  Identical to OS_QUEUE_DEFINE_STATIC in every other way - same handle, same array name, same
+ *  geometry read off the array so it cannot disagree with the storage. The named section still has
+ *  to exist in the linker script; nothing here can create it.
+ *
+ *  Variadic on purpose: attributes are taken as the rest of the line, so several may be given
+ *  whatever commas they contain - the same reason OS_TASK_DEFINE_ATTR is. */
+#define OS_QUEUE_DEFINE_STATIC_ATTR(name, type, item_count, ...)   \
+    static type       name##_queue_buf[(item_count)] __VA_ARGS__;  \
+    static os_queue_t name = OS_QUEUE_INITIALIZER(name##_queue_buf)
 
 /* --- Dynamic storage: the item buffer comes from the kernel heap ------------------------------ */
 
@@ -1101,7 +1085,7 @@ typedef struct
 
 /** Define a message buffer with statically allocated storage, ready to use where it stands. The
  *  object is declared as plain "name" (what every os_msg_* call takes the address of), and the
- *  backing array gets the decorated "name_BUFFER", which nothing should name by hand.
+ *  backing array gets the decorated "name_msg_buf", which nothing should name by hand.
  *
  *  byte_size is a BYTE budget, not a message count - that is the whole point of this object - so
  *  just write how much RAM the buffer may have:
@@ -1114,29 +1098,30 @@ typedef struct
  *  to be worked out in advance: os_msg_send() adds those 2 bytes itself and returns OS_ERR_FULL if
  *  the message does not fit.
  *
- *  Both objects are static, so this belongs at file scope. Use OS_MSG_DEFINE_BUFFER to place the
- *  storage yourself, or OS_MSG_DEFINE_DYNAMIC for a capacity not known until run time. */
-#define OS_MSG_DEFINE_STATIC(name, byte_size)       \
-    static uint8_t  name##_BUFFER[(byte_size)];     \
-    static os_msg_t name = OS_MSG_INITIALIZER(name##_BUFFER)
+ *  Both objects are static, so this belongs at file scope. Use OS_MSG_DEFINE_STATIC_ATTR to place the
+ *  array somewhere particular, or OS_MSG_DEFINE_DYNAMIC for a capacity not known until run time. */
+#define OS_MSG_DEFINE_STATIC(name, byte_size)        \
+    static uint8_t  name##_msg_buf[(byte_size)];     \
+    static os_msg_t name = OS_MSG_INITIALIZER(name##_msg_buf)
 
-/** Define a message buffer over a byte array you declared yourself, ready to use where it stands.
- *  The escape hatch for storage OS_MSG_DEFINE_STATIC cannot express - a named linker section,
- *  DMA-capable RAM, a particular alignment - since the array is yours to attribute however the
- *  platform needs.
+/** OS_MSG_DEFINE_STATIC, plus attributes on the byte array - for when WHERE the storage lives
+ *  matters as much as how much of it there is: a named linker section, DMA-capable RAM, a
+ *  particular alignment. OS_MSG_DEFINE_STATIC puts its array in ordinary .bss with no way to say
+ *  otherwise; this puts whatever you pass on that same array.
  *
- *      static uint8_t rx_area[512] __attribute__((section(".dma_buffers")));
- *      OS_MSG_DEFINE_BUFFER(rx_buf, rx_area);
+ *      OS_MSG_DEFINE_STATIC_ATTR(rx_buf, 512U, __attribute__((section(".dma_buffers"))));
  *      ...
  *      status = os_msg_send(&rx_buf, frame, frame_len, 10U);
  *
- *  The array must be declared above this, at file scope, and must be an array rather than a pointer
- *  to one - the line below refuses to compile otherwise. Capacity is sizeof(array) in bytes, so
- *  there is nothing to keep in step by hand. */
-#define OS_MSG_DEFINE_BUFFER(name, array)                                            \
-    OS_STATIC_ASSERT(OS_IS_ARRAY(array),                                             \
-                   "OS_MSG_DEFINE_BUFFER needs the byte array itself, not a pointer"); \
-    static os_msg_t name = OS_MSG_INITIALIZER(array)
+ *  Identical to OS_MSG_DEFINE_STATIC in every other way - same handle, same array name, capacity
+ *  read off the array. The named section still has to exist in the linker script; nothing here can
+ *  create it.
+ *
+ *  Variadic on purpose: attributes are taken as the rest of the line, so several may be given
+ *  whatever commas they contain - the same reason OS_TASK_DEFINE_ATTR is. */
+#define OS_MSG_DEFINE_STATIC_ATTR(name, byte_size, ...)        \
+    static uint8_t  name##_msg_buf[(byte_size)] __VA_ARGS__;   \
+    static os_msg_t name = OS_MSG_INITIALIZER(name##_msg_buf)
 
 /* --- Dynamic storage: the byte buffer comes from the kernel heap ------------------------------ */
 
@@ -1387,12 +1372,12 @@ struct os_timer_pool_s
  *  each, so no setting can contradict another.
  *
  *  Parameters are prefixed (timer_period_ms, not period_ms) so a caller's own variable names
- *  cannot be substituted into the field designators below - the trap OS_QUEUE_DEFINE_BUFFER
+ *  cannot be substituted into the field designators below - the same trap OS_QUEUE_INITIALIZER
  *  documents. */
 
 /** Reloads and fires every period_ms until stopped. */
 #define OS_TIMER_DEFINE_PERIODIC(timer_name, timer_period_ms, timer_callback)             \
-    OS_STATIC_ASSERT(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
+    OS_STATIC_ASSERT(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER), \
                    "OS_TIMER_DEFINE_PERIODIC: the period is in milliseconds and cannot "  \
                    "be 0 or OS_WAIT_FOREVER");                                            \
     static os_timer_t timer_name = {                                                      \
@@ -1404,7 +1389,7 @@ struct os_timer_pool_s
 
 /** Fires once, period_ms after it is started, then stops. */
 #define OS_TIMER_DEFINE_ONESHOT(timer_name, timer_period_ms, timer_callback)              \
-    OS_STATIC_ASSERT(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER),   \
+    OS_STATIC_ASSERT(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER), \
                    "OS_TIMER_DEFINE_ONESHOT: the period is in milliseconds and cannot "   \
                    "be 0 or OS_WAIT_FOREVER");                                            \
     static os_timer_t timer_name = {                                                      \
@@ -1436,16 +1421,16 @@ struct os_timer_pool_s
  *  pool_depth slots cost pool_depth * sizeof(os_timer_entry_t), threaded on first use.
  */
 #define OS_TIMER_DEFINE_SUBMIT(pool_name, pool_depth, pool_delay_ms, pool_callback)       \
-    OS_STATIC_ASSERT((pool_depth) > 0U,                                                     \
+    OS_STATIC_ASSERT((pool_depth) > 0U,                                                   \
                    "OS_TIMER_DEFINE_SUBMIT: the depth is how many calls may be in "       \
                    "flight at once and cannot be 0");                                     \
-    OS_STATIC_ASSERT((pool_delay_ms) != OS_WAIT_FOREVER,                                    \
+    OS_STATIC_ASSERT((pool_delay_ms) != OS_WAIT_FOREVER,                                  \
                    "OS_TIMER_DEFINE_SUBMIT: the delay is in milliseconds; use 0 for "     \
                    "as soon as possible");                                                \
-    static os_timer_entry_t pool_name##_entries[(pool_depth)];                            \
+    static os_timer_entry_t pool_name##_timer_buf[(pool_depth)];                          \
     static os_timer_pool_t pool_name = {                                                  \
         .self        = &pool_name,                                                        \
-        .entries     = pool_name##_entries,                                               \
+        .entries     = pool_name##_timer_buf,                                             \
         .count       = (pool_depth),                                                      \
         .delay_ticks = OS_TICKS_FROM_MS(pool_delay_ms),                                   \
         .callback    = (pool_callback)                                                    \

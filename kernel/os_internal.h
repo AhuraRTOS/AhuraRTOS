@@ -50,6 +50,12 @@ void os_task_system_init(void);
  * records a switch swallowed while it was held, for the outermost unlock to issue.
  */
 extern __IO uint32_t os_kernel_lock_count[OS_CONFIG_CORE_COUNT];
+
+/* Whether os_start() has handed control to the scheduler. Defined in os_kernel.c and read
+ * directly here for the same reason as the two above: os_internal_can_block() asks it on
+ * every blocking call, and os_kernel_is_running() is a cross-module call. That function
+ * remains the public spelling - this is the kernel's own shortcut to the same flag. */
+extern __IO bool os_kernel_running;
 extern __IO bool     os_kernel_switch_pending[OS_CONFIG_CORE_COUNT];
 
 /******************************************************************************************************/
@@ -309,8 +315,8 @@ void os_critical_multicore_unlock(void);
 #else
 /* No cross-core exclusion needed on single-core builds: the local kernel mask
  * (already raised by every caller) is already sufficient by itself. */
-static inline void os_critical_multicore_lock(void)   { }
-static inline void os_critical_multicore_unlock(void) { }
+OS_INLINE void os_critical_multicore_lock(void)   { }
+OS_INLINE void os_critical_multicore_unlock(void) { }
 #endif
 
 /******************************************************************************************************/
@@ -322,9 +328,9 @@ static inline void os_critical_multicore_unlock(void) { }
  * under one would leave its task running while the kernel had it parked. Every blocking primitive
  * therefore degrades to its OS_WAIT_NOTHING behaviour there, exactly as it does in an ISR.
  */
-static inline bool os_internal_can_block(void)
+OS_FORCE_INLINE bool os_internal_can_block(void)
 {
-    return (os_kernel_is_running() && !os_arch_in_isr() &&
+    return (os_kernel_running && !os_arch_in_isr() &&
             (os_kernel_lock_count[os_arch_core_id_get()] == 0U));
 }
 
@@ -334,7 +340,7 @@ static inline bool os_internal_can_block(void)
  *        huge finite values one tick short of the sentinel (a finite request must never
  *        silently become "wait forever").
  */
-static inline uint32_t os_internal_timeout_to_ticks(uint32_t timeout_ms)
+OS_INLINE uint32_t os_internal_timeout_to_ticks(uint32_t timeout_ms)
 {
     if (timeout_ms == OS_WAIT_FOREVER)
     {
@@ -367,7 +373,7 @@ static inline uint32_t os_internal_timeout_to_ticks(uint32_t timeout_ms)
  * spent READY (preempted between wake and re-check) counts against the timeout - a relative
  * re-arm would freeze the clock and stretch timeouts unboundedly under wake traffic.
  */
-static inline uint32_t os_internal_wait_remaining(uint32_t budget_ticks, uint32_t start_tick)
+OS_INLINE uint32_t os_internal_wait_remaining(uint32_t budget_ticks, uint32_t start_tick)
 {
     uint32_t elapsed;
 

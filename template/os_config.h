@@ -152,10 +152,10 @@
  * ***********************************************************************************************************
 */
 
-/* Counting semaphores (os_semaphore_*): a token count tasks take from and give
+/* Counting semaphores (os_sem_*): a token count tasks take from and give
  * back to - for signalling, and for capping concurrent access.
  * Values: 1 = on, 0 = compiled out. */
-#define OS_CONFIG_SEMAPHORE_ENABLE          1U
+#define OS_CONFIG_SEM_ENABLE                1U
 
 /* Queues (os_queue_*): N items of ONE fixed size, copied between tasks or in
  * from an ISR. For messages whose length varies, see MSG below.

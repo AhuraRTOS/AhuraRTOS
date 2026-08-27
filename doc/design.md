@@ -571,7 +571,7 @@ All filenames are `os_`-prefixed:
   interrupt mask - PRIMASK, or BASEPRI when
   `OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY` is nonzero. See [The three
   barriers](#the-three-barriers).
-- `os_mutex.c`, `os_semaphore.c`, `os_queue.c`, and `os_event.c` are the sync
+- `os_mutex.c`, `os_sem.c`, `os_queue.c`, and `os_event.c` are the sync
   and IPC primitives with `timeout_ms` waits, all built on the shared
   wait/wake machinery in `os_task.c`. See [Blocking and
   waking](#blocking-and-waking).

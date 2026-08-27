@@ -38,7 +38,7 @@ kernel/
 ├── os_delay.c       <- blocking ms/s delays and the us busy-wait
 ├── os_critical.c    <- the nesting critical section
 ├── os_mutex.c       <- mutexes, with priority inheritance
-├── os_semaphore.c   <- counting semaphores
+├── os_sem.c   <- counting semaphores
 ├── os_queue.c       <- queues, static or heap-backed
 ├── os_msg.c         <- message buffers: whole messages of varying length
 ├── os_event.c       <- event groups

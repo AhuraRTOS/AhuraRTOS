@@ -25,7 +25,7 @@ without CMake, or a hand-written Makefile.
 
 ```text
 kernel/os_atomic.c    kernel/os_log.c       kernel/os_queue.c
-kernel/os_critical.c  kernel/os_mem.c       kernel/os_semaphore.c
+kernel/os_critical.c  kernel/os_mem.c       kernel/os_sem.c
 kernel/os_delay.c     kernel/os_msg.c       kernel/os_task.c
 kernel/os_event.c     kernel/os_mutex.c     kernel/os_tick.c
 kernel/os_kernel.c    kernel/os_notify.c    kernel/os_timer.c
@@ -122,7 +122,7 @@ feature off shows exactly which values stop mattering. PART 3 is the platform.
 | `OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY` | `0U` | `0` = mask everything with PRIMASK; nonzero = BASEPRI, see [The three barriers](design.md#the-three-barriers) |
 | **PART 2 - features** | | |
 | `OS_CONFIG_MUTEX_ENABLE` | `1U` | Mutexes, always with single-level priority inheritance |
-| `OS_CONFIG_SEMAPHORE_ENABLE` | `1U` | Counting semaphores |
+| `OS_CONFIG_SEM_ENABLE` | `1U` | Counting semaphores |
 | `OS_CONFIG_QUEUE_ENABLE` | `1U` | Fixed-item-size queues |
 | `OS_CONFIG_MSG_ENABLE` | `1U` | Variable-length message buffers. Independent of the queue switch |
 | `OS_CONFIG_EVENT_ENABLE` | `1U` | Event bit groups |

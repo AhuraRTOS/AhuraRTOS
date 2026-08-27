@@ -288,27 +288,6 @@ uint32_t* os_arch_task_stack_initialize(uint8_t *stack_base, size_t stack_bytes,
  * ***********************************************************************************************************
 */
 
-/******************************************************************************************************/
-/**
- * @brief True while the caller is running in trap context.
- *
- * Two sources, checked cheapest first; see the "Trap context" section of os_arch_port_common.h for
- * why one is not enough.
- */
-bool os_arch_in_isr(void)
-{
-    if (os_arch_ext_irq_active())
-    {
-        return true;
-    }
-
-#if (OS_CONFIG_CORE_COUNT > 1U)
-    return (os_arch_isr_nesting[os_arch_core_id_get_cb()] != 0U);
-#else
-    return (os_arch_isr_nesting[0] != 0U);
-#endif
-}
-
 /* Declared here rather than taken from a kernel header: it is internal to os_task.c and the port is
  * the only thing outside it that needs the symbol - the same arrangement the ARM ports use. */
 extern void os_task_exit(void);

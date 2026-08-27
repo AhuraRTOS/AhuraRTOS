@@ -47,7 +47,7 @@
 /* Reject incomplete configurations: a missing option would otherwise read
  * as 0 in #if directives and silently disable or misconfigure features.
  * Start from template/os_config.h, which lists every required option. */
-#if !defined(OS_CONFIG_MUTEX_ENABLE) || !defined(OS_CONFIG_SEMAPHORE_ENABLE) ||                       \
+#if !defined(OS_CONFIG_MUTEX_ENABLE) || !defined(OS_CONFIG_SEM_ENABLE) ||                       \
     !defined(OS_CONFIG_QUEUE_ENABLE) || !defined(OS_CONFIG_EVENT_ENABLE) ||                           \
     !defined(OS_CONFIG_MSG_ENABLE) ||                                                                 \
     !defined(OS_CONFIG_TIMER_ENABLE) || !defined(OS_CONFIG_ALLOC_ENABLE) ||                           \
@@ -278,6 +278,51 @@ extern "C"
 #endif
 #endif
 
+/* Inline marker for the small accessors defined in this header.
+ *
+ * `static` is part of it on purpose: each one is a definition in a header, so every translation
+ * unit needs its own copy with internal linkage. A bare `inline` would leave it to the compiler
+ * whether an out-of-line copy is emitted, and then to the linker to find exactly one.
+ *
+ * Same ordering rule as OS_WEAK above - most specific compiler first - and the same reason for
+ * existing: one place to change the spelling if a toolchain ever needs a different one. The final
+ * branch is for a pre-C99 compiler, where `inline` is not a keyword and __inline is what the
+ * toolchains that predate it accept. */
+#ifndef OS_INLINE
+#if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6000000)
+#define OS_INLINE static inline           /* Arm Compiler 6 (armclang) */
+#elif defined(__clang__)
+#define OS_INLINE static inline           /* LLVM clang                */
+#elif defined(__GNUC__)
+#define OS_INLINE static inline           /* GNU GCC                   */
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
+#define OS_INLINE static inline           /* any other C99 compiler    */
+#else
+#define OS_INLINE static __inline         /* pre-C99 spelling          */
+#endif
+#endif
+
+/* OS_INLINE that the compiler may not decline.
+ *
+ * OS_INLINE is a request: a compiler weighs the body against the number of call sites and is free
+ * to emit an out-of-line copy instead - and at -O0 or -Og it nearly always does. This is for the
+ * few accessors on paths hot enough that the call itself is the cost being removed, where that
+ * answer is the wrong one. It costs flash at every site, so it is not the default; OS_INLINE is.
+ *
+ * Falls back to OS_INLINE rather than to nothing: a compiler without the attribute still gets a
+ * correct, if unforced, definition. */
+#ifndef OS_FORCE_INLINE
+#if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6000000)
+#define OS_FORCE_INLINE static inline __attribute__((always_inline))
+#elif defined(__clang__)
+#define OS_FORCE_INLINE static inline __attribute__((always_inline))
+#elif defined(__GNUC__)
+#define OS_FORCE_INLINE static inline __attribute__((always_inline))
+#else
+#define OS_FORCE_INLINE OS_INLINE
+#endif
+#endif
+
 /*
  * Architecture capabilities derived from the compiler target: TrustZone (the
  * ARMv8-M Security Extension) and exclusive load/store (LDREX/STREX, absent
@@ -438,7 +483,7 @@ extern "C"
 /**
  * @brief Read the PRIMASK register (1 when interrupts are masked).
  */
-static inline uint32_t os_arch_primask_get(void)
+OS_INLINE uint32_t os_arch_primask_get(void)
 {
     uint32_t primask;
 
@@ -451,7 +496,7 @@ static inline uint32_t os_arch_primask_get(void)
 /**
  * @brief Return true when executing in interrupt (handler) context.
  */
-static inline bool os_arch_in_isr(void)
+OS_INLINE bool os_arch_in_isr(void)
 {
     uint32_t ipsr;
 
@@ -477,7 +522,7 @@ static inline bool os_arch_in_isr(void)
 /**
  * @brief Raise the kernel interrupt mask; returns the previous mask state for restore.
  */
-static inline uint32_t os_arch_kernel_mask_save(void)
+OS_INLINE uint32_t os_arch_kernel_mask_save(void)
 {
 #if (OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY != 0U)
     uint32_t previous;
@@ -504,7 +549,7 @@ static inline uint32_t os_arch_kernel_mask_save(void)
 /**
  * @brief Restore the kernel interrupt mask to a state returned by os_arch_kernel_mask_save.
  */
-static inline void os_arch_kernel_mask_restore(uint32_t saved_state)
+OS_INLINE void os_arch_kernel_mask_restore(uint32_t saved_state)
 {
 #if (OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY != 0U)
     __asm volatile("msr basepri, %0" :: "r"(saved_state) : "memory");
@@ -521,7 +566,7 @@ static inline void os_arch_kernel_mask_restore(uint32_t saved_state)
 /**
  * @brief Return nonzero while the kernel interrupt mask is raised (diagnostics/self-test).
  */
-static inline uint32_t os_arch_kernel_mask_active(void)
+OS_INLINE uint32_t os_arch_kernel_mask_active(void)
 {
 #if (OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY != 0U)
     uint32_t basepri;
@@ -539,7 +584,7 @@ static inline uint32_t os_arch_kernel_mask_active(void)
  * @brief Trap for unrecoverable configuration faults detected at runtime; parks the core
  *        with all interrupts masked so a debugger lands right at the cause.
  */
-static inline void os_arch_config_fault_trap(void)
+OS_INLINE void os_arch_config_fault_trap(void)
 {
     OS_ARCH_IRQ_DISABLE();
 
@@ -565,7 +610,7 @@ static inline void os_arch_config_fault_trap(void)
  * @param[in] pendsv_handler  Address the port's PendSV handler assembled to.
  * @return None.
  */
-static inline void os_arch_vector_check(void (*pendsv_handler)(void))
+OS_INLINE void os_arch_vector_check(void (*pendsv_handler)(void))
 {
 #if (OS_CONFIG_ARCH_VECTOR_CHECK != 0U)
     const uint32_t *vector_table = (const uint32_t *)(uintptr_t)OS_ARCH_REG_VTOR;
@@ -594,7 +639,7 @@ static inline void os_arch_vector_check(void (*pendsv_handler)(void))
  *        such a call could corrupt kernel state, so it parks in os_arch_config_fault_trap.
  *        Compiles to nothing in PRIMASK mode, where every interrupt is maskable.
  */
-static inline void os_arch_isr_priority_check(void)
+OS_INLINE void os_arch_isr_priority_check(void)
 {
 #if (OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY != 0U)
     uint32_t ipsr;
@@ -649,7 +694,7 @@ static inline void os_arch_isr_priority_check(void)
  *        One CLZ instruction on ARMv7-M and up; ARMv6-M has no CLZ, so GCC emits its small
  *        library routine there - still cheaper than scanning the task table.
  */
-static inline uint32_t os_arch_highest_bit_get(uint32_t bitmap)
+OS_INLINE uint32_t os_arch_highest_bit_get(uint32_t bitmap)
 {
     return 31U - (uint32_t)__builtin_clz(bitmap);
 }
@@ -659,7 +704,7 @@ static inline uint32_t os_arch_highest_bit_get(uint32_t bitmap)
  * @brief Index of the lowest set bit in a non-zero bitmap (picks the IPI target from an
  *        affinity mask).
  */
-static inline uint32_t os_arch_lowest_bit_get(uint32_t bitmap)
+OS_INLINE uint32_t os_arch_lowest_bit_get(uint32_t bitmap)
 {
     return (uint32_t)__builtin_ctz(bitmap);
 }
@@ -693,7 +738,7 @@ extern uint32_t SystemCoreClock;
  *
  * @return uint32_t  CPU clock frequency in Hz.
  */
-static inline uint32_t os_arch_clock_hz_get(void)
+OS_INLINE uint32_t os_arch_clock_hz_get(void)
 {
     return SystemCoreClock;
 }
@@ -824,7 +869,7 @@ void os_critical_exit(void);
  * reading the variable directly is that the compiler may not reuse a value it cached before some
  * other code path changed the word.
  */
-static inline int32_t os_arch_atomic_load(const __IO int32_t *target)
+OS_INLINE int32_t os_arch_atomic_load(const __IO int32_t *target)
 {
     return *target;
 }
@@ -1017,7 +1062,7 @@ typedef struct
 /**
  * @brief Index of the calling core; always 0 on single-core builds.
  */
-static inline uint32_t os_arch_core_id_get(void)
+OS_INLINE uint32_t os_arch_core_id_get(void)
 {
 #if (OS_CONFIG_CORE_COUNT > 1U)
     return os_arch_core_id_get_cb();
@@ -1056,7 +1101,7 @@ void os_arch_spinlock_release_cb(os_arch_spinlock_t *lock);
  * @brief Acquire an inter-core spinlock (busy-waits; call with interrupts disabled).
  *        Compiles to nothing on single-core builds.
  */
-static inline void os_arch_spinlock_acquire(os_arch_spinlock_t *lock)
+OS_INLINE void os_arch_spinlock_acquire(os_arch_spinlock_t *lock)
 {
 #if (OS_CONFIG_CORE_COUNT == 1U)
     (void)lock;
@@ -1085,7 +1130,7 @@ static inline void os_arch_spinlock_acquire(os_arch_spinlock_t *lock)
 /**
  * @brief Release an inter-core spinlock. Compiles to nothing on single-core builds.
  */
-static inline void os_arch_spinlock_release(os_arch_spinlock_t *lock)
+OS_INLINE void os_arch_spinlock_release(os_arch_spinlock_t *lock)
 {
 #if (OS_CONFIG_CORE_COUNT == 1U)
     (void)lock;

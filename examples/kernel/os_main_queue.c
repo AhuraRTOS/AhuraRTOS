@@ -60,7 +60,7 @@ OS_TASK_DEFINE(consumer, 512U);
 #define QUEUE_CAPACITY 4U
 
 /* Declares the queue AND its buffer, and initializes both at compile time - there is nothing to
- * call before the first send. The buffer is os_main_static_queue_BUFFER and should never be named by
+ * call before the first send. The buffer is os_main_static_queue_queue_buf and should never be named by
  * hand; the item size and capacity come from this declaration, so they cannot disagree with the
  * storage that actually exists. */
 OS_QUEUE_DEFINE_STATIC(os_main_static_queue, uint32_t, QUEUE_CAPACITY);

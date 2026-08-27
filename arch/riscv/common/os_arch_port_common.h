@@ -67,7 +67,7 @@
 /* Reject incomplete configurations: a missing option would otherwise read
  * as 0 in #if directives and silently disable or misconfigure features.
  * Start from template/os_config.h, which lists every required option. */
-#if !defined(OS_CONFIG_MUTEX_ENABLE) || !defined(OS_CONFIG_SEMAPHORE_ENABLE) ||                       \
+#if !defined(OS_CONFIG_MUTEX_ENABLE) || !defined(OS_CONFIG_SEM_ENABLE) ||                       \
     !defined(OS_CONFIG_QUEUE_ENABLE) || !defined(OS_CONFIG_EVENT_ENABLE) ||                           \
     !defined(OS_CONFIG_MSG_ENABLE) ||                                                                 \
     !defined(OS_CONFIG_TIMER_ENABLE) || !defined(OS_CONFIG_ALLOC_ENABLE) ||                           \
@@ -244,6 +244,51 @@ extern "C"
 #endif
 #endif
 
+/* Inline marker for the small accessors defined in this header.
+ *
+ * `static` is part of it on purpose: each one is a definition in a header, so every translation
+ * unit needs its own copy with internal linkage. A bare `inline` would leave it to the compiler
+ * whether an out-of-line copy is emitted, and then to the linker to find exactly one.
+ *
+ * Same ordering rule as OS_WEAK above - most specific compiler first - and the same reason for
+ * existing: one place to change the spelling if a toolchain ever needs a different one. The final
+ * branch is for a pre-C99 compiler, where `inline` is not a keyword and __inline is what the
+ * toolchains that predate it accept. */
+#ifndef OS_INLINE
+#if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6000000)
+#define OS_INLINE static inline           /* Arm Compiler 6 (armclang) */
+#elif defined(__clang__)
+#define OS_INLINE static inline           /* LLVM clang                */
+#elif defined(__GNUC__)
+#define OS_INLINE static inline           /* GNU GCC                   */
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
+#define OS_INLINE static inline           /* any other C99 compiler    */
+#else
+#define OS_INLINE static __inline         /* pre-C99 spelling          */
+#endif
+#endif
+
+/* OS_INLINE that the compiler may not decline.
+ *
+ * OS_INLINE is a request: a compiler weighs the body against the number of call sites and is free
+ * to emit an out-of-line copy instead - and at -O0 or -Og it nearly always does. This is for the
+ * few accessors on paths hot enough that the call itself is the cost being removed, where that
+ * answer is the wrong one. It costs flash at every site, so it is not the default; OS_INLINE is.
+ *
+ * Falls back to OS_INLINE rather than to nothing: a compiler without the attribute still gets a
+ * correct, if unforced, definition. */
+#ifndef OS_FORCE_INLINE
+#if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6000000)
+#define OS_FORCE_INLINE static inline __attribute__((always_inline))
+#elif defined(__clang__)
+#define OS_FORCE_INLINE static inline __attribute__((always_inline))
+#elif defined(__GNUC__)
+#define OS_FORCE_INLINE static inline __attribute__((always_inline))
+#else
+#define OS_FORCE_INLINE OS_INLINE
+#endif
+#endif
+
 /* The kernel spinlock. Declared here with the other architecture facts rather than beside its
  * accessors, because the SoC callbacks that may implement it are named before those. */
 typedef struct
@@ -340,7 +385,7 @@ typedef struct
  *        One clz instruction where Zbb is present, which every Pico SDK RISC-V build has; GCC falls
  *        back to a small library routine otherwise.
  */
-static inline uint32_t os_arch_highest_bit_get(uint32_t bitmap)
+OS_INLINE uint32_t os_arch_highest_bit_get(uint32_t bitmap)
 {
     return 31U - (uint32_t)__builtin_clz(bitmap);
 }
@@ -350,7 +395,7 @@ static inline uint32_t os_arch_highest_bit_get(uint32_t bitmap)
  * @brief Index of the lowest set bit in a non-zero bitmap (picks the IPI target from an
  *        affinity mask).
  */
-static inline uint32_t os_arch_lowest_bit_get(uint32_t bitmap)
+OS_INLINE uint32_t os_arch_lowest_bit_get(uint32_t bitmap)
 {
     return (uint32_t)__builtin_ctz(bitmap);
 }
@@ -363,7 +408,7 @@ static inline uint32_t os_arch_lowest_bit_get(uint32_t bitmap)
  * same convention the ARM port uses for PRIMASK, so the shared kernel code that saves and restores
  * these values needs no per-architecture knowledge.
  */
-static inline uint32_t os_arch_kernel_mask_save(void)
+OS_INLINE uint32_t os_arch_kernel_mask_save(void)
 {
     /* One instruction reads mstatus and clears MIE, so there is no window between sampling the
      * previous state and masking - the two-step the ARM PRIMASK path has to live with. */
@@ -376,7 +421,7 @@ static inline uint32_t os_arch_kernel_mask_save(void)
 /**
  * @brief Restore the kernel interrupt mask to a state returned by os_arch_kernel_mask_save.
  */
-static inline void os_arch_kernel_mask_restore(uint32_t saved_state)
+OS_INLINE void os_arch_kernel_mask_restore(uint32_t saved_state)
 {
     if (saved_state == 0U)
     {
@@ -388,7 +433,7 @@ static inline void os_arch_kernel_mask_restore(uint32_t saved_state)
 /**
  * @brief Return nonzero while the kernel interrupt mask is raised (diagnostics/self-test).
  */
-static inline uint32_t os_arch_kernel_mask_active(void)
+OS_INLINE uint32_t os_arch_kernel_mask_active(void)
 {
     return ((OS_ARCH_CSR_READ(mstatus) & OS_ARCH_MSTATUS_MIE_MSK) != 0UL) ? 0U : 1U;
 }
@@ -398,7 +443,7 @@ static inline uint32_t os_arch_kernel_mask_active(void)
  * @brief Trap for unrecoverable configuration faults detected at runtime; parks the core
  *        with all interrupts masked so a debugger lands right at the cause.
  */
-static inline void os_arch_config_fault_trap(void)
+OS_INLINE void os_arch_config_fault_trap(void)
 {
     OS_ARCH_IRQ_DISABLE();
 
@@ -509,7 +554,7 @@ uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id);
  * implement it is still a valid single-core package. Defined here rather than beside the other
  * inline helpers because os_arch_isr_enter() below is its first user.
  */
-static inline uint32_t os_arch_core_id_get(void)
+OS_INLINE uint32_t os_arch_core_id_get(void)
 {
 #if (OS_CONFIG_CORE_COUNT == 1U)
     return 0U;
@@ -572,7 +617,7 @@ extern volatile uint32_t os_arch_isr_nesting[OS_CONFIG_CORE_COUNT];
  * hardware and by the dispatcher's meinext updates, which is what makes this correct under
  * preemption without the port counting anything.
  */
-static inline bool os_arch_ext_irq_active(void)
+OS_INLINE bool os_arch_ext_irq_active(void)
 {
     uint32_t meicontext;
 
@@ -588,7 +633,7 @@ static inline bool os_arch_ext_irq_active(void)
  * @brief No interrupt controller the port knows how to ask; os_arch_isr_nesting carries the answer
  *        alone, and every trap that uses kernel APIs must bracket itself.
  */
-static inline bool os_arch_ext_irq_active(void)
+OS_INLINE bool os_arch_ext_irq_active(void)
 {
     return false;
 }
@@ -602,7 +647,7 @@ static inline bool os_arch_ext_irq_active(void)
  * Only needed by a handler the core's interrupt controller does not account for - a tick taken
  * straight off mip.MTIP is the realistic case. An external IRQ needs neither call.
  */
-static inline void os_arch_isr_enter(void)
+OS_INLINE void os_arch_isr_enter(void)
 {
 #if (OS_CONFIG_CORE_COUNT > 1U)
     os_arch_isr_nesting[os_arch_core_id_get()]++;
@@ -615,7 +660,7 @@ static inline void os_arch_isr_enter(void)
 /**
  * @brief Close the bracket opened by os_arch_isr_enter().
  */
-static inline void os_arch_isr_exit(void)
+OS_INLINE void os_arch_isr_exit(void)
 {
 #if (OS_CONFIG_CORE_COUNT > 1U)
     os_arch_isr_nesting[os_arch_core_id_get()]--;
@@ -678,7 +723,7 @@ uint32_t os_arch_cycle_count_get(void);
  * @brief Told by the kernel that this core's tick just fired, so a counter synthesized from the
  *        tick timer can close the period. Nothing to do where the counter is real hardware.
  */
-static inline void os_arch_cycle_tick(void)
+OS_INLINE void os_arch_cycle_tick(void)
 {
 }
 
@@ -709,7 +754,25 @@ void os_arch_task_exit_trap(void);
 /**
  * @brief True when the caller is in trap context.
  */
-bool os_arch_in_isr(void);
+OS_FORCE_INLINE bool os_arch_in_isr(void)
+{
+    bool in_trap = os_arch_ext_irq_active();
+
+    if (!in_trap)
+    {
+        /* Not an external IRQ, so the only remaining source is a trap that raised the nesting
+         * count for itself - see the "Trap context" section above for why one source is not
+         * enough. Checked second because it is the dearer of the two: a load from RAM against a
+         * CSR read. */
+#if (OS_CONFIG_CORE_COUNT > 1U)
+        in_trap = (os_arch_isr_nesting[os_arch_core_id_get()] != 0U);
+#else
+        in_trap = (os_arch_isr_nesting[0] != 0U);
+#endif
+    }
+
+    return in_trap;
+}
 
 /******************************************************************************************************/
 /**
@@ -724,7 +787,7 @@ bool os_arch_in_isr(void);
  * of them - to run an empty body, on the one path every mutex, semaphore, queue, message, event and
  * timer operation in the kernel goes through.
  */
-static inline void os_arch_isr_priority_check(void)
+OS_INLINE void os_arch_isr_priority_check(void)
 {
 }
 
@@ -737,7 +800,7 @@ static inline void os_arch_isr_priority_check(void)
  * calling across to the port would cost several times what it does. The volatile access is what
  * stops the compiler reusing a value it cached before another path changed the word.
  */
-static inline int32_t os_arch_atomic_load(const volatile int32_t *target)
+OS_INLINE int32_t os_arch_atomic_load(const volatile int32_t *target)
 {
     return *target;
 }
@@ -796,7 +859,7 @@ uint32_t os_arch_max_suppressed_ticks_get(void);
 /**
  * @brief Take a kernel spinlock. Spins until it is held; callers mask interrupts around it.
  */
-static inline void os_arch_spinlock_acquire(os_arch_spinlock_t *lock)
+OS_INLINE void os_arch_spinlock_acquire(os_arch_spinlock_t *lock)
 {
 #if (OS_CONFIG_CORE_COUNT == 1U)
     (void)lock;
@@ -830,7 +893,7 @@ static inline void os_arch_spinlock_acquire(os_arch_spinlock_t *lock)
 /**
  * @brief Release a kernel spinlock.
  */
-static inline void os_arch_spinlock_release(os_arch_spinlock_t *lock)
+OS_INLINE void os_arch_spinlock_release(os_arch_spinlock_t *lock)
 {
 #if (OS_CONFIG_CORE_COUNT == 1U)
     (void)lock;

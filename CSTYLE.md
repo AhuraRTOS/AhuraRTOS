@@ -126,8 +126,11 @@ Group includes and separate groups with a blank line, in this order:
 | Struct/enum/union tag | `snake_case` (when not typedef'd) | `struct list_node` |
 | User-overridable callback (weak default) | `_cb` suffix | `os_tickless_pre_sleep_cb` |
 | Arch/port-layer function (incl. its callbacks) | `os_arch_` prefix | `os_arch_spinlock_acquire`, `os_arch_core_id_get_cb` |
+| Storage a DEFINE macro declares for you | `<name>_<kind>_buf` | `worker_stack_buf`, `sensor_q_queue_buf`, `cmd_msg_buf` |
 
 Avoid single-letter names except conventional loop counters (`i`, `j`, `k`) and obvious math (`x`, `y`). Don't encode types into names (no Hungarian notation). Pick names that make the code read as prose: `if (is_empty(list))`, not `if (chk(l))`.
+
+Macro-declared storage: a `DEFINE` macro that declares an object *and* the storage behind it names that storage **`<name>_<kind>_buf`** - `OS_TASK_DEFINE(worker, 512U)` declares `worker` and `worker_stack_buf`; `OS_QUEUE_DEFINE_STATIC(sensor_q, ...)` declares `sensor_q_queue_buf`. Lower case because it *is* a variable, and the table above keeps upper case for macros and enum constants - a shouting name would read as one. The `<kind>` is what earns its place: without it two objects generate the same suffix, which is what happened while queues and message buffers both produced `_BUFFER`. Storage that is not an array - a descriptor struct, say - takes the same shape without `_buf`, as `worker_task_storage` does. Say so in the macro's own comment too, since the name never appears in the caller's source.
 
 Pointer placement: a function that returns a pointer attaches the `*` to the return type - `void* os_mem_alloc(size_t size)`, `os_list_node_t* os_list_pop_front(os_list_t *list)` - while parameters and variable declarations keep the `*` with the name (`os_task_t *task`).
 

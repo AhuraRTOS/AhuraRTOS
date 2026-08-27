@@ -760,7 +760,7 @@ os_task_state_t os_task_state_get(const os_task_t *task)
  * @return const char*  The task's name, or NULL for an unknown handle, an unnamed task, or a build
  *                      compiled without task names.
  */
-const char *os_task_name_get(const os_task_t *task)
+const char* os_task_name_get(const os_task_t *task)
 {
 #if (OS_CONFIG_TASK_NAME_ENABLE == 1U)
     const os_task_tcb_t *tcb;
@@ -2208,7 +2208,7 @@ static os_err_t os_task_create_any(os_task_t *task, const os_task_config_t *conf
      * that damage was done.
      *
      * Every other object in the kernel refuses re-initialisation the same way (os_mutex_init,
-     * os_semaphore_init, os_event_init, os_queue_bind_buffer, all with OS_ERR_BUSY); a task is
+     * os_sem_init, os_event_init, os_queue_bind_buffer, all with OS_ERR_BUSY); a task is
      * simply the one that cannot afford to find out late. Re-checked inside the slot-scan critical
      * section, which is what makes the test and the claim atomic against a peer core creating
      * through this same handle. */

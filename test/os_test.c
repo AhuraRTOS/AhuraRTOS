@@ -93,8 +93,8 @@ static __IO bool     os_test_busy_should_run = true;
 /* test_scheduler_lock(): set by a task that outranks the test task, so the flag can only
  * turn true once the scheduler is actually allowed to switch. */
 static __IO bool     os_test_sched_lock_ran  = false;
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
-static os_semaphore_t os_test_sched_lock_sem;  /* left empty: a take would have to block */
+#if (OS_CONFIG_SEM_ENABLE == 1U)
+static os_sem_t os_test_sched_lock_sem;  /* left empty: a take would have to block */
 #endif
 
 #define TEST_BURST_ITERATIONS 200000UL
@@ -173,18 +173,16 @@ static os_semaphore_t os_test_sched_lock_sem;  /* left empty: a take would have 
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
 static os_mutex_t     os_test_bench_mutex;
 #endif
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
-static os_semaphore_t os_test_bench_sem;
+#if (OS_CONFIG_SEM_ENABLE == 1U)
+static os_sem_t os_test_bench_sem;
 #endif
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
-static uint32_t       os_test_bench_queue_buf[4];
-OS_QUEUE_DEFINE_BUFFER(os_test_bench_queue, os_test_bench_queue_buf);
+OS_QUEUE_DEFINE_STATIC_ATTR(os_test_bench_queue, uint32_t, 4, );
 #endif
 #if (OS_CONFIG_MSG_ENABLE == 1U)
 /* Room for one message of the longest size benchmarked below, header included - only one is
  * ever in flight, since each sample sends and then receives. */
-static uint8_t        os_test_bench_msg_buf[OS_MSG_SPACE(64U)];
-OS_MSG_DEFINE_BUFFER(os_test_bench_msg, os_test_bench_msg_buf);
+OS_MSG_DEFINE_STATIC_ATTR(os_test_bench_msg, OS_MSG_SPACE(64U), );
 #endif
 #if (OS_CONFIG_EVENT_ENABLE == 1U)
 static os_event_t os_test_bench_event;
@@ -254,31 +252,31 @@ static os_mutex_t os_test_mutex;
  * -Wunused-function reports (and -Werror fails on).
  *
  * OS_CONFIG_MUTEX_ENABLE is deliberately NOT here even though the mutex section contains a call:
- * that call sits inside a nested OS_CONFIG_SEMAPHORE_ENABLE guard, since handing a mutex over
+ * that call sits inside a nested OS_CONFIG_SEM_ENABLE guard, since handing a mutex over
  * needs a semaphore to do it with. Mutexes alone never reach the helper, so the semaphore term
  * below already covers that case. */
-#define TEST_HELPER_NEEDED ((OS_CONFIG_SEMAPHORE_ENABLE == 1U) || \
+#define TEST_HELPER_NEEDED ((OS_CONFIG_SEM_ENABLE == 1U) || \
                             (OS_CONFIG_QUEUE_ENABLE == 1U)     || \
                             (OS_CONFIG_EVENT_ENABLE == 1U))
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
-static os_semaphore_t os_test_bin_sem;
-static os_semaphore_t os_test_count_sem;
+#if (OS_CONFIG_SEM_ENABLE == 1U)
+static os_sem_t os_test_bin_sem;
+static os_sem_t os_test_count_sem;
 #endif
 
 /* Every use of this one - the give in test_helper_entry and the init/take in test_mutex - sits
  * behind both switches, so defining it on the semaphore switch alone left it unused whenever
  * mutexes were compiled out. */
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_MUTEX_ENABLE == 1U)
-static os_semaphore_t os_test_sync_sem;   /* helper -> main "ready" signal */
+#if (OS_CONFIG_SEM_ENABLE == 1U) && (OS_CONFIG_MUTEX_ENABLE == 1U)
+static os_sem_t os_test_sync_sem;   /* helper -> main "ready" signal */
 #endif
 
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
-/* Declared with its own array rather than by OS_QUEUE_DEFINE_STATIC, so the suite covers
- * OS_QUEUE_DEFINE_BUFFER too. Tests reset it with os_queue_cleanup(), which empties a queue
- * without touching storage it does not own. */
-static uint32_t   os_test_queue_buf[3];
-OS_QUEUE_DEFINE_BUFFER(os_test_queue, os_test_queue_buf);
+/* Defined with OS_QUEUE_DEFINE_STATIC_ATTR rather than OS_QUEUE_DEFINE_STATIC so the suite covers that
+ * macro too - with an empty attribute list, which has to compile as readily as a real one. Tests
+ * reset it with os_queue_cleanup(), which empties a queue without freeing storage it does not
+ * own. */
+OS_QUEUE_DEFINE_STATIC_ATTR(os_test_queue, uint32_t, 3, );
 #endif
 
 #if (OS_CONFIG_EVENT_ENABLE == 1U)
@@ -429,7 +427,7 @@ typedef struct
 static test_fanin_ctx_t os_test_fanin_ctx[3];
 #endif
 
-#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && \
+#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEM_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && \
     (OS_CONFIG_EVENT_ENABLE == 1U) && (OS_CONFIG_ALLOC_ENABLE == 1U)
 /* Concurrent multi-primitive stress/soak (see "Stress/Soak" below): unlike every scenario
  * above, which runs a small fixed handful of tasks each doing ONE thing, this runs
@@ -460,10 +458,9 @@ static size_t            os_test_stress_watermark[OS_TEST_STRESS_WORKER_COUNT]; 
 static os_mutex_t        os_test_stress_mutex;
 static __IO uint32_t os_test_stress_shared_counter; /* protected exclusively by os_test_stress_mutex */
 
-static os_semaphore_t    os_test_stress_sem;
+static os_sem_t    os_test_stress_sem;
 static os_event_t  os_test_stress_event;
-static uint32_t          os_test_stress_queue_buf[OS_TEST_STRESS_QUEUE_CAPACITY];
-OS_QUEUE_DEFINE_BUFFER(os_test_stress_queue, os_test_stress_queue_buf);
+OS_QUEUE_DEFINE_STATIC_ATTR(os_test_stress_queue, uint32_t, OS_TEST_STRESS_QUEUE_CAPACITY, );
 #endif
 
 /*
@@ -491,7 +488,7 @@ static void test_scheduler_lock(void);
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
 static void test_mutex(void);
 #endif
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
 static void test_semaphore(void);
 #endif
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
@@ -552,7 +549,7 @@ static void test_smp_atomic_contention(void);
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
 static void test_smp_notify_pingpong(void);
 #endif
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
 static void test_smp_semaphore_pingpong(void);
 #endif
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
@@ -567,7 +564,7 @@ static void test_smp_task_churn(void);
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
 static void test_smp_deferred_submit(void);
 #endif
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
 static void test_smp_soak_mixed(void);
 #endif
 #endif
@@ -592,7 +589,7 @@ static void test_mutex_multi_inheritance(void);
 static void test_fanin_worker_entry(void *context);
 static void test_event_queue_fanin(void);
 #endif
-#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && \
+#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEM_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && \
     (OS_CONFIG_EVENT_ENABLE == 1U) && (OS_CONFIG_ALLOC_ENABLE == 1U)
 static uint32_t  test_stress_prng_next(uint32_t *state);
 static void      test_stress_worker_entry(void *context);
@@ -821,19 +818,19 @@ static void test_helper_entry(void *context)
 
     switch (os_test_helper_ctx.role)
     {
-#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEM_ENABLE == 1U)
     case HELPER_MUTEX_HOLD:
         (void)os_mutex_lock(&os_test_mutex, OS_WAIT_FOREVER);
-        (void)os_semaphore_give(&os_test_sync_sem);
+        (void)os_sem_give(&os_test_sync_sem);
         os_delay_ms(os_test_helper_ctx.hold_ms);
         (void)os_mutex_unlock(&os_test_mutex);
         break;
 #endif
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
     case HELPER_SEM_GIVE_AFTER:
         os_delay_ms(os_test_helper_ctx.hold_ms);
-        (void)os_semaphore_give(&os_test_count_sem);
+        (void)os_sem_give(&os_test_count_sem);
         break;
 #endif
 
@@ -876,7 +873,7 @@ static os_err_t test_spawn_helper(helper_role_t role, uint32_t hold_ms, uint32_t
 
     return os_task_start(&helper);
 }
-#endif /* OS_CONFIG_SEMAPHORE_ENABLE */
+#endif /* OS_CONFIG_SEM_ENABLE */
 
 /*
  * ***********************************************************************************************************
@@ -1007,10 +1004,19 @@ static void test_task_lifecycle(void)
      * handle. These descriptors stand in for an OS_TASK_DEFINE that somehow got it wrong - which
      * the macro itself cannot, since it derives both fields from the array it just declared. */
     {
-        static const os_task_storage_t storage_too_small =
-            { "too_small", helper_STACK, OS_CONFIG_MIN_STACK_SIZE - 8U };
-        static const os_task_storage_t storage_misaligned =
-            { "misaligned", &helper_STACK[1], sizeof(helper_STACK) - 8U };
+        /* Designated, not positional: OS_CONFIG_TASK_NAME_ENABLE at 0 removes the name field
+         * from the descriptor, and a positional list would then feed the stack pointer to
+         * stack_bytes. OS_TASK_NAME_INIT is what the DEFINE macros use for the same reason. */
+        static const os_task_storage_t storage_too_small = {
+            OS_TASK_NAME_INIT(too_small)
+            .stack_memory = helper_stack_buf,
+            .stack_bytes  = OS_CONFIG_MIN_STACK_SIZE - 8U
+        };
+        static const os_task_storage_t storage_misaligned = {
+            OS_TASK_NAME_INIT(misaligned)
+            .stack_memory = &helper_stack_buf[1],
+            .stack_bytes  = sizeof(helper_stack_buf) - 8U
+        };
 
         os_task_t bad = { 0 };
 
@@ -1298,7 +1304,7 @@ static void test_scheduler_lock(void)
     os_err_t status;
     bool      locked_flag;
     bool      ran_while_locked;
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
     os_err_t take_status;
 #endif
 
@@ -1308,8 +1314,8 @@ static void test_scheduler_lock(void)
 
     os_test_sched_lock_ran = false;
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
-    AHURA_TEST_CHECK(os_semaphore_init(&os_test_sched_lock_sem, 0U, 1U) == OS_ERR_NONE,
+#if (OS_CONFIG_SEM_ENABLE == 1U)
+    AHURA_TEST_CHECK(os_sem_init(&os_test_sched_lock_sem, 0U, 1U) == OS_ERR_NONE,
                       "empty semaphore initialized (a take on it can only block)");
 #endif
 
@@ -1323,8 +1329,8 @@ static void test_scheduler_lock(void)
     (void)os_task_start(&helper);
     os_delay_us(200U);
     ran_while_locked = os_test_sched_lock_ran;
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
-    take_status = os_semaphore_take(&os_test_sched_lock_sem, 10U);
+#if (OS_CONFIG_SEM_ENABLE == 1U)
+    take_status = os_sem_take(&os_test_sched_lock_sem, 10U);
 #endif
 
     os_kernel_unlock();
@@ -1338,12 +1344,12 @@ static void test_scheduler_lock(void)
     AHURA_TEST_CHECK(!os_kernel_is_locked(), "os_kernel_unlock() released the lock");
     AHURA_TEST_CHECK(test_wait_inactive(&helper, 200U), "the higher-priority task ran to completion");
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
     /* Blocking under the lock would park a task the lock then refuses to switch away from, so
      * every blocking primitive degrades to its OS_WAIT_NOTHING behaviour instead - EMPTY here,
      * NOT the TIMEOUT a real 10 ms wait would have reported. */
     AHURA_TEST_CHECK(take_status == OS_ERR_EMPTY,
-                      "os_semaphore_take(10 ms) is non-blocking under the lock (status=%d)",
+                      "os_sem_take(10 ms) is non-blocking under the lock (status=%d)",
                       (int)take_status);
 #endif
 
@@ -1377,7 +1383,7 @@ static void test_scheduler_lock(void)
 /******************************************************************************************************/
 static void test_mutex(void)
 {
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
     /* Only the contention part below uses these, and it needs a semaphore to know when the helper
      * has actually taken the mutex. Declaring them unconditionally left them unused whenever
      * semaphores were compiled out. */
@@ -1398,12 +1404,12 @@ static void test_mutex(void)
                       "re-locking from the owner fails BUSY (not recursive)");
     AHURA_TEST_CHECK(os_mutex_unlock(&os_test_mutex) == OS_ERR_NONE, "owner os_mutex_unlock() releases the mutex");
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
     /* Contention: a helper task holds the mutex for 150 ms. */
-    (void)os_semaphore_init(&os_test_sync_sem, 0U, 1U);
+    (void)os_sem_init(&os_test_sync_sem, 0U, 1U);
     AHURA_TEST_CHECK(test_spawn_helper(HELPER_MUTEX_HOLD, 150U, 0U, 0U) == OS_ERR_NONE,
                       "helper task spawned to hold the mutex");
-    AHURA_TEST_CHECK(os_semaphore_take(&os_test_sync_sem, 200U) == OS_ERR_NONE, "helper signals once it holds the mutex");
+    AHURA_TEST_CHECK(os_sem_take(&os_test_sync_sem, 200U) == OS_ERR_NONE, "helper signals once it holds the mutex");
 
     AHURA_TEST_CHECK(os_mutex_lock(&os_test_mutex, OS_WAIT_NOTHING) == OS_ERR_BUSY,
                       "os_mutex_lock(OS_WAIT_NOTHING) fails while another task holds the mutex");
@@ -1430,7 +1436,7 @@ static void test_mutex(void)
  * ***********************************************************************************************************
 */
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
 /******************************************************************************************************/
 static void test_semaphore(void)
 {
@@ -1441,29 +1447,29 @@ static void test_semaphore(void)
 
     test_print_section("Semaphore");
 
-    AHURA_TEST_CHECK(os_semaphore_init(&os_test_bin_sem, 0U, 1U) == OS_ERR_NONE,
-                      "os_semaphore_init() creates a binary semaphore (0/1)");
-    AHURA_TEST_CHECK(os_semaphore_take(&os_test_bin_sem, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+    AHURA_TEST_CHECK(os_sem_init(&os_test_bin_sem, 0U, 1U) == OS_ERR_NONE,
+                      "os_sem_init() creates a binary semaphore (0/1)");
+    AHURA_TEST_CHECK(os_sem_take(&os_test_bin_sem, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
                       "take on an empty semaphore with OS_WAIT_NOTHING returns EMPTY");
-    AHURA_TEST_CHECK(os_semaphore_give(&os_test_bin_sem) == OS_ERR_NONE, "os_semaphore_give() adds a token");
-    AHURA_TEST_CHECK(os_semaphore_give(&os_test_bin_sem) == OS_ERR_FULL, "giving beyond max_count returns FULL");
-    AHURA_TEST_CHECK(os_semaphore_take(&os_test_bin_sem, OS_WAIT_NOTHING) == OS_ERR_NONE,
+    AHURA_TEST_CHECK(os_sem_give(&os_test_bin_sem) == OS_ERR_NONE, "os_sem_give() adds a token");
+    AHURA_TEST_CHECK(os_sem_give(&os_test_bin_sem) == OS_ERR_FULL, "giving beyond max_count returns FULL");
+    AHURA_TEST_CHECK(os_sem_take(&os_test_bin_sem, OS_WAIT_NOTHING) == OS_ERR_NONE,
                       "take succeeds once a token is available");
 
     t0     = os_tick_get();
-    status = os_semaphore_take(&os_test_bin_sem, 100U);
+    status = os_sem_take(&os_test_bin_sem, 100U);
     t1     = os_tick_get();
     delta  = t1 - t0;
     AHURA_TEST_CHECK(status == OS_ERR_TIMEOUT, "take on an empty semaphore times out");
     AHURA_TEST_CHECK((delta >= 95U) && (delta <= 150U), "timeout elapsed ~100 ticks (%lu)", (unsigned long)delta);
 
-    AHURA_TEST_CHECK(os_semaphore_init(&os_test_count_sem, 0U, 3U) == OS_ERR_NONE,
-                      "os_semaphore_init() creates a counting semaphore (0/3)");
+    AHURA_TEST_CHECK(os_sem_init(&os_test_count_sem, 0U, 3U) == OS_ERR_NONE,
+                      "os_sem_init() creates a counting semaphore (0/3)");
     AHURA_TEST_CHECK(test_spawn_helper(HELPER_SEM_GIVE_AFTER, 80U, 0U, 0U) == OS_ERR_NONE,
                       "helper spawned to give the counting semaphore after 80 ms");
 
     t0     = os_tick_get();
-    status = os_semaphore_take(&os_test_count_sem, 500U);
+    status = os_sem_take(&os_test_count_sem, 500U);
     t1     = os_tick_get();
     delta  = t1 - t0;
     AHURA_TEST_CHECK(status == OS_ERR_NONE, "blocking take succeeds once the helper gives");
@@ -1471,7 +1477,7 @@ static void test_semaphore(void)
                       (unsigned long)delta);
     AHURA_TEST_CHECK(test_wait_inactive(&helper, 200U), "semaphore-giver helper task terminated cleanly");
 }
-#endif /* OS_CONFIG_SEMAPHORE_ENABLE */
+#endif /* OS_CONFIG_SEM_ENABLE */
 
 /*
  * ***********************************************************************************************************
@@ -1652,9 +1658,9 @@ static void test_queue_define_and_dynamic(void)
 
     /* --- OS_QUEUE_DEFINE_STATIC --- */
 
-    AHURA_TEST_CHECK(sizeof(os_test_defined_queue_BUFFER) == (4U * sizeof(test_queue_item_t)),
+    AHURA_TEST_CHECK(sizeof(os_test_defined_queue_queue_buf) == (4U * sizeof(test_queue_item_t)),
                       "OS_QUEUE_DEFINE_STATIC() sized the buffer for 4 items of the declared type (%u bytes)",
-                      (unsigned)sizeof(os_test_defined_queue_BUFFER));
+                      (unsigned)sizeof(os_test_defined_queue_queue_buf));
 
     /* Nothing has been called on this queue: every field below was written by the macro at compile
      * time. The geometry has to match the declaration, since getting either wrong is exactly the
@@ -1665,7 +1671,7 @@ static void test_queue_define_and_dynamic(void)
     AHURA_TEST_CHECK(os_test_defined_queue.capacity == 4U,
                       "the capacity comes from the declared count (%u)",
                       (unsigned)os_test_defined_queue.capacity);
-    AHURA_TEST_CHECK(os_test_defined_queue.buffer == (uint8_t *)os_test_defined_queue_BUFFER,
+    AHURA_TEST_CHECK(os_test_defined_queue.buffer == (uint8_t *)os_test_defined_queue_queue_buf,
                       "the queue points at the buffer the macro declared");
     AHURA_TEST_CHECK((os_test_defined_queue.count == 0U) && (os_test_defined_queue.head == 0U) &&
                       (os_test_defined_queue.tail == 0U) && !os_test_defined_queue.buffer_owned &&
@@ -1762,7 +1768,7 @@ static void test_queue_define_and_dynamic(void)
     AHURA_TEST_CHECK(os_queue_cleanup(&os_test_defined_queue) == OS_ERR_NONE,
                       "os_queue_cleanup() also accepts a statically defined queue");
     AHURA_TEST_CHECK(os_queue_count_get(&os_test_defined_queue) == 0U, "and empties it");
-    AHURA_TEST_CHECK((os_test_defined_queue.buffer == (uint8_t *)os_test_defined_queue_BUFFER) &&
+    AHURA_TEST_CHECK((os_test_defined_queue.buffer == (uint8_t *)os_test_defined_queue_queue_buf) &&
                       (os_test_defined_queue.item_size == sizeof(test_queue_item_t)) &&
                       (os_test_defined_queue.capacity == 4U),
                       "but keeps the storage it does not own, geometry intact");
@@ -1792,12 +1798,12 @@ static void test_queue(void)
 
     test_print_section("Queue");
 
-    /* No init call: OS_QUEUE_DEFINE_BUFFER initialized os_test_queue over os_test_queue_buf at compile time.
+    /* No init call: OS_QUEUE_DEFINE_STATIC_ATTR initialized os_test_queue over its own array at compile time.
      * The geometry below is what the macro derived from the array, never a number passed by hand. */
-    AHURA_TEST_CHECK((os_test_queue.buffer == (uint8_t *)os_test_queue_buf) &&
-                      (os_test_queue.item_size == sizeof(os_test_queue_buf[0])) &&
-                      (os_test_queue.capacity == (sizeof(os_test_queue_buf) / sizeof(os_test_queue_buf[0]))),
-                      "OS_QUEUE_DEFINE_BUFFER() bound the queue to the declared array, geometry derived");
+    AHURA_TEST_CHECK((os_test_queue.buffer == (uint8_t *)os_test_queue_queue_buf) &&
+                      (os_test_queue.item_size == sizeof(os_test_queue_queue_buf[0])) &&
+                      (os_test_queue.capacity == (sizeof(os_test_queue_queue_buf) / sizeof(os_test_queue_queue_buf[0]))),
+                      "OS_QUEUE_DEFINE_STATIC_ATTR() bound the queue to its own array, geometry derived");
     AHURA_TEST_CHECK(os_queue_count_get(&os_test_queue) == 0U, "a fresh queue reports 0 items");
     AHURA_TEST_CHECK(os_queue_free_get(&os_test_queue) == os_test_queue.capacity,
                       "a fresh queue reports its whole capacity free (%lu)",
@@ -2744,13 +2750,13 @@ static void test_timer_pool(void)
      * still on the pool's free list, and the next expiry would push that same node onto the
      * delivery queue - overwriting the links the free list holds it by. The pool has been used by
      * now, so these entries are fully prepared and would otherwise pass every other check. */
-    ok  = (os_timer_start(&os_test_pool_entries[0].timer, NULL, 0U) == OS_ERR_INVALID_ARG);
-    ok &= (os_timer_restart(&os_test_pool_entries[0].timer, NULL, 0U) == OS_ERR_INVALID_ARG);
-    ok &= (os_timer_stop(&os_test_pool_entries[0].timer) == OS_ERR_INVALID_ARG);
-    ok &= (os_timer_pause(&os_test_pool_entries[0].timer) == OS_ERR_INVALID_ARG);
-    ok &= (os_timer_period_set(&os_test_pool_entries[0].timer, 10U) == OS_ERR_INVALID_ARG);
-    ok &= (os_timer_callback_set(&os_test_pool_entries[0].timer, test_pool_cb) == OS_ERR_INVALID_ARG);
-    ok &= (os_timer_value_set(&os_test_pool_entries[0].timer, 1U) == OS_ERR_INVALID_ARG);
+    ok  = (os_timer_start(&os_test_pool_timer_buf[0].timer, NULL, 0U) == OS_ERR_INVALID_ARG);
+    ok &= (os_timer_restart(&os_test_pool_timer_buf[0].timer, NULL, 0U) == OS_ERR_INVALID_ARG);
+    ok &= (os_timer_stop(&os_test_pool_timer_buf[0].timer) == OS_ERR_INVALID_ARG);
+    ok &= (os_timer_pause(&os_test_pool_timer_buf[0].timer) == OS_ERR_INVALID_ARG);
+    ok &= (os_timer_period_set(&os_test_pool_timer_buf[0].timer, 10U) == OS_ERR_INVALID_ARG);
+    ok &= (os_timer_callback_set(&os_test_pool_timer_buf[0].timer, test_pool_cb) == OS_ERR_INVALID_ARG);
+    ok &= (os_timer_value_set(&os_test_pool_timer_buf[0].timer, 1U) == OS_ERR_INVALID_ARG);
     AHURA_TEST_CHECK(ok, "every os_timer_* call refuses a pool entry - it belongs to os_timer_submit");
 
     /* Filling THIS pool needs the kernel lock: its delay is 0, so without it the timer task -
@@ -3537,7 +3543,7 @@ static void test_stack_watermark(void)
     /* The guard word the overflow check reads on every switch-out. Detection itself cannot be
      * tested here - tripping it parks the core by design - so this only proves the guard is in
      * place and that a healthy task has not disturbed it. */
-    AHURA_TEST_CHECK(*(const uint32_t *)(const void *)worker_STACK == 0xA5A5A5A5UL,
+    AHURA_TEST_CHECK(*(const uint32_t *)(const void *)worker_stack_buf == 0xA5A5A5A5UL,
                       "the stack guard word is intact at the bottom of an idle task's stack");
 #endif
 }
@@ -4067,7 +4073,7 @@ static void test_event_queue_fanin(void)
 }
 #endif /* OS_CONFIG_QUEUE_ENABLE && OS_CONFIG_EVENT_ENABLE */
 
-#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && \
+#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEM_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && \
     (OS_CONFIG_EVENT_ENABLE == 1U) && (OS_CONFIG_ALLOC_ENABLE == 1U)
 /*
  * ***********************************************************************************************************
@@ -4130,10 +4136,10 @@ static void test_stress_worker_entry(void *context)
 
             case 1U: /* semaphore: take then give back, so the run is self-balancing */
             {
-                if (os_semaphore_take(&os_test_stress_sem, 5U) == OS_ERR_NONE)
+                if (os_sem_take(&os_test_stress_sem, 5U) == OS_ERR_NONE)
                 {
                     os_delay_ms(test_stress_prng_next(&ctx->prng_state) % 3U);
-                    (void)os_semaphore_give(&os_test_stress_sem);
+                    (void)os_sem_give(&os_test_stress_sem);
                 }
                 break;
             }
@@ -4232,7 +4238,7 @@ static void test_stress_soak(void)
     test_print_section("Stress/Soak: 4 tasks contend on mutex+semaphore+queue+event+heap at once");
 
     AHURA_TEST_CHECK(os_mutex_init(&os_test_stress_mutex) == OS_ERR_NONE, "stress mutex initialized");
-    AHURA_TEST_CHECK(os_semaphore_init(&os_test_stress_sem, OS_TEST_STRESS_SEM_MAX, OS_TEST_STRESS_SEM_MAX) == OS_ERR_NONE,
+    AHURA_TEST_CHECK(os_sem_init(&os_test_stress_sem, OS_TEST_STRESS_SEM_MAX, OS_TEST_STRESS_SEM_MAX) == OS_ERR_NONE,
                       "stress semaphore initialized (max=%u, deliberately < %u workers)",
                       (unsigned)OS_TEST_STRESS_SEM_MAX, (unsigned)OS_TEST_STRESS_WORKER_COUNT);
     AHURA_TEST_CHECK(os_event_init(&os_test_stress_event) == OS_ERR_NONE, "stress event initialized");
@@ -4289,7 +4295,7 @@ static void test_stress_soak(void)
                       "mutex gave exclusive access every time (counter=%lu, successful locks=%lu - a mismatch would mean two tasks were inside at once)",
                       (unsigned long)os_test_stress_shared_counter, (unsigned long)total_mutex_hits);
 
-    while (os_semaphore_take(&os_test_stress_sem, OS_WAIT_NOTHING) == OS_ERR_NONE)
+    while (os_sem_take(&os_test_stress_sem, OS_WAIT_NOTHING) == OS_ERR_NONE)
     {
         drained_tokens++;
     }
@@ -4331,7 +4337,7 @@ static void test_stress_soak(void)
     printf("  [INFO] stress run: %u workers x %u iterations = %lu total operations\r\n",
            (unsigned)OS_TEST_STRESS_WORKER_COUNT, (unsigned)OS_TEST_STRESS_ITERATIONS, (unsigned long)total_iterations);
 }
-#endif /* OS_CONFIG_MUTEX_ENABLE && OS_CONFIG_SEMAPHORE_ENABLE && OS_CONFIG_QUEUE_ENABLE && OS_CONFIG_EVENT_ENABLE && OS_CONFIG_ALLOC_ENABLE */
+#endif /* OS_CONFIG_MUTEX_ENABLE && OS_CONFIG_SEM_ENABLE && OS_CONFIG_QUEUE_ENABLE && OS_CONFIG_EVENT_ENABLE && OS_CONFIG_ALLOC_ENABLE */
 
 /*
  * ***********************************************************************************************************
@@ -4413,9 +4419,9 @@ static void test_stress_task_churn(void)
 
         if (os_task_stack_watermark_get(&worker, &min_free) == OS_ERR_NONE)
         {
-            AHURA_TEST_CHECK(min_free <= sizeof(worker_STACK),
+            AHURA_TEST_CHECK(min_free <= sizeof(worker_stack_buf),
                               "repeated slot reuse leaves a sane stack watermark (%lu / %lu bytes free)",
-                              (unsigned long)min_free, (unsigned long)sizeof(worker_STACK));
+                              (unsigned long)min_free, (unsigned long)sizeof(worker_stack_buf));
         }
     }
 #endif
@@ -4604,7 +4610,7 @@ static uint32_t test_stress_start_workers(os_task_entry_t entry, void *contexts,
     {
         /* Each slot carries its own stack and name, from the OS_TASK_DEFINE that declared it, so
          * the config here is purely behaviour and the same one works for every slot in the array.
-         * This used to need a switch mapping the index back to the matching *_STACK symbol. */
+         * This used to need a switch mapping the index back to the matching *_stack_buf symbol. */
         os_task_config_t config;
 
         config.entry         = entry;
@@ -4945,12 +4951,12 @@ static void test_stress_heap_fragmentation(void)
 }
 #endif /* OS_CONFIG_ALLOC_ENABLE */
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
 
 #define OS_TEST_PINGPONG_ROUNDS 1000U
 
-static os_semaphore_t os_test_pp_ping;
-static os_semaphore_t os_test_pp_pong;
+static os_sem_t os_test_pp_ping;
+static os_sem_t os_test_pp_pong;
 static __IO uint32_t  os_test_pp_partner_rounds = 0U;
 
 /******************************************************************************************************/
@@ -4960,10 +4966,10 @@ static void test_pp_entry(void *context)
 
     while (os_test_pp_partner_rounds < OS_TEST_PINGPONG_ROUNDS)
     {
-        if (os_semaphore_take(&os_test_pp_ping, 500U) != OS_ERR_NONE) { break; }
+        if (os_sem_take(&os_test_pp_ping, 500U) != OS_ERR_NONE) { break; }
 
         os_test_pp_partner_rounds++;
-        (void)os_semaphore_give(&os_test_pp_pong);
+        (void)os_sem_give(&os_test_pp_pong);
     }
 }
 
@@ -4986,8 +4992,8 @@ static void test_stress_semaphore_pingpong(void)
 
     os_test_pp_partner_rounds = 0U;
 
-    AHURA_TEST_CHECK(os_semaphore_init(&os_test_pp_ping, 0U, 1U) == OS_ERR_NONE, "ping semaphore initialized (binary, empty)");
-    AHURA_TEST_CHECK(os_semaphore_init(&os_test_pp_pong, 0U, 1U) == OS_ERR_NONE, "pong semaphore initialized (binary, empty)");
+    AHURA_TEST_CHECK(os_sem_init(&os_test_pp_ping, 0U, 1U) == OS_ERR_NONE, "ping semaphore initialized (binary, empty)");
+    AHURA_TEST_CHECK(os_sem_init(&os_test_pp_pong, 0U, 1U) == OS_ERR_NONE, "pong semaphore initialized (binary, empty)");
 
     if (os_task_create(&worker, TEST_TASK_CONFIG(test_pp_entry, NULL, TEST_PRIO_HIGH)) != OS_ERR_NONE)
     {
@@ -5000,8 +5006,8 @@ static void test_stress_semaphore_pingpong(void)
 
     for (i = 0U; i < OS_TEST_PINGPONG_ROUNDS; i++)
     {
-        if (os_semaphore_give(&os_test_pp_ping) != OS_ERR_NONE)       { break; }
-        if (os_semaphore_take(&os_test_pp_pong, 500U) != OS_ERR_NONE) { break; }
+        if (os_sem_give(&os_test_pp_ping) != OS_ERR_NONE)       { break; }
+        if (os_sem_take(&os_test_pp_pong, 500U) != OS_ERR_NONE) { break; }
 
         completed++;
     }
@@ -5015,15 +5021,15 @@ static void test_stress_semaphore_pingpong(void)
                       "the partner counted exactly the same number of tokens (%lu)",
                       (unsigned long)os_test_pp_partner_rounds);
     AHURA_TEST_CHECK(test_wait_inactive(&worker, 1000U), "the partner task terminated cleanly");
-    AHURA_TEST_CHECK(os_semaphore_take(&os_test_pp_ping, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+    AHURA_TEST_CHECK(os_sem_take(&os_test_pp_ping, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
                       "no stray ping token was left behind");
-    AHURA_TEST_CHECK(os_semaphore_take(&os_test_pp_pong, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+    AHURA_TEST_CHECK(os_sem_take(&os_test_pp_pong, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
                       "no stray pong token was left behind");
 
     printf("  [INFO] %lu blocking handoffs in %lu ms\r\n",
            (unsigned long)(2UL * OS_TEST_PINGPONG_ROUNDS), (unsigned long)elapsed);
 }
-#endif /* OS_CONFIG_SEMAPHORE_ENABLE */
+#endif /* OS_CONFIG_SEM_ENABLE */
 
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
 
@@ -5443,9 +5449,9 @@ static void test_task_footprint(void)
             if (os_task_stack_watermark_get(&worker, &worker_min_free) == OS_ERR_NONE)
             {
                 printf("  [INFO] worker task peak stack usage: %lu / %lu bytes (%lu%% headroom left)\r\n",
-                       (unsigned long)(sizeof(worker_STACK) - worker_min_free),
-                       (unsigned long)sizeof(worker_STACK),
-                       (unsigned long)((worker_min_free * 100U) / sizeof(worker_STACK)));
+                       (unsigned long)(sizeof(worker_stack_buf) - worker_min_free),
+                       (unsigned long)sizeof(worker_stack_buf),
+                       (unsigned long)((worker_min_free * 100U) / sizeof(worker_stack_buf)));
             }
 
             (void)test_wait_inactive(&worker, 200U);
@@ -6017,13 +6023,13 @@ static void test_benchmarks(void)
     }
 #endif
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
-    if (os_semaphore_init(&os_test_bench_sem, 0U, 1U) == OS_ERR_NONE)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
+    if (os_sem_init(&os_test_bench_sem, 0U, 1U) == OS_ERR_NONE)
     {
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES,
-                              (void)os_semaphore_give(&os_test_bench_sem);
-                              (void)os_semaphore_take(&os_test_bench_sem, OS_WAIT_NOTHING));
-        test_bench_row("os_semaphore_give + take", TEST_BENCH_SUB(best, overhead),
+                              (void)os_sem_give(&os_test_bench_sem);
+                              (void)os_sem_take(&os_test_bench_sem, OS_WAIT_NOTHING));
+        test_bench_row("os_sem_give + take", TEST_BENCH_SUB(best, overhead),
                    TEST_BENCH_SUB(worst, overhead), clock_hz);
     }
 #endif
@@ -6905,15 +6911,15 @@ static void test_smp_notify_pingpong(void)
 }
 #endif /* OS_CONFIG_NOTIFY_ENABLE */
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
 /******************************************************************************************************/
 /**
  * @brief Binary-semaphore ping-pong between two pinned tasks, one per core. Each round is one
  *        take/give on each side, so the token crosses the IPI path twice - and the final token
  *        count proves the accounting exactly.
  */
-static os_semaphore_t test_smp_sem_a;
-static os_semaphore_t test_smp_sem_b;
+static os_sem_t test_smp_sem_a;
+static os_sem_t test_smp_sem_b;
 static __IO uint32_t  test_smp_sem_rounds = 0U;
 
 static void test_smp_sem_a_entry(void *context)
@@ -6924,14 +6930,14 @@ static void test_smp_sem_a_entry(void *context)
 
     for (round = 0U; round < TEST_SMP_PINGPONG_ROUNDS; round++)
     {
-        if (os_semaphore_take(&test_smp_sem_a, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        if (os_sem_take(&test_smp_sem_a, OS_WAIT_FOREVER) != OS_ERR_NONE)
         {
             return;
         }
 
         test_smp_sem_rounds++;
 
-        if (os_semaphore_give(&test_smp_sem_b) != OS_ERR_NONE)
+        if (os_sem_give(&test_smp_sem_b) != OS_ERR_NONE)
         {
             return;
         }
@@ -6946,12 +6952,12 @@ static void test_smp_sem_b_entry(void *context)
 
     for (round = 0U; round < TEST_SMP_PINGPONG_ROUNDS; round++)
     {
-        if (os_semaphore_take(&test_smp_sem_b, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        if (os_sem_take(&test_smp_sem_b, OS_WAIT_FOREVER) != OS_ERR_NONE)
         {
             return;
         }
 
-        if (os_semaphore_give(&test_smp_sem_a) != OS_ERR_NONE)
+        if (os_sem_give(&test_smp_sem_a) != OS_ERR_NONE)
         {
             return;
         }
@@ -6964,8 +6970,8 @@ static void test_smp_semaphore_pingpong(void)
 
     test_smp_sem_rounds = 0U;
 
-    AHURA_TEST_CHECK(os_semaphore_init(&test_smp_sem_a, 0U, 1U) == OS_ERR_NONE, "semaphore A initialized empty");
-    AHURA_TEST_CHECK(os_semaphore_init(&test_smp_sem_b, 0U, 1U) == OS_ERR_NONE, "semaphore B initialized empty");
+    AHURA_TEST_CHECK(os_sem_init(&test_smp_sem_a, 0U, 1U) == OS_ERR_NONE, "semaphore A initialized empty");
+    AHURA_TEST_CHECK(os_sem_init(&test_smp_sem_b, 0U, 1U) == OS_ERR_NONE, "semaphore B initialized empty");
 
     AHURA_TEST_CHECK(os_task_create(&test_smp_a,
                      OS_TASK_CONFIG(test_smp_sem_a_entry, NULL, TEST_PRIO_HIGH,
@@ -6980,7 +6986,7 @@ static void test_smp_semaphore_pingpong(void)
     AHURA_TEST_CHECK(os_task_start(&test_smp_b) == OS_ERR_NONE, "core-1 taker started");
 
     /* The one token that starts the machine. */
-    AHURA_TEST_CHECK(os_semaphore_give(&test_smp_sem_a) == OS_ERR_NONE, "starting token given");
+    AHURA_TEST_CHECK(os_sem_give(&test_smp_sem_a) == OS_ERR_NONE, "starting token given");
 
     AHURA_TEST_CHECK(test_wait_inactive(&test_smp_b, 2000U), "core-1 taker finished its rounds");
     AHURA_TEST_CHECK(test_wait_inactive(&test_smp_a, 2000U), "core-0 taker finished its rounds");
@@ -6991,14 +6997,14 @@ static void test_smp_semaphore_pingpong(void)
 
     /* The token ledger must close exactly: A holds the one starting token back (its N-th take
      * consumed the N-th give, and the starter's token rides along), B is empty. */
-    AHURA_TEST_CHECK(os_semaphore_take(&test_smp_sem_a, OS_WAIT_NOTHING) == OS_ERR_NONE,
+    AHURA_TEST_CHECK(os_sem_take(&test_smp_sem_a, OS_WAIT_NOTHING) == OS_ERR_NONE,
                      "semaphore A ends with exactly the starting token");
-    AHURA_TEST_CHECK(os_semaphore_take(&test_smp_sem_a, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+    AHURA_TEST_CHECK(os_sem_take(&test_smp_sem_a, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
                      "and no more than that");
-    AHURA_TEST_CHECK(os_semaphore_take(&test_smp_sem_b, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+    AHURA_TEST_CHECK(os_sem_take(&test_smp_sem_b, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
                      "semaphore B ends empty - no token was lost or duplicated");
 }
-#endif /* OS_CONFIG_SEMAPHORE_ENABLE */
+#endif /* OS_CONFIG_SEM_ENABLE */
 
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
 /******************************************************************************************************/
@@ -7008,8 +7014,7 @@ static void test_smp_semaphore_pingpong(void)
  *        duplication or reordering - and a capacity below the combined send rate forces the FULL
  *        path and backpressure through the cross-core wake.
  */
-static uint32_t      test_smp_queue_buf[4];
-OS_QUEUE_DEFINE_BUFFER(test_smp_queue, test_smp_queue_buf);
+OS_QUEUE_DEFINE_STATIC_ATTR(test_smp_queue, uint32_t, 4, );
 
 static __IO uint32_t test_smp_queue_expected[2] = { 1U, 1U };
 static __IO bool     test_smp_queue_ok          = true;
@@ -7516,7 +7521,7 @@ static void test_smp_deferred_submit(void)
 }
 #endif /* OS_CONFIG_TIMER_ENABLE */
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
 /******************************************************************************************************/
 /**
  * @brief A mixed workload from four tasks, two per core: guarded increments, atomic increments,
@@ -7525,9 +7530,8 @@ static void test_smp_deferred_submit(void)
  */
 static __IO uint32_t test_smp_soak_guarded = 0U;
 static os_atomic_t  test_smp_soak_atomic   = OS_ATOMIC_INIT(0);
-static os_semaphore_t test_smp_soak_sem;
-static uint32_t     test_smp_soak_queue_buf[4];
-OS_QUEUE_DEFINE_BUFFER(test_smp_soak_queue, test_smp_soak_queue_buf);
+static os_sem_t test_smp_soak_sem;
+OS_QUEUE_DEFINE_STATIC_ATTR(test_smp_soak_queue, uint32_t, 4, );
 static __IO uint32_t test_smp_soak_done[4] = { 0U, 0U, 0U, 0U };
 static __IO uint32_t test_smp_soak_seen[4] = { 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU };
 static __IO bool     test_smp_soak_ok      = true;
@@ -7550,13 +7554,13 @@ static void test_smp_soak_entry(void *context)
 
         (void)os_atomic_inc(&test_smp_soak_atomic);
 
-        if (os_semaphore_give(&test_smp_soak_sem) != OS_ERR_NONE)
+        if (os_sem_give(&test_smp_soak_sem) != OS_ERR_NONE)
         {
             test_smp_soak_ok = false;
             return;
         }
 
-        if (os_semaphore_take(&test_smp_soak_sem, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        if (os_sem_take(&test_smp_soak_sem, OS_WAIT_FOREVER) != OS_ERR_NONE)
         {
             test_smp_soak_ok = false;
             return;
@@ -7600,7 +7604,7 @@ static void test_smp_soak_mixed(void)
         test_smp_soak_seen[waited] = 0xFFFFFFFFU;
     }
 
-    AHURA_TEST_CHECK(os_semaphore_init(&test_smp_soak_sem, 0U, 1U) == OS_ERR_NONE, "soak semaphore initialized");
+    AHURA_TEST_CHECK(os_sem_init(&test_smp_soak_sem, 0U, 1U) == OS_ERR_NONE, "soak semaphore initialized");
 
     AHURA_TEST_CHECK(os_task_create(&test_smp_a,
                      OS_TASK_CONFIG(test_smp_soak_entry, (void *)0U, TEST_PRIO_HIGH,
@@ -7643,14 +7647,14 @@ static void test_smp_soak_mixed(void)
     AHURA_TEST_CHECK(os_atomic_get(&test_smp_soak_atomic) == (int32_t)expected,
                      "atomic counter is exact too (%ld of %lu)",
                      (long)os_atomic_get(&test_smp_soak_atomic), (unsigned long)expected);
-    AHURA_TEST_CHECK(os_semaphore_take(&test_smp_soak_sem, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
+    AHURA_TEST_CHECK(os_sem_take(&test_smp_soak_sem, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
                      "the semaphore ended empty");
     AHURA_TEST_CHECK(os_queue_receive(&test_smp_soak_queue, &ignored, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
                      "the queue ended empty");
     AHURA_TEST_CHECK(test_smp_soak_ok,
                      "every queue round-trip returned its own item and every call succeeded");
 }
-#endif /* SEMAPHORE && QUEUE && ATOMIC */
+#endif /* SEM && QUEUE && ATOMIC */
 
 #endif /* OS_CONFIG_CORE_COUNT > 1U */
 
@@ -7690,8 +7694,8 @@ static void test_unsupported_features(void)
  * the test needs. Messages are kept short here: this suite is already close to the flash limit.
 */
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
-static os_semaphore_t os_test_reg_sem;
+#if (OS_CONFIG_SEM_ENABLE == 1U)
+static os_sem_t os_test_reg_sem;
 static __IO uint32_t  os_test_reg_order   = 0U;
 static __IO uint32_t  os_test_reg_a_order = 0U;
 static __IO os_err_t os_test_reg_a_st    = OS_ERR_ERROR;
@@ -7701,7 +7705,7 @@ static __IO os_err_t os_test_reg_b_st    = OS_ERR_ERROR;
 static void test_reg_waiter_b(void *context)
 {
     (void)context;
-    os_test_reg_b_st = os_semaphore_take(&os_test_reg_sem, 400U);
+    os_test_reg_b_st = os_sem_take(&os_test_reg_sem, 400U);
     (void)++os_test_reg_order;
 }
 
@@ -7720,7 +7724,7 @@ static void test_reg_boosted_entry(void *context)
         return;
     }
 
-    os_test_reg_a_st    = os_semaphore_take(&os_test_reg_sem, 400U);
+    os_test_reg_a_st    = os_sem_take(&os_test_reg_sem, 400U);
     os_test_reg_a_order = ++os_test_reg_order;
 
     (void)os_mutex_unlock(&os_test_reg_mutex);
@@ -7738,7 +7742,7 @@ static void test_reg_booster_entry(void *context)
     }
 }
 #endif /* OS_CONFIG_MUTEX_ENABLE */
-#endif /* OS_CONFIG_SEMAPHORE_ENABLE */
+#endif /* OS_CONFIG_SEM_ENABLE */
 
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
 /******************************************************************************************************/
@@ -7852,7 +7856,7 @@ static void test_priority_api(void)
  */
 static void test_queue_accounting(void)
 {
-    const size_t capacity = sizeof(os_test_queue_buf) / sizeof(os_test_queue_buf[0]);
+    const size_t capacity = sizeof(os_test_queue_queue_buf) / sizeof(os_test_queue_queue_buf[0]);
     uint32_t     item     = 0U;
     size_t       sent     = 0U;
     bool         held     = true;
@@ -7912,11 +7916,11 @@ static void test_regressions(void)
      * and never land on the "wait forever" sentinel by accident. */
     AHURA_TEST_CHECK(OS_TICKS_FROM_MS(0xFFFFFFFFU) == (OS_WAIT_FOREVER - 1U), "ms conversion saturates");
 
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
     /* An unconsumed wake is handed on, not lost with the task that never used it. */
     {
         os_test_reg_b_st = OS_ERR_ERROR;
-        (void)os_semaphore_init(&os_test_reg_sem, 0U, 2U);
+        (void)os_sem_init(&os_test_reg_sem, 0U, 2U);
 
         (void)os_task_create(&helper, TEST_TASK_CONFIG(test_reg_waiter_b, NULL, TEST_PRIO_LOW));
         (void)os_task_start(&helper);
@@ -7927,7 +7931,7 @@ static void test_regressions(void)
         /* The window: give() wakes the first waiter, the lock stops it running, and the pause
          * removes it before it can consume the token. */
         os_kernel_lock();
-        (void)os_semaphore_give(&os_test_reg_sem);
+        (void)os_sem_give(&os_test_reg_sem);
         (void)os_task_pause(&helper);
         os_kernel_unlock();
 
@@ -7951,7 +7955,7 @@ static void test_regressions(void)
         os_test_reg_a_st    = OS_ERR_ERROR;
         os_test_reg_b_st    = OS_ERR_ERROR;
 
-        (void)os_semaphore_init(&os_test_reg_sem, 0U, 2U);
+        (void)os_sem_init(&os_test_reg_sem, 0U, 2U);
         (void)os_mutex_init(&os_test_reg_mutex);
 
         (void)os_task_create(&helper, TEST_TASK_CONFIG(test_reg_boosted_entry, NULL, OS_TASK_PRIO_1));
@@ -7968,18 +7972,18 @@ static void test_regressions(void)
         (void)os_task_start(&helper3);
         os_delay_ms(20U);
 
-        (void)os_semaphore_give(&os_test_reg_sem);
+        (void)os_sem_give(&os_test_reg_sem);
         os_delay_ms(30U);
 
         AHURA_TEST_CHECK(os_test_reg_a_order == 1U, "boosted waiter woken first (order=%lu)",
                           (unsigned long)os_test_reg_a_order);
 
-        (void)os_semaphore_give(&os_test_reg_sem);
+        (void)os_sem_give(&os_test_reg_sem);
         AHURA_TEST_CHECK(test_wait_inactive(&helper, 500U) && test_wait_inactive(&helper2, 500U) &&
                           test_wait_inactive(&helper3, 500U), "all three helpers finished");
     }
 #endif /* OS_CONFIG_MUTEX_ENABLE */
-#endif /* OS_CONFIG_SEMAPHORE_ENABLE */
+#endif /* OS_CONFIG_SEM_ENABLE */
 
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     /* Restart must discard an expiry the tick noted but the timer task has not drained. */
@@ -8066,7 +8070,7 @@ void os_test(void)
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
     test_mutex();
 #endif
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
     test_semaphore();
 #endif
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
@@ -8118,7 +8122,7 @@ void os_test(void)
 #if (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_EVENT_ENABLE == 1U)
     test_event_queue_fanin();
 #endif
-#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && \
+#if (OS_CONFIG_MUTEX_ENABLE == 1U) && (OS_CONFIG_SEM_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && \
     (OS_CONFIG_EVENT_ENABLE == 1U) && (OS_CONFIG_ALLOC_ENABLE == 1U)
     test_stress_soak();
 #endif
@@ -8137,7 +8141,7 @@ void os_test(void)
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
     test_stress_heap_fragmentation();
 #endif
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
     test_stress_semaphore_pingpong();
 #endif
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
@@ -8185,7 +8189,7 @@ void os_test(void)
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
     test_smp_notify_pingpong();
 #endif
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U)
     test_smp_semaphore_pingpong();
 #endif
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
@@ -8200,7 +8204,7 @@ void os_test(void)
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     test_smp_deferred_submit();
 #endif
-#if (OS_CONFIG_SEMAPHORE_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
+#if (OS_CONFIG_SEM_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
     test_smp_soak_mixed();
 #endif
     test_multicore_watch(TEST_MC_WATCH_MS, "at the end of the whole run");
