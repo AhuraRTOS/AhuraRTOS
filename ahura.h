@@ -2,15 +2,8 @@
  * @file ahura.h
  * @brief Ahura kernel umbrella public API.
  *
- * Laid out in two parts, most important first:
- *
- *   PART 1  ALWAYS AVAILABLE - types, task/time/critical-section API and the
- *           intrusive list. No configuration option removes any of it, so
- *           anything declared here can be used unconditionally.
- *   PART 2  CONFIGURABLE - one group per OS_CONFIG_ option, in the same order
- *           the options appear in os_config.h. Each group sits behind exactly
- *           one guard covering its types, macros and functions together, so a
- *           disabled feature takes its whole API surface with it.
+ * Two parts. PART 1 is always available. PART 2 is one group per OS_CONFIG_ option, each behind a
+ * single guard, so a disabled feature takes its whole API surface with it.
  *
  * @copyright (c) 2026 Ahura Project Contributors
  *            SPDX-License-Identifier: GPL-3.0-or-later
@@ -38,14 +31,9 @@ extern "C"
  * ***********************************************************************************************************
 */
 
-/* The compile-time assertion, spelled the way the language in use spells it.
- *
- * The kernel is C11, where it is _Static_assert. C++ has had static_assert as a keyword since
- * C++11 and does not declare _Static_assert at all, so a C++ application including this header
- * would fail on the assertions below and inside OS_TIMER_DEFINE and
- * OS_DEFERRED_POOL_DEFINE. The extern "C" block above keeps the LINKAGE right and says nothing
- * about the syntax, which is why the guard alone was not enough. Both forms take the same two
- * arguments, so this is a rename and nothing more. */
+/* The compile-time assertion, spelled the way the language in use spells it: _Static_assert in
+ * C11, static_assert in C++, which does not declare the C spelling at all. The extern "C" block
+ * fixes the linkage, not the syntax. Both forms take the same two arguments. */
 #ifdef __cplusplus
 #define OS_STATIC_ASSERT(condition, message)    static_assert(condition, message)
 #else
@@ -145,15 +133,10 @@ typedef void (*os_task_entry_t)(void *context);
 /**
  * @brief What a task is called and where its stack lives.
  *
- * The half of a task's definition that belongs to the handle rather than to what the task does:
- * OS_TASK_DEFINE fills one of these in at compile time and points the handle at it, which is why
+ * OS_TASK_DEFINE fills one of these at compile time and points the handle at it, which is why
  * os_task_create needs neither a name nor a stack. Const, so it costs flash rather than RAM.
- *
- * OS_CONFIG_TASK_NAME_ENABLE at 0 removes the name field outright rather than setting it to NULL,
- * so a build without names spends nothing on them - not the strings, and not a pointer per task
- * that nothing could read. The two DEFINE macros fill this in with designated initializers, so the
- * shape change cannot silently write the wrong field; a hand-rolled descriptor naming .name in
- * such a build fails to compile, which is the intended answer.
+ * OS_CONFIG_TASK_NAME_ENABLE at 0 removes the name field outright, so a hand-rolled descriptor
+ * naming .name in such a build fails to compile.
  */
 typedef struct
 {
@@ -205,31 +188,14 @@ typedef struct
 /** Timeout value: do not wait, fail immediately when unavailable. */
 #define OS_WAIT_NOTHING         0U
 
-/** Every task priority level the scheduler has, one name per level, value N for level N.
+/** Every task priority level, one name per level, value N for level N.
  *
- *  The range an application may ask for is exactly OS_TASK_PRIO_1_LOWEST..OS_TASK_PRIO_30_HIGHEST,
- *  and those two names ARE the limits - there is no separate pair of range macros to keep in step
- *  with them. The two levels outside that range are both kernel-owned and both named here, so the
- *  enum describes the whole scheduler rather than only the part applications touch:
+ *  Applications may use OS_TASK_PRIO_1_LOWEST..OS_TASK_PRIO_30_HIGHEST. The two outside that range
+ *  are kernel-owned and rejected with OS_ERR_INVALID_ARG: OS_TASK_PRIO_IDLE (0) belongs to the idle
+ *  task alone, OS_TASK_PRIO_MAX (31) to the kernel's service tasks.
  *
- *    OS_TASK_PRIO_IDLE  (0)   The idle task, one per scheduling core, created by os_init(). It is
- *                             the empty-ready-bitmap fallback and must be the only thing at this
- *                             level, or the scheduler could pick a real task when it means to idle.
- *    OS_TASK_PRIO_MAX   (31)  Above every user task, so the kernel's service tasks have a level
- *                             nothing else can claim. Where OS_CONFIG_TIMER_PRIORITY puts the
- *                             timer service by default, though it may be lowered into the user
- *                             range.
- *
- *  os_task_create() and os_task_priority_set() reject both, returning OS_ERR_INVALID_ARG.
- *
- *  Safe to enumerate directly like this because the number of levels is a fixed kernel constant
- *  (not application-configurable), so the range never changes. Using a name is a style choice:
- *  a plain number works the same, since os_task_config_t.priority is a plain uint32_t.
- *
- *  One thing a name cannot do is survive the preprocessor. An enum constant is not a macro, so
- *  #if reads it as 0 - which is why a configured priority written as a name must be checked with
- *  _Static_assert rather than #if (see os_timer.c), and why application code should not test one
- *  in #if either. */
+ *  An enum constant is not a macro, so #if reads it as 0. A configured priority written as a name
+ *  has to be checked with _Static_assert instead. */
 typedef enum
 {
     /* Kernel-owned, below every user task. */
@@ -319,17 +285,11 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
  * ***********************************************************************************************************
 */
 
-/* Task stack alignment, taken from the port rather than fixed here.
+/* Task stack alignment, taken from the port rather than fixed here: ARM AAPCS wants 8 and the
+ * RISC-V ilp32 ABI wants 16, and os_task_create validates against OS_ARCH_STACK_ALIGNMENT_BYTES,
+ * so a hardcoded 8 would produce a task the kernel then refuses to create.
  *
- * It was 8 for every compiler, which is the ARM AAPCS requirement and was correct while ARM was
- * the only architecture. It is not universal: the RISC-V ilp32 ABI requires 16 at every procedure
- * call boundary, and os_task_create validates the stack against OS_ARCH_STACK_ALIGNMENT_BYTES - so
- * a hardcoded 8 there produces a task the kernel then refuses to create, with OS_ERR_INVALID_ARG
- * and no clue that alignment was the reason.
- *
- * os_arch_port.h is included at the top of this file, so the port's value is already known here.
- * Order matters below: armclang also defines __clang__, and clang also defines __GNUC__, so the
- * most specific test has to come first or the later branches are dead code. */
+ * Order matters below: armclang also defines __clang__, and clang also defines __GNUC__. */
 #if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6000000)
 #define OS_STACK_ALIGNED        __attribute__((aligned(OS_ARCH_STACK_ALIGNMENT_BYTES)))  /* armclang */
 #elif defined(__clang__)
@@ -340,14 +300,9 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
 #define OS_STACK_ALIGNED
 #endif
 
-/* Alignment for a byte array that will hold objects of a type the macro was never told about.
- *
- * OS_QUEUE_DEFINE takes an item size rather than an item type, so the compiler has nothing
- * to infer the storage's alignment from. Eight covers every fundamental type on the 32-bit targets
- * this kernel builds for - uint64_t and double are the widest - and is what os_mem_alloc already
- * returns for the dynamic queues, so both kinds of queue hold their items exactly the same way.
- *
- * Same compiler order as OS_STACK_ALIGNED above, and for the same reason. */
+/* Alignment for a byte array holding objects of a type the macro was never told about.
+ * OS_QUEUE_DEFINE takes a size rather than a type, so nothing can be inferred from it. Eight covers
+ * every fundamental type on these 32-bit targets, and matches what os_mem_alloc returns. */
 #if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6000000)
 #define OS_ITEM_ALIGNED         __attribute__((aligned(8)))  /* armclang */
 #elif defined(__clang__)
@@ -372,17 +327,14 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
 
 /** Define a task: its handle, its stack, and the storage descriptor tying the two together.
  *
- *  The handle is plain "task_name"; the stack gets the decorated "task_name_stack_buf", which nothing
- *  should name by hand. stack_size is in bytes, rounded up to a multiple of 8, and must be at
- *  least OS_CONFIG_MIN_STACK_SIZE.
+ *  The handle is plain "task_name"; the stack gets "task_name_stack_buf", which nothing should name
+ *  by hand. stack_size is in bytes, rounded up to a multiple of 8, at least OS_CONFIG_MIN_STACK_SIZE.
  *
  *      OS_TASK_DEFINE(worker, 512U);
  *      status = os_task_create(&worker, OS_TASK_CONFIG(worker_entry, NULL, OS_TASK_PRIO_1));
  *
- *  Name and stack live in the handle rather than in os_task_create's arguments, so handing one
- *  task's handle another task's stack is no longer expressible. (Parameters are task_name and
- *  stack_size, not name and stack_bytes: a parameter named after a struct field would be
- *  substituted inside the initializers below.) */
+ *  Parameters are task_name and stack_size, not name and stack_bytes: one named after a struct
+ *  field would be substituted inside the initializers below. */
 #define OS_TASK_DEFINE(task_name, stack_size)                   \
     static uint8_t task_name##_stack_buf[(((stack_size) + (OS_ARCH_STACK_ALIGNMENT_BYTES - 1U)) & ~(OS_ARCH_STACK_ALIGNMENT_BYTES - 1U))] OS_STACK_ALIGNED;  \
     static const os_task_storage_t task_name##_task_storage = { \
@@ -392,22 +344,14 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
     };                                                          \
     os_task_t task_name = { .storage = &task_name##_task_storage }
 
-/** OS_TASK_DEFINE, plus attributes on the stack - for when WHERE the stack lives matters as much
- *  as how big it is: fast on-chip RAM (DTCM, CCM), a no-init section that survives a reset, a
- *  region an MPU covers, an address the linker script pins. OS_TASK_DEFINE puts its stack in
- *  ordinary .bss with no way to say otherwise; this puts whatever you pass on that same array.
+/** OS_TASK_DEFINE, plus attributes on the stack: a named linker section, fast on-chip RAM, a
+ *  no-init region that survives a reset. Identical in every other way, and OS_STACK_ALIGNED is
+ *  already applied, so a section attribute cannot cost the stack its alignment.
  *
  *      OS_TASK_DEFINE_ATTR(rx_task, 1024U, __attribute__((section(".dtcm"))));
- *      status = os_task_create(&rx_task, OS_TASK_CONFIG(rx_entry, NULL, OS_TASK_PRIO_3));
  *
- *  Identical to OS_TASK_DEFINE in every other way - same handle, same rounding to a multiple of
- *  8, same OS_STACK_ALIGNED already applied, so an attribute that only names a section cannot
- *  silently cost the stack its alignment. The named section still has to exist in the linker
- *  script; nothing here can create it.
- *
- *  Variadic on purpose: attributes are taken as the rest of the line, so several may be given
- *  (__attribute__((aligned(32))) __attribute__((section(".noinit")))) whatever commas they
- *  contain. */
+ *  Variadic, so several attributes may be given whatever commas they contain. The section still
+ *  has to exist in the linker script. */
 #define OS_TASK_DEFINE_ATTR(task_name, stack_size, ...)             \
     static uint8_t task_name##_stack_buf[(((stack_size) + (OS_ARCH_STACK_ALIGNMENT_BYTES - 1U)) & ~(OS_ARCH_STACK_ALIGNMENT_BYTES - 1U))] \
         OS_STACK_ALIGNED __VA_ARGS__;                               \
@@ -418,48 +362,21 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
     };                                                              \
     os_task_t task_name = { .storage = &task_name##_task_storage }
 
-/** Name a task defined in another file, so this one can start, pause or delete it.
- *
- *      / worker.c
- *      OS_TASK_DEFINE(worker, 512U);
- *
- *      / worker.h
- *      OS_TASK_DECLARE(worker);
- *
- *  Only the HANDLE crosses. The stack and the storage descriptor stay private to the file that
- *  defined them, which is the whole reason they are declared static there - nothing outside has
- *  any business naming them, and the handle already carries everything the kernel needs. */
+/** Name a task defined in another file. Only the handle crosses; its stack and storage descriptor
+ *  stay private to the file that defined them. */
 #define OS_TASK_DECLARE(task_name)      extern os_task_t task_name
 
-/** Task behaviour for os_task_create: what the task runs, with what, and at what priority. What it
- *  is called and where its stack lives came from OS_TASK_DEFINE, so neither appears here.
- *  Two forms, and the signature of each is the SAME whatever OS_CONFIG_CORE_COUNT is:
- *
- *  ONE macro, whose parameter list follows OS_CONFIG_CORE_COUNT:
+/** Task behaviour for os_task_create: what the task runs, with what, and at what priority. Its
+ *  name and stack came from OS_TASK_DEFINE.
  *
  *    CORE_COUNT == 1   OS_TASK_CONFIG(entry, context, priority)
  *    CORE_COUNT  > 1   OS_TASK_CONFIG(entry, context, priority, core_affinity)
  *
- *  On a single core there is nothing to decide, so affinity does not appear at all. The moment
- *  there is more than one, every task states where it runs - "anywhere" included, written as
- *  OS_TASK_CORE_ANY rather than inherited by silence. Placement is the whole design question on
- *  SMP: which core owns the ISR-adjacent work, what must not migrate, what may float. A task that
- *  never says is far more often one nobody thought about than one that genuinely does not care.
+ *  Raising OS_CONFIG_CORE_COUNT breaks every call site until it names an affinity, deliberately:
+ *  placement gets decided once, on purpose. core_affinity is a bitmask (OS_TASK_CORE(n),
+ *  OR-combinable; OS_TASK_CORE_ANY for any core); bits beyond the core count are INVALID_ARG.
  *
- *  The cost is deliberate and worth stating plainly: raising OS_CONFIG_CORE_COUNT from 1 does not
- *  merely recompile. Every OS_TASK_CONFIG in the application stops compiling until it is given an
- *  affinity, which makes the move a real port rather than a config edit. That compile error at
- *  every creation site IS the feature - it forces each placement decision to be made once and on
- *  purpose, instead of defaulting to ANY everywhere and surfacing later as a performance problem
- *  with nothing pointing at its cause.
- *
- *  Pinning therefore stays explicit and greppable, and os_task_core_affinity_set can still change
- *  it at runtime either way. core_affinity is a bitmask (OS_TASK_CORE(n), OR-combinable;
- *  OS_TASK_CORE_ANY = any core), and bits naming cores beyond OS_CONFIG_CORE_COUNT fail with
- *  OS_ERR_INVALID_ARG rather than being ignored. Initialized POSITIONALLY on purpose: the
- *  parameters here are named after the fields they fill, and a designated initializer would have
- *  the preprocessor substitute inside ".entry" and ".priority", turning them into whatever the
- *  caller passed. */
+ *  Initialized positionally: a designated initializer would substitute inside ".entry". */
 #if (OS_CONFIG_CORE_COUNT == 1U)
 #define OS_TASK_CONFIG(entry, context, priority) \
     &(os_task_config_t) { \
@@ -504,15 +421,11 @@ bool os_kernel_is_running(void);
 
 /******************************************************************************************************/
 /**
- * @brief Default application task body (see OS_CONFIG_MAIN_TASK_* in os_config.h). os_init()
- *        creates and starts this task automatically, so the application must define it: copy
- *        template/os_main.c into the project as os_main.c (see doc/api.md "Default application
- *        task"). The kernel ships no stub, so a missing definition is a link error rather than
- *        a task that silently does nothing. Not a "_cb" hook: this is where the application's
- *        own code runs, not a kernel query for platform behavior.
+ * @brief Default application task body (see OS_CONFIG_MAIN_TASK_* in os_config.h).
  *
- *        Not referenced at all when OS_CONFIG_TEST_ENABLE is 1: the self-test suite runs alone
- *        in that build (see doc/testing.md "Self-test suite"), so no os_main.c is needed there.
+ * os_init() creates and starts it, so the application must define it: copy template/os_main.c into
+ * the project. The kernel ships no stub, so a missing definition is a link error rather than a task
+ * that silently does nothing. Not referenced at all when OS_CONFIG_TEST_ENABLE is 1.
  */
 void os_main(void);
 
@@ -521,21 +434,13 @@ void os_main(void);
  * Tasks
  * ***********************************************************************************************************
  *
- * A NULL task handle means THIS TASK, wherever one is accepted below: os_task_pause, os_task_delete,
- * os_task_priority_set/get, os_task_state_get, os_task_core_affinity_set, os_task_stack_watermark_get
- * and os_notify_give. It saves a task from keeping a handle to itself just to act on itself, and it
- * is the same shorthand FreeRTOS uses.
+ * A NULL task handle means THIS TASK wherever one is accepted below, the same shorthand FreeRTOS
+ * uses. The exceptions are os_task_create, which needs somewhere to write the new handle, and
+ * os_task_start, which needs a task that is not already running.
  *
- * The exceptions are the two calls where "this task" cannot mean anything: os_task_create needs
- * somewhere to write the new handle, and os_task_start needs a task that is not already running.
- *
- * os_task_pause and os_task_delete are TASK-ONLY whatever handle they are given: both can act on
- * the running task, and an interrupt must not tear down the context it is about to return to.
- *
- * NULL is refused with OS_ERR_INVALID_ARG from an ISR, and before the scheduler dispatches its
- * first task. There is no calling task in either case - inside an interrupt the running task is
- * merely whichever one was preempted, and pausing, deleting or re-prioritising that by accident is
- * exactly the kind of bug this shorthand must not create.
+ * os_task_pause and os_task_delete are task-only whatever handle they are given: an interrupt must
+ * not tear down the context it is about to return into. NULL is refused with OS_ERR_INVALID_ARG
+ * from an ISR and before the first dispatch, since there is no calling task in either case.
 */
 
 /******************************************************************************************************/
@@ -614,25 +519,16 @@ uint32_t os_tick_get(void);
 
 /******************************************************************************************************/
 /**
- * @brief Advance the kernel clock by one tick. Call this - and nothing else - from the tick
+ * @brief Advance the kernel clock by one tick. Call this, and nothing else, from the tick
  *        interrupt, OS_CONFIG_TICK_HZ times per second.
  *
- * This is the one kernel function an application is REQUIRED to call from an ISR, which is why it
- * is public rather than internal. Which ISR depends on OS_CONFIG_TICK_SOURCE:
+ * The one kernel call an application must make from an ISR. With the default SYSTICK source the
+ * port programs SysTick and the application routes the vector:
  *
- *   SYSTICK (default)  The port programs SysTick, and the application routes the vector:
+ *     void SysTick_Handler(void) { os_tick_handler(); }
  *
- *                          void SysTick_Handler(void) { os_tick_handler(); }
- *
- *                      Nothing else belongs in that handler. In particular, on STM32 do not also
- *                      call HAL_IncTick() - move the HAL's timebase to a spare TIM instead, or the
- *                      two fight over the same interrupt (see doc/vendor-notes.md).
- *
- *   EXTERNAL           The application's own timer ISR calls it, having started that timer in
- *                      os_arch_tick_init_cb(). See template/os_cb.c.
- *
- * Give the tick interrupt the lowest priority the device offers. It drives preemption, so it
- * should never itself preempt an application interrupt.
+ * Nothing else belongs there; on STM32 do not also call HAL_IncTick(). With EXTERNAL the
+ * application's own timer ISR calls it. Give that interrupt the lowest priority the device offers.
  */
 void os_tick_handler(void);
 
@@ -712,9 +608,8 @@ bool os_kernel_is_locked(void);
  * Intrusive list
  * ***********************************************************************************************************
  *
- * Always available: the scheduler and the blocking primitives run on these
- * lists, so the list module cannot be configured out. Declared before PART 2
- * because the kernel objects there embed waiter lists.
+ * Always available: the scheduler and the blocking primitives run on these lists. Declared before
+ * PART 2 because the kernel objects there embed waiter lists.
 */
 
 /******************************************************************************************************/
@@ -869,24 +764,15 @@ os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms);
  * Queue              - OS_CONFIG_QUEUE_ENABLE
  * ***********************************************************************************************************
  *
- * A queue is an object plus an item buffer. Which macro declares it decides where that buffer
- * comes from, and that is the only difference between the three kinds:
+ * A queue is an object plus an item buffer. How it is declared decides where that buffer comes
+ * from, and that is the only difference between the three kinds:
  *
  *   STATIC    OS_QUEUE_DEFINE(sensor_q, sizeof(sample_t), 8);
- *             / the macro declares the buffer too; usable where it stands
+ *   ATTR      OS_QUEUE_DEFINE_ATTR(rx_q, sizeof(sample_t), 8, __attribute__((section(".dma"))));
+ *   DYNAMIC   os_queue_t log_q;  then os_queue_init_dynamic(&log_q, sizeof(sample_t), capacity);
  *
- *   ATTR      OS_QUEUE_DEFINE_ATTR(rx_q, sizeof(sample_t), 8,
- *                                  __attribute__((section(".dma"))));
- *             / the same, with the array placed where you need it
- *
- *   DYNAMIC   os_queue_t log_q;
- *             os_queue_init_dynamic(&log_q, sizeof(sample_t), capacity);
- *             / a plain object, declared by you; the call obtains the buffer
- *
- * All three take the item size the same way, as a byte count, so moving a queue from one kind to
- * another changes where the storage comes from and nothing else. Only the dynamic kind has an init
- * call; the other two are initialized where they are declared. Every call after that is the same
- * for all three, teardown included.
+ * All three take the item size the same way, as a byte count. Only the dynamic kind has an init
+ * call; every call after that is the same for all three, teardown included.
 */
 
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
@@ -923,22 +809,13 @@ typedef struct
 
 /* --- Compile-time storage: the geometry is read off the array --------------------------------- */
 
-/** Compile-time initializer binding a queue object to an item array. Shared by the two macros
- *  below so both derive the geometry the same way and cannot drift apart.
+/** Compile-time initializer binding a queue object to an item array, shared by the two macros below
+ *  so they cannot drift apart. Everything omitted is zero-initialized by the C rules for static
+ *  storage, which is exactly the empty queue an init call would otherwise write.
  *
- *  Everything omitted here - head, tail, count, the two waiter lists, buffer_owned - is
- *  zero-initialized by the C rules for objects with static storage duration, which is exactly the
- *  empty queue with empty waiter lists an init call would otherwise write at run time. That is why
- *  a queue defined this way is usable where it stands, with nothing to call and no status to check.
- *
- *  Neither parameter is named after a struct field, and that is deliberate: a macro parameter
- *  named after one would be substituted inside the designated initializers, turning ".capacity"
- *  into ".8" and failing to compile. Nothing here may be called buffer, item_size or capacity,
- *  which is why the item size arrives as "item_bytes".
- *
- *  The capacity is divided back out of the array rather than passed in, so it still cannot
- *  disagree with the storage that actually exists. That is the half of the old derived geometry
- *  worth keeping now that the item size is given rather than read off an element type. */
+ *  Neither parameter is named after a struct field: one that was would be substituted inside the
+ *  designated initializers, turning ".capacity" into ".8". Capacity is divided back out of the
+ *  array, so it cannot disagree with the storage that exists. */
 #define OS_QUEUE_INITIALIZER(array, item_bytes)                \
     {                                                          \
         .buffer    = (uint8_t *)(array),                       \
@@ -946,79 +823,39 @@ typedef struct
         .capacity  = (sizeof(array) / (item_bytes)),           \
     }
 
-/** Define a queue with statically allocated storage, ready to use where it stands. The queue
- *  object is declared as plain "name" (what every os_queue_* call takes the address of), and the
- *  backing array gets the decorated "name_queue_buf", which nothing should name by hand.
- *
- *  No init call to pair it with. The item size is a BYTE COUNT, taken exactly the way
- *  os_queue_init_dynamic takes it, so the static and dynamic forms read alike and a queue can move
- *  between them without its declaration changing shape. Capacity is divided back out of the array,
- *  so it cannot disagree with the storage that exists.
+/** Define a queue with statically allocated storage, ready to use where it stands. The object is
+ *  plain "name"; the array gets "name_queue_buf", which nothing should name by hand.
  *
  *      OS_QUEUE_DEFINE(sensor_q, sizeof(sensor_sample_t), 8);
  *      status = os_queue_send(&sensor_q, &sample, 10U);
  *
- *  The array is plain bytes carrying OS_ITEM_ALIGNED, since a byte count says nothing about what
- *  the items need to be aligned for. os_queue_send and os_queue_receive copy through memcpy, so
- *  what actually goes in is whatever the caller hands a pointer to - a byte count cannot make the
- *  compiler check that for you, which a typed array could.
- *
- *  This belongs at file scope. The ARRAY is static, since nothing outside should name it; the
- *  QUEUE is not, so a header can share it with `extern os_queue_t sensor_q;` and other files can
- *  send to it. That also means the name has to be unique across the whole link.
- *
- *  Use OS_QUEUE_DEFINE_ATTR to place the array somewhere particular. For a geometry not
- *  known until run time, declare a plain os_queue_t and call os_queue_init_dynamic(). */
+ *  The item size is a byte count, as os_queue_init_dynamic takes it; capacity is divided back out
+ *  of the array. Sends copy through memcpy, so nothing checks that what goes in is what the queue
+ *  was sized for. File scope only, and the name has to be unique across the link. */
 #define OS_QUEUE_DEFINE(name, item_bytes, item_count)                                \
     static uint8_t    name##_queue_buf[(item_bytes) * (item_count)] OS_ITEM_ALIGNED; \
     os_queue_t name = OS_QUEUE_INITIALIZER(name##_queue_buf, (item_bytes))
 
-/** OS_QUEUE_DEFINE, plus attributes on the item array - for when WHERE the storage lives
- *  matters as much as how much of it there is: a named linker section, DMA-capable RAM, a
- *  particular alignment. OS_QUEUE_DEFINE puts its array in ordinary .bss with no way to say
- *  otherwise; this puts whatever you pass on that same array.
+/** OS_QUEUE_DEFINE, plus attributes on the item array: a named linker section, DMA-capable RAM, a
+ *  particular alignment. Identical in every other way.
  *
- *      OS_QUEUE_DEFINE_ATTR(rx_q, sizeof(sample_t), 8,
- *                                  __attribute__((section(".dma_buffers"))));
- *      ...
- *      status = os_queue_send(&rx_q, &sample, 10U);
+ *      OS_QUEUE_DEFINE_ATTR(rx_q, sizeof(sample_t), 8, __attribute__((section(".dma_buffers"))));
  *
- *  Identical to OS_QUEUE_DEFINE in every other way - same handle, same array name, same
- *  geometry read off the array so it cannot disagree with the storage. The named section still has
- *  to exist in the linker script; nothing here can create it.
- *
- *  Variadic on purpose: attributes are taken as the rest of the line, so several may be given
- *  whatever commas they contain - the same reason OS_TASK_DEFINE_ATTR is. */
+ *  Variadic, so several attributes may be given whatever commas they contain. The section still has
+ *  to exist in the linker script. */
 #define OS_QUEUE_DEFINE_ATTR(name, item_bytes, item_count, ...)                                  \
     static uint8_t    name##_queue_buf[(item_bytes) * (item_count)] OS_ITEM_ALIGNED __VA_ARGS__; \
     os_queue_t name = OS_QUEUE_INITIALIZER(name##_queue_buf, (item_bytes))
 
-/** Name a queue defined in another file, so this one can send to it or receive from it.
- *
- *      / sensors.c
- *      OS_QUEUE_DEFINE(sensor_q, sizeof(sample_t), 8);
- *
- *      / sensors.h
- *      OS_QUEUE_DECLARE(sensor_q);
- *
- *  Only the QUEUE crosses; its item array stays private to the file that defined it. The name has
- *  to match the DEFINE exactly, since that is the symbol the linker resolves against. Works for
- *  either static macro, and for a dynamic queue too - by then it is the same object. */
+/** Name a queue defined in another file. Only the queue crosses; its item array stays private to
+ *  the file that defined it, and the name has to match the DEFINE exactly. */
 #define OS_QUEUE_DECLARE(name)          extern os_queue_t name
 
 /* --- Dynamic storage: the item buffer comes from the kernel heap ------------------------------ */
 
-/* There is no DEFINE macro for a dynamic queue, because there would be nothing in it to write:
- * the object is a plain os_queue_t and os_queue_init_dynamic() is what obtains the buffer. So
- * declare it however its lifetime wants - at file scope, as a local, inside a struct:
- *
- *      static os_queue_t rx_q;
- *      ...
- *      status = os_queue_init_dynamic(&rx_q, sizeof(sample_t), capacity_from_config);
- *
- * os_queue_init_dynamic() expects the object zeroed, which static storage gives for free and any
- * other placement gets from a { 0 } initializer. Keeping the object out of the allocation is what
- * makes its lifetime obvious and leaves a failed init with nothing to clean up. */
+/* A dynamic queue needs no DEFINE macro: it is a plain os_queue_t, declared wherever its lifetime
+ * wants, and os_queue_init_dynamic() obtains the buffer. That call expects the object zeroed,
+ * which static storage gives for free and any other placement gets from a { 0 } initializer. */
 
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
 /******************************************************************************************************/
@@ -1036,14 +873,9 @@ os_err_t os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capac
 /**
  * @brief Send one item into queue, waiting up to timeout_ms when full.
  *
- * What a full queue does depends on the mode. OS_QUEUE_MODE_NORMAL, the default, waits out
- * timeout_ms and then answers OS_ERR_FULL (nothing to wait with) or OS_ERR_TIMEOUT.
- *
- * OS_QUEUE_MODE_OVERWRITE spends the same timeout the same way - it would still rather deliver
- * every item than drop one - but when the time is up it drops the OLDEST item instead of
- * refusing, and returns OS_ERR_NONE. So the timeout reads as "how long to try not to lose
- * anything", and OS_WAIT_NOTHING means never wait and never fail, which is the form an ISR
- * wants. OS_WAIT_FOREVER in this mode never drops anything, because its time never runs out.
+ * OS_QUEUE_MODE_NORMAL answers OS_ERR_FULL or OS_ERR_TIMEOUT. OS_QUEUE_MODE_OVERWRITE spends the
+ * same timeout and then drops the OLDEST item instead of refusing, so the timeout reads as "how
+ * long to try not to lose anything" and OS_WAIT_NOTHING never waits and never fails.
  */
 os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms);
 
@@ -1094,25 +926,17 @@ os_err_t os_queue_cleanup(os_queue_t *queue);
  * ***********************************************************************************************************
  *
  * A queue for messages whose LENGTH varies. Where os_queue_t stores N items of one fixed size, this
- * stores as many messages as fit in a byte budget you choose, each one exactly as long as it is:
+ * stores as many messages as fit in a byte budget, each exactly as long as it is:
  *
- *     OS_MSG_DEFINE(cmd_buf, 256U);        / 256 bytes, shared by whatever arrives
+ *     OS_MSG_DEFINE(cmd_buf, 256U);
  *     os_msg_send(&cmd_buf, frame, frame_len, 10U);
  *     os_msg_receive(&cmd_buf, rx, sizeof(rx), &rx_len, OS_WAIT_FOREVER);
  *
- * Reach for it when the length is data rather than a constant - a protocol frame, a console line, a
- * sensor burst - and for a queue when every item is the same struct. Sizing a queue for the longest
- * message and sending mostly short ones spends the difference on every slot; padding them to one
- * size throws away the length the receiver needed. Both are what this exists to avoid.
- *
- * Capacity is in BYTES. Each message costs its own length plus 2 bytes, which is the length header
- * that lets the receiver be handed a message rather than a stream. Nothing asks the caller to do
- * that arithmetic: os_msg_send() adds the 2 bytes itself and answers OS_ERR_FULL when the message
- * does not fit, so sending and reading the status is the whole of it.
+ * Reach for it when the length is data rather than a constant, and for a queue when every item is
+ * the same struct. Capacity is in BYTES, and each message costs its own length plus a 2-byte header;
+ * os_msg_send() adds that itself and answers OS_ERR_FULL when the message does not fit.
  *
  * Messages arrive whole and in order, one per os_msg_receive(): never a fragment, never two joined.
- * Both directions block with the usual timeout, so a full buffer applies back-pressure to senders
- * exactly as a full queue does.
 */
 
 #if (OS_CONFIG_MSG_ENABLE == 1U)
@@ -1155,17 +979,12 @@ typedef struct
 
 } os_msg_t;
 
-/** Compile-time initializer binding a message buffer object to a byte array. Shared by the two
- *  macros below so both derive the capacity the same way and cannot drift apart.
+/** Compile-time initializer binding a message buffer to a byte array, shared by the two macros
+ *  below so they cannot drift apart. Everything omitted is zero-initialized by the C rules for
+ *  static storage, which is exactly the empty buffer an init call would write.
  *
- *  Everything omitted here - head, tail, used, count, the two waiter lists, buffer_owned - is
- *  zero-initialized by the C rules for objects with static storage duration, which is exactly the
- *  empty buffer with empty waiter lists an init call would otherwise write at run time. That is why
- *  a message buffer is usable where it stands, with nothing to call and no status to check.
- *
- *  Its only parameter is "array" on purpose: a macro parameter named after a struct field would be
- *  substituted inside the designated initializers, turning ".capacity" into ".256". Nothing here
- *  may be called buffer or capacity. */
+ *  Its only parameter is "array" on purpose: one named after a struct field would be substituted
+ *  inside the designated initializers, turning ".capacity" into ".256". */
 /* --- Compile-time storage: the capacity is read off the array --------------------------------- */
 
 #define OS_MSG_INITIALIZER(array)              \
@@ -1175,72 +994,39 @@ typedef struct
     }
 
 /** Define a message buffer with statically allocated storage, ready to use where it stands. The
- *  object is declared as plain "name" (what every os_msg_* call takes the address of), and the
- *  backing array gets the decorated "name_msg_buf", which nothing should name by hand.
- *
- *  byte_size is a BYTE budget, not a message count - that is the whole point of this object - so
- *  just write how much RAM the buffer may have:
+ *  object is plain "name"; the array gets "name_msg_buf", which nothing should name by hand.
  *
  *      OS_MSG_DEFINE(cmd_buf, 256U);
  *      status = os_msg_send(&cmd_buf, frame, frame_len, 10U);
  *
- *  **Every message costs 2 bytes more than its length**, for the header that records it, so those
- *  256 bytes hold two 126-byte messages, or eight 30-byte ones, or any mix that fits. Nothing has
- *  to be worked out in advance: os_msg_send() adds those 2 bytes itself and returns OS_ERR_FULL if
- *  the message does not fit.
+ *  byte_size is a BYTE budget, not a message count, and every message costs 2 bytes more than its
+ *  length for its header. So those 256 bytes hold two 126-byte messages, eight 30-byte ones, or any
+ *  mix that fits; os_msg_send() does that arithmetic itself.
  *
- *  This belongs at file scope. The ARRAY is static, since nothing outside should name it; the
- *  MESSAGE BUFFER is not, so a header can share it with `extern os_msg_t cmd_buf;` and other files
- *  can send to it. That also means the name has to be unique across the whole link.
- *
- *  Use OS_MSG_DEFINE_ATTR to place the array somewhere particular. For a capacity not known
- *  until run time, declare a plain os_msg_t and call os_msg_init_dynamic(). */
+ *  File scope only. The array is static, the object is not, so a header can share it with
+ *  OS_MSG_DECLARE and the name has to be unique across the link. */
 #define OS_MSG_DEFINE(name, byte_size)                 \
     static uint8_t  name##_msg_buf[(byte_size)];       \
     os_msg_t name = OS_MSG_INITIALIZER(name##_msg_buf)
 
-/** OS_MSG_DEFINE, plus attributes on the byte array - for when WHERE the storage lives
- *  matters as much as how much of it there is: a named linker section, DMA-capable RAM, a
- *  particular alignment. OS_MSG_DEFINE puts its array in ordinary .bss with no way to say
- *  otherwise; this puts whatever you pass on that same array.
+/** OS_MSG_DEFINE, plus attributes on the byte array: a named linker section, DMA-capable RAM, a
+ *  particular alignment. Identical in every other way.
  *
  *      OS_MSG_DEFINE_ATTR(rx_buf, 512U, __attribute__((section(".dma_buffers"))));
- *      ...
- *      status = os_msg_send(&rx_buf, frame, frame_len, 10U);
  *
- *  Identical to OS_MSG_DEFINE in every other way - same handle, same array name, capacity
- *  read off the array. The named section still has to exist in the linker script; nothing here can
- *  create it.
- *
- *  Variadic on purpose: attributes are taken as the rest of the line, so several may be given
- *  whatever commas they contain - the same reason OS_TASK_DEFINE_ATTR is. */
+ *  Variadic, so several attributes may be given whatever commas they contain. */
 #define OS_MSG_DEFINE_ATTR(name, byte_size, ...)             \
     static uint8_t  name##_msg_buf[(byte_size)] __VA_ARGS__; \
     os_msg_t name = OS_MSG_INITIALIZER(name##_msg_buf)
 
-/** Name a message buffer defined in another file, so this one can send to it or receive from it.
- *
- *      / console.c
- *      OS_MSG_DEFINE(cmd_buf, 256U);
- *
- *      / console.h
- *      OS_MSG_DECLARE(cmd_buf);
- *
- *  Only the OBJECT crosses; its byte array stays private to the file that defined it. */
+/** Name a message buffer defined in another file. Only the object crosses; its byte array stays
+ *  private to the file that defined it. */
 #define OS_MSG_DECLARE(name)            extern os_msg_t name
 
 /* --- Dynamic storage: the byte buffer comes from the kernel heap ------------------------------ */
 
-/* There is no DEFINE macro for a dynamic message buffer, for the same reason there is none for a
- * dynamic queue: the object is a plain os_msg_t and os_msg_init_dynamic() is what obtains the
- * storage. Declare it however its lifetime wants:
- *
- *      static os_msg_t rx_buf;
- *      ...
- *      status = os_msg_init_dynamic(&rx_buf, bytes_from_config);
- *
- * os_msg_init_dynamic() expects the object zeroed, which static storage gives for free and any
- * other placement gets from a { 0 } initializer. */
+/* A dynamic message buffer needs no DEFINE macro either: it is a plain os_msg_t and
+ * os_msg_init_dynamic() obtains the storage. That call expects the object zeroed. */
 
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
 /******************************************************************************************************/
@@ -1462,21 +1248,16 @@ struct os_timer_pool_s
  * context: it runs on the kernel timer task, so it may block, take a mutex or wait on a queue.
  */
 
-/** A timer is set up entirely at COMPILE time - no init call, and the macro's NAME is the mode,
- *  so there is none to pass and none to get wrong:
+/** A timer is set up entirely at COMPILE time, and the macro's NAME is the mode, so there is none
+ *  to pass and none to get wrong:
  *
  *    OS_TIMER_DEFINE_PERIODIC(blinker, 500U, on_blink);
  *    OS_TIMER_DEFINE_ONESHOT(timeout,  250U, on_timeout);
- *
  *    os_timer_start(&blinker, &led2, 3U);
  *
- *  What the timer IS - how often it fires and what it calls - is settled here; what a RUN is
- *  about - the context and value the callback receives - is given to os_timer_start. One place
- *  each, so no setting can contradict another.
- *
- *  Parameters are prefixed (timer_period_ms, not period_ms) so a caller's own variable names
- *  cannot be substituted into the field designators below - the same trap OS_QUEUE_INITIALIZER
- *  documents. */
+ *  What the timer IS is settled here; what a RUN carries - the context and value the callback
+ *  receives - is given to os_timer_start. Parameters are prefixed (timer_period_ms) so a caller's
+ *  own names cannot be substituted into the field designators. */
 
 /** Reloads and fires every period_ms until stopped. */
 #define OS_TIMER_DEFINE_PERIODIC(timer_name, timer_period_ms, timer_callback)             \
@@ -1513,16 +1294,10 @@ struct os_timer_pool_s
  *    os_timer_submit(&uart_defer, &dev, code2);   // again, before the first has run
  *    -> the callback runs TWICE, with code1 then code2
  *
- *  os_timer_start would have run it ONCE carrying only code2: starting a pending timer
- *  reschedules it, which is what a debounce wants and what deferring an interrupt must not do.
- *  A submission never coalesces - each call takes its own slot.
- *
- *  The slots are yours, so OS_ERR_FULL means "your eight are in flight" and there is no
- *  kernel-wide number to tune. The delay belongs to the pool, converted to ticks here, so
- *  os_timer_submit does no arithmetic at all; work needing a different delay is another pool.
- *
- *  pool_depth slots cost pool_depth * sizeof(os_timer_entry_t), threaded on first use.
- */
+ *  os_timer_start would have run it ONCE carrying only code2, since starting a pending timer
+ *  reschedules it. A submission never coalesces: each call takes its own slot, so OS_ERR_FULL means
+ *  "your eight are in flight". The delay belongs to the pool; work needing a different one is
+ *  another pool. */
 #define OS_TIMER_DEFINE_SUBMIT(pool_name, pool_depth, pool_delay_ms, pool_callback)       \
     OS_STATIC_ASSERT((pool_depth) > 0U,                                                   \
                    "OS_TIMER_DEFINE_SUBMIT: the depth is how many calls may be in "       \
@@ -1539,28 +1314,12 @@ struct os_timer_pool_s
         .callback    = (pool_callback)                                                    \
     }
 
-/** Name a timer defined in another file, so this one can start, stop or retune it. One macro for
- *  both kinds, because OS_TIMER_DEFINE_PERIODIC and OS_TIMER_DEFINE_ONESHOT declare the same
- *  object and differ only in the mode written into it.
- *
- *      / blink.c
- *      OS_TIMER_DEFINE_PERIODIC(blink, 500U, on_blink);
- *
- *      / blink.h
- *      OS_TIMER_DECLARE(blink);
- */
+/** Name a timer defined in another file. One macro for both kinds, since PERIODIC and ONESHOT
+ *  declare the same object and differ only in the mode written into it. */
 #define OS_TIMER_DECLARE(timer_name)    extern os_timer_t timer_name
 
-/** Name a deferred-call pool defined in another file, so this one can submit to it.
- *
- *      / uart.c
- *      OS_TIMER_DEFINE_SUBMIT(uart_defer, 8U, 0U, on_uart_event);
- *
- *      / uart.h
- *      OS_TIMER_POOL_DECLARE(uart_defer);
- *
- *  A pool rather than a timer, since that is what OS_TIMER_DEFINE_SUBMIT declares. Only the pool
- *  crosses; its entry array stays private. */
+/** Name a deferred-call pool defined in another file. A pool rather than a timer, since that is
+ *  what OS_TIMER_DEFINE_SUBMIT declares; only the pool crosses, its entry array stays private. */
 #define OS_TIMER_POOL_DECLARE(pool_name) extern os_timer_pool_t pool_name
 
 /******************************************************************************************************/
@@ -1618,11 +1377,8 @@ os_err_t os_timer_value_set(os_timer_t *timer, uint32_t value);
  *        Each submission takes its own slot and produces its own delivery, FIFO. ISR-safe, and
  *        nothing is copied, so whatever context points at must outlive the call.
  *
- *        A submission has NO HANDLE, so once made it cannot be changed: not cancelled, not
- *        retuned, and not given a different context or value. There is nothing to pass to
- *        os_timer_stop or os_timer_value_set, and the pool entry carrying it is the kernel's
- *        until it runs. If the call may need to change its mind, give the callback something to
- *        re-read; if it may need cancelling, it wants a named timer and os_timer_start instead.
+ *        A submission has NO HANDLE, so it cannot be cancelled, retuned or given a different
+ *        value. If it may need cancelling, it wants a named timer and os_timer_start instead.
  */
 os_err_t os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value);
 
@@ -1710,19 +1466,14 @@ typedef int32_t os_atomic_t;
 
 /******************************************************************************************************/
 /*
- * Atomic operations on an os_atomic_t (see the type above).
+ * Atomic operations on an os_atomic_t (see the type above). Safe from tasks and from ISRs.
  *
- * Every read-modify-write returns the value the word held BEFORE the operation, not after it, so
- * os_atomic_inc returning 4 means the counter now reads 5.
+ * Every read-modify-write returns the value the word held BEFORE the operation, so os_atomic_inc
+ * returning 4 means the counter now reads 5.
  *
- * How the update is made indivisible is the port's business and varies with the core. Where the
- * instruction set can do it - an exclusive load/store pair - these are lock-free and never mask
- * interrupts. Where it cannot, the port briefly excludes interrupts (and, on a multi-core build,
- * the other cores) instead, which makes an atomic operation cost interrupt latency on those cores
- * and is worth knowing before putting one in a hot path. See doc/api.md "Atomics" section for
- * which cores fall on which side.
- *
- * All of them are safe from tasks and from ISRs.
+ * Where the instruction set has an exclusive load/store pair these are lock-free. Where it does
+ * not, the port briefly excludes interrupts instead, which costs interrupt latency and is worth
+ * knowing before putting one on a hot path. See doc/api.md for which cores fall on which side.
  */
 
 /******************************************************************************************************/
@@ -1858,13 +1609,11 @@ os_err_t os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_byt
 #if (OS_CONFIG_STACK_CHECK_ENABLE == 1U)
 /******************************************************************************************************/
 /**
- * @brief Reported when a task is found to have overrun its stack, at the moment it is switched
- *        out. REQUIRED when OS_CONFIG_STACK_CHECK_ENABLE is 1: the kernel ships no default, so a
- *        missing one is a link error. The core parks immediately afterwards either way, which
- *        makes this the only chance to record which task it was.
+ * @brief Reported when a task is found to have overrun its stack, at the moment it is switched out.
+ *        REQUIRED when OS_CONFIG_STACK_CHECK_ENABLE is 1; the kernel ships no default. The core
+ *        parks immediately afterwards, which makes this the only chance to record which task it was.
  *
- *        Runs inside PendSV with the kernel's interrupts masked, so it must NOT call any kernel
- *        API. Write the name to a UART, latch it somewhere the debugger can find, and return.
+ *        Runs inside PendSV with the kernel's interrupts masked, so it must NOT call any kernel API.
  *
  * @param[in] task_name  Name of the offending task, as given to OS_TASK_DEFINE.
  */
@@ -1892,16 +1641,12 @@ uint32_t os_cpu_usage_get(void);
  * ***********************************************************************************************************
 */
 
-/** OS_ASSERT(expr) checks a condition that must hold if the program is correct, and halts at the
- *  point of failure when it does not.
+/** OS_ASSERT(expr) checks a condition that must hold if the program is correct, and halts where it
+ *  does not. Assertions only ADD checks: the kernel returns the same status codes either way. Use
+ *  them for programming errors, never for conditions that can legitimately happen at runtime.
  *
- *  Assertions only ADD checks: the kernel still returns the same status codes either way, so a
- *  build with assertions off behaves exactly as one with them on, minus the halt. Use them for
- *  programming errors (a bad handle, blocking from an ISR), never for conditions that can
- *  legitimately happen at runtime.
- *
- *  The expression is not evaluated at all when assertions are compiled out, so it must be free
- *  of side effects. */
+ *  The expression is not evaluated when assertions are compiled out, so it must be side-effect
+ *  free. */
 #if (OS_CONFIG_ASSERT_ENABLE == 1U)
 
 #define OS_ASSERT(expr)                                                       \
@@ -2118,14 +1863,9 @@ void os_arch_core_launch_cb(uint32_t core_id);
  * @brief Multi-core SoC callback: print whatever the SoC package knows about its own bring-up.
  *        Called only when something has already gone wrong, so it may take its time.
  *
- * Optional - the kernel ships a weak empty default, so a package that has nothing to add costs
- * nothing. It exists because the kernel cannot diagnose a chip: whether a core was released, which
- * inter-core interrupt was armed, what a fault handler caught are all facts only the package
- * holds, and the failures they cause look identical from the kernel's side.
- *
- * Called from task context with the kernel running, which is deliberate: the natural moment for a
- * package to report is start-up, and on a USB-console board nothing printed then is ever seen -
- * the host has not opened the port yet. This runs late enough to be read.
+ * Optional, with a weak empty default. It exists because whether a core was released, which
+ * inter-core interrupt was armed and what a fault handler caught are facts only the package holds.
+ * Called from task context, late enough that a USB console has been opened and can be read.
  */
 void os_arch_soc_diagnose_cb(void);
 
@@ -2133,19 +1873,13 @@ void os_arch_soc_diagnose_cb(void);
 
 /******************************************************************************************************/
 /**
- * @brief SoC callback: wait for work on an idle core. Optional - the kernel's weak default is a
- *        plain WFI, which is right on most parts.
+ * @brief SoC callback: wait for work on an idle core. Optional; the weak default is a plain WFI.
  *
- * It exists because "how a core waits, and what wakes it" is a fact about the silicon rather than
- * the architecture, and on some parts WFI is the wrong instrument. On the RP2 family WFI gates the
- * core's clock, which stops that core's own SysTick with it: an idle secondary core then has no
- * timer of its own left and depends entirely on an inter-core interrupt arriving. Miss one and the
- * core sleeps for good.
- *
- * WFE is the answer there, because the event register LATCHES: an SEV that arrives before the WFE
- * makes it return immediately, so the wake cannot be lost in the window between deciding to sleep
- * and sleeping. A package overriding this should pair it with an SEV wherever it signals another
- * core. FreeRTOS's own RP2040 SMP port makes the same choice for the same reason.
+ * On some parts WFI is the wrong instrument. On the RP2 family it gates the core's clock and stops
+ * that core's SysTick with it, so an idle secondary core depends entirely on an inter-core
+ * interrupt arriving and one missed signal sleeps it for good. WFE is the answer there because its
+ * event register LATCHES, so an SEV arriving first makes the WFE return at once. A package
+ * overriding this should pair it with an SEV wherever it signals another core.
  *
  * May return spuriously; the idle loop simply calls it again.
  */

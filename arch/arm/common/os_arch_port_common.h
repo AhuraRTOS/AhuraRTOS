@@ -107,44 +107,31 @@
  * OPTIONAL configuration (the only options os_config.h may leave out)
  * ***********************************************************************************************************
  *
- * Everything checked above is mandatory, because a missing sizing or feature
- * switch would read as 0 in an #if and silently disable or misconfigure
- * something. The four below are different in kind: each is a NAME, a yes/no
- * diagnostic or a property of the silicon that the kernel can default
- * correctly on its own, and a missing one is caught by #ifndef rather than
- * misread as 0.
+ * Everything checked above is mandatory: a missing sizing or feature switch would read as 0 in an
+ * #if and silently misconfigure something. These four are names, diagnostics or properties of the
+ * silicon that the kernel can default correctly, and #ifndef catches a missing one.
  *
- * Two of them are application choices and are documented in
- * template/os_config.h: OS_CONFIG_TICK_SOURCE and
- * OS_CONFIG_ARCH_VECTOR_CHECK.
+ * OS_CONFIG_TICK_SOURCE and OS_CONFIG_ARCH_VECTOR_CHECK are application choices, documented in
+ * template/os_config.h.
  *
- * The other two are facts about the target, owned by the SoC package (see
- * doc/soc.md) and deliberately absent from the template:
- * OS_CONFIG_ARCH_PENDSV_HANDLER and OS_CONFIG_SPINLOCK_SOC_BACKEND. The
- * reason is include order. os_config.h is read BELOW this point, so a stale
- * copy of either in an application's configuration would be seen after the
- * SoC package's -D and would silently win - on the PendSV name that means
- * the kernel traps at os_start(); on the spinlock it means a lock that
- * excludes nothing. A config that still defines them keeps building, and
- * keeps that hazard, which is why the template no longer carries them.
+ * OS_CONFIG_ARCH_PENDSV_HANDLER and OS_CONFIG_SPINLOCK_SOC_BACKEND are facts about the target,
+ * owned by the SoC package (doc/soc.md) and deliberately absent from the template. Include order is
+ * why: os_config.h is read BELOW this point, so a stale copy in an application's configuration
+ * would be seen after the SoC package's -D and would silently win - on the PendSV name that traps
+ * at os_start(), on the spinlock a lock that excludes nothing.
 */
 
 /*
- * The symbol the port gives the PendSV exception handler - the ONE vector the
- * kernel must own, because a context switch has to be the exception entry
- * point itself (it manipulates the frame the hardware pushed and returns
- * through EXC_RETURN, neither of which survives an ordinary C call).
+ * The symbol the port gives the PendSV exception handler - the ONE vector the kernel must own,
+ * because a context switch has to be the exception entry point itself: it manipulates the frame the
+ * hardware pushed and returns through EXC_RETURN, neither of which survives an ordinary C call.
  *
- * PendSV_Handler is the CMSIS-Pack convention, which is what essentially every
- * vendor startup file uses - ST, Nordic, NXP, TI, Silicon Labs, Renesas,
- * Microchip, Infineon - so the default needs no configuration on any of them.
- * Override it when the vector table uses a different name (a hand-written
- * startup file, a non-CMSIS RTOS environment, a bootloader's own table).
+ * PendSV_Handler is the CMSIS-Pack convention that essentially every vendor startup file uses, so
+ * the default needs no configuration. Override it for a hand-written startup file, a non-CMSIS
+ * environment, or a bootloader's own table.
  *
- * The kernel claims nothing else. SysTick is routed by the application
- * (see "Tick source" below) and SVC is left entirely alone - see the
- * context-switch comment in the port .c files for why the first task no
- * longer boots through it.
+ * The kernel claims nothing else: SysTick is routed by the application (see "Tick source" below)
+ * and SVC is left entirely alone.
  */
 #ifndef OS_CONFIG_ARCH_PENDSV_HANDLER
 #define OS_CONFIG_ARCH_PENDSV_HANDLER  PendSV_Handler
@@ -169,16 +156,12 @@
  * Boot-time check that the live vector table really routes PendSV to the
  * kernel (1 = on, the default; 0 = skip).
  *
- * Worth leaving on. The failure it catches is otherwise silent and very
- * expensive to debug: if some other definition of the handler name wins at
- * link time, or the table was relocated and re-populated without the kernel
- * entry, os_start() simply never switches and the board hangs with no clue
- * why. This turns that into an immediate park in os_arch_config_fault_trap(),
- * where the debugger lands on the cause.
+ * Worth leaving on. If another definition of the handler name wins at link time, or the table was
+ * relocated and re-populated without the kernel entry, os_start() simply never switches and the
+ * board hangs with no clue why. This turns that into an immediate park in
+ * os_arch_config_fault_trap(), where the debugger lands on the cause.
  *
- * Set it to 0 only for a boot flow whose vector table genuinely cannot be read
- * at os_init() time - e.g. a table that is patched in later, or one behind a
- * memory window VTOR does not describe.
+ * Set it to 0 only for a boot flow whose vector table cannot be read at os_init() time.
  */
 #ifndef OS_CONFIG_ARCH_VECTOR_CHECK
 #define OS_CONFIG_ARCH_VECTOR_CHECK    1U
@@ -187,25 +170,19 @@
 /*
  * Where the kernel tick comes from.
  *
- *   OS_CONFIG_TICK_SOURCE_SYSTICK   The port programs SysTick from
- *                                   SystemCoreClock and OS_CONFIG_TICK_HZ. The
- *                                   default, and the right answer whenever
- *                                   SysTick is free and keeps running in
- *                                   whatever sleep modes the product uses.
+ *   OS_CONFIG_TICK_SOURCE_SYSTICK   The port programs SysTick from SystemCoreClock and
+ *                                   OS_CONFIG_TICK_HZ. The default, and right whenever SysTick is
+ *                                   free and keeps running in the sleep modes the product uses.
  *
- *   OS_CONFIG_TICK_SOURCE_EXTERNAL  The application owns the tick hardware:
- *                                   the port programs nothing, calls
- *                                   os_arch_tick_init_cb() so the application
- *                                   can start its own timer, and expects
- *                                   os_tick_handler() to be called from that
+ *   OS_CONFIG_TICK_SOURCE_EXTERNAL  The application owns the tick hardware: the port programs
+ *                                   nothing, calls os_arch_tick_init_cb() so the application can
+ *                                   start its own timer, and expects os_tick_handler() from that
  *                                   timer's ISR at OS_CONFIG_TICK_HZ.
  *
- * EXTERNAL exists because SysTick is not universally usable. It does not run
- * in the low-power modes several families actually ship with (Nordic nRF5x
- * drives time from the RTC peripheral for exactly this reason), some SoCs do
- * not implement it at all, and on others it is already spoken for by a vendor
- * HAL or a bootloader. None of that is something the kernel can detect, so it
- * is a configuration choice rather than a guess.
+ * EXTERNAL exists because SysTick is not universally usable: it does not run in the low-power modes
+ * several families ship with (Nordic nRF5x drives time from the RTC for exactly this reason), some
+ * SoCs do not implement it, and on others a vendor HAL or bootloader has already claimed it. None
+ * of that is detectable, so it is a choice rather than a guess.
  */
 #ifndef OS_CONFIG_TICK_SOURCE
 #define OS_CONFIG_TICK_SOURCE          OS_CONFIG_TICK_SOURCE_SYSTICK
@@ -220,18 +197,15 @@
  * Which backend the inter-core kernel spinlock uses (0 = the built-in
  * LDREX/STREX one, the default; 1 = the os_arch_spinlock_*_cb callbacks).
  *
- * A property of the silicon rather than of the application, so the SoC
- * package owns it - see doc/soc.md.
+ * A property of the silicon rather than of the application, so the SoC package owns it (doc/soc.md).
  *
- * Set it to 1 when the interconnect implements no GLOBAL exclusive monitor
- * for the spinlock's memory, or that memory cannot be marked Shareable.
- * Without both, two cores can complete STREX at once and the lock stops
- * excluding anything, silently. Routing it to the SoC's own hardware
+ * Set it to 1 when the interconnect implements no GLOBAL exclusive monitor for the spinlock's
+ * memory, or that memory cannot be marked Shareable. Without both, two cores can complete STREX at
+ * once and the lock stops excluding anything, silently; routing it to the SoC's own hardware
  * semaphore through the callbacks is the fix.
  *
- * ARMv6-M multi-core parts have no LDREX/STREX at all and use the callback
- * backend whatever this says (see OS_ARCH_SPINLOCK_USE_CB below). Only
- * meaningful when OS_CONFIG_CORE_COUNT > 1.
+ * ARMv6-M multi-core parts have no LDREX/STREX at all and use the callback backend whatever this
+ * says (see OS_ARCH_SPINLOCK_USE_CB below). Only meaningful when OS_CONFIG_CORE_COUNT > 1.
  */
 #ifndef OS_CONFIG_SPINLOCK_SOC_BACKEND
 #define OS_CONFIG_SPINLOCK_SOC_BACKEND 0U
@@ -598,12 +572,11 @@ OS_INLINE void os_arch_config_fault_trap(void)
  * @brief Verify that the live vector table routes PendSV to the kernel's handler, and park in
  *        os_arch_config_fault_trap() if it does not. Called from os_arch_init() on every core.
  *
- * PendSV is the only vector the kernel must own, and owning it is not something the linker can
- * confirm: if another definition of the configured handler name wins (a vendor IDE's generated
- * interrupt file is the usual one), or a bootloader relocated the table and repopulated it from
- * its own image, the build still succeeds and the symptom is a board that reaches os_start() and
- * then simply stops - no fault, no output, nothing to attach a debugger to. Comparing the table
- * against the address the port actually assembled turns that into a halt at the cause, at boot.
+ * PendSV is the only vector the kernel must own, and the linker cannot confirm it: if another
+ * definition of the configured handler name wins (a vendor IDE's generated interrupt file is the
+ * usual one), or a bootloader relocated and repopulated the table, the build still succeeds and the
+ * symptom is a board that reaches os_start() and stops - no fault, no output. Comparing the table
+ * against the address the port assembled turns that into a halt at the cause, at boot.
  *
  * Compiles to nothing when OS_CONFIG_ARCH_VECTOR_CHECK is 0.
  *

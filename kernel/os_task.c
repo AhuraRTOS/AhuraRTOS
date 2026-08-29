@@ -61,16 +61,10 @@
  * sane nesting depth - a design needing more than a couple of held mutexes at once has a
  * lock-ordering problem this check cannot fix anyway. */
 
-/* A floor under OS_CONFIG_MIN_STACK_SIZE, because every other check in the kernel measures against
- * it and so cannot catch it being wrong itself: os_task_create only tests
- * stack_bytes >= OS_CONFIG_MIN_STACK_SIZE, and the idle stacks below are SIZED from it. Set it too
- * low and os_arch_task_stack_initialize writes its initial frame - 17 words on v6m/v7m, 18 on v8m,
- * so 72 bytes at the top - straight past the bottom of every task stack in the system, at creation
- * time, silently. 128 leaves that frame plus room for a task to make a call; it is a sanity floor,
- * not a recommendation (the template ships 256, and most real tasks need considerably more).
- *
- * A _Static_assert rather than #if because a compile-time constant expression is exactly what this
- * is, and the message names the option - see os_timer.c for the same pattern on priorities. */
+/* A floor under OS_CONFIG_MIN_STACK_SIZE, because every other check measures against it and so
+ * cannot catch it being wrong itself. Too low and os_arch_task_stack_initialize writes its initial
+ * frame, up to 72 bytes, past the bottom of every task stack at creation time, silently. 128 is a
+ * sanity floor, not a recommendation; the template ships 256. */
 _Static_assert((OS_CONFIG_MIN_STACK_SIZE >= 128U) && ((OS_CONFIG_MIN_STACK_SIZE % 8U) == 0U),
                "OS_CONFIG_MIN_STACK_SIZE must be at least 128 and a multiple of 8");
 
@@ -135,20 +129,15 @@ typedef struct
  * ***********************************************************************************************************
 */
 
-/* Every scheduling core owns one idle task and one current-task slot; the
- * task table and the ready/delay lists are shared between the cores (the
- * critical sections and the explicit PRIMASK guards protect them, plus the
- * kernel spinlock on multi-core builds). */
+/* Every scheduling core owns one idle task and one current-task slot; the task table and the
+ * ready/delay lists are shared, protected by the critical sections and the kernel spinlock. */
 /* Table slots the kernel reserves for its own service tasks, on top of OS_CONFIG_MAX_USER_TASKS.
  *
- * This is what lets OS_CONFIG_MAX_USER_TASKS mean what an application would expect it to mean - how
- * many of ITS tasks may exist - instead of a budget it has to share with whichever kernel services
- * happen to be enabled. Turning on the log or the timer service no longer quietly costs the
- * application a task.
+ * This is what lets OS_CONFIG_MAX_USER_TASKS mean how many of ITS tasks may exist, rather than a
+ * budget shared with whichever kernel services happen to be enabled.
  *
- * Exactly one of tsk_main and tsk_test always exists (os_kernel.c compiles in one or the other,
- * never both), and each optional service task adds one. The idle tasks are NOT counted: they live
- * in os_task_idle_tcb below, outside this table, one per core. */
+ * Exactly one of tsk_main and tsk_test always exists, and each optional service adds one. The idle
+ * tasks are NOT counted: they live in os_task_idle_tcb, outside this table, one per core. */
 #define OS_TASK_SYSTEM_SLOTS  (1U + \
                                ((OS_CONFIG_TIMER_ENABLE == 1U) ? 1U : 0U) + \
                                                               ((OS_CONFIG_LOG_ENABLE   == 1U) ? 1U : 0U))
@@ -263,10 +252,9 @@ os_err_t os_task_create(os_task_t *task, const os_task_config_t *config)
 /**
  * @brief Create a task without the user priority restriction; kernel use only.
  *
- * Tasks created here are marked as the kernel's own: os_task_pause and os_task_delete refuse them
- * (OS_ERR_BUSY), so an application cannot stop the timer or log service out from under the
- * kernel APIs that depend on it. tsk_main and tsk_test do NOT come through here - they are ordinary
- * application tasks and stay under the application's control.
+ * Tasks created here are marked as the kernel's own, so os_task_pause and os_task_delete refuse
+ * them with OS_ERR_BUSY. tsk_main and tsk_test do NOT come through here: they are ordinary
+ * application tasks.
  *
  * @param[out] task    Output task handle.
  * @param[in]  config  Task creation configuration.
@@ -474,10 +462,8 @@ os_err_t os_task_pause(os_task_t *task)
 /**
  * @brief Resolve a delete request to the TCB it names, or say why it cannot be honoured.
  *
- * Split out of os_task_delete so both keep a single exit without a five-level staircase, which is
- * what CSTYLE asks for when nesting would run deep (MISRA Rule 15.5 wants one exit, not depth).
- * Called with the kernel critical section already held, since every field it reads is scheduler
- * state.
+ * Split out of os_task_delete so both keep a single exit without a deep staircase. Called with the
+ * kernel critical section already held.
  *
  * @param[in]  task         Handle to delete, or NULL for the calling task.
  * @param[in]  core         This core's index.
@@ -640,19 +626,15 @@ void os_task_yield(void)
 /**
  * @brief Change a task's priority (NULL means the calling task).
  *
- * Only user priorities are accepted: OS_TASK_PRIO_IDLE belongs to the idle task and
- * OS_TASK_PRIO_MAX to the kernel service tasks, so neither is the application's to hand out. The
- * idle task and the kernel's own tasks are refused outright, exactly as os_task_pause and
+ * User priorities only: the idle task and the kernel's own tasks are refused, as os_task_pause and
  * os_task_delete refuse them.
  *
- * Takes effect immediately, whatever the task is doing: a READY task moves between ready lists, a
- * RUNNING one may be preempted on the spot, and a task blocked on a mutex, semaphore, queue or
- * event is re-sorted in that object's waiter list so it is woken in its new priority order.
+ * Takes effect immediately whatever the task is doing: a READY task moves between ready lists, a
+ * RUNNING one may be preempted on the spot, a blocked one is re-sorted in its waiter list.
  *
- * A task currently holding a priority-inheritance boost keeps it. The new value becomes its base
- * priority - what it returns to when it releases the mutex - and only takes effect now if it is
- * HIGHER than the boost. Lowering a boosted task immediately would hand back the very inversion
- * the boost exists to prevent.
+ * A task holding a priority-inheritance boost keeps it. The new value becomes its BASE priority and
+ * only bites now if it is HIGHER than the boost, since lowering it would hand back the very
+ * inversion the boost prevents.
  *
  * @param[in,out] task      Task handle, or NULL for the calling task.
  * @param[in]     priority  New priority: OS_TASK_PRIO_1..OS_TASK_PRIO_30 (or any value in that range).
@@ -714,9 +696,8 @@ os_err_t os_task_priority_set(os_task_t *task, os_task_priority_t priority)
 /**
  * @brief Get a task's priority (NULL means the calling task).
  *
- * Reports the priority the application set, not a priority-inheritance boost that may be in force
- * right now. That is what makes the value safe to save and restore around a section: a boost is
- * transient and belongs to the kernel, and writing one back later would make it permanent.
+ * Reports the priority the application set, not a priority-inheritance boost in force right now,
+ * which is what makes the value safe to save and restore around a section.
  *
  * @param[in]  task          Task handle, or NULL for the calling task.
  * @param[out] priority_out  Receives the task's priority.
@@ -788,18 +769,11 @@ os_task_state_t os_task_state_get(const os_task_t *task)
 /**
  * @brief Get a task's name, as OS_TASK_DEFINE spelled it.
  *
- * The kernel never reads a name itself; this exists so an application's own diagnostics - a shell
- * command listing tasks, a trace line, an error report - can say WHICH task without keeping a
- * second table mapping handles to strings.
+ * For an application's own diagnostics; the kernel never reads a name itself. The pointer is safe
+ * to hold, since every name is a string literal, but it does not prove the task is still alive.
  *
- * The returned pointer is safe to hold. Every name is a string literal, so it has static storage
- * duration and outlives the task it belonged to; what a caller must not assume is that the name
- * still describes a LIVE task, since the handle may have been deleted by the time it is printed.
- *
- * With OS_CONFIG_TASK_NAME_ENABLE at 0 the answer is NULL for every task, including the kernel's
- * own. That is the documented result rather than an error: a build that dropped the names has
- * nothing to report, and a caller that already handles the unknown-handle NULL needs no second
- * case for it.
+ * With OS_CONFIG_TASK_NAME_ENABLE at 0 the answer is NULL for every task. That is the documented
+ * result rather than an error.
  *
  * @param[in] task  Task handle, or NULL for the calling task.
  * @return const char*  The task's name, or NULL for an unknown handle, an unnamed task, or a build
@@ -831,9 +805,7 @@ const char* os_task_name_get(const os_task_t *task)
 /**
  * @brief Get the minimum stack headroom a task has ever had, in bytes.
  *
- * Counts the fill-pattern bytes still untouched at the bottom of the stack,
- * i.e. the smallest distance the stack pointer has ever had to the overflow
- * boundary since the task was created.
+ * Counts the fill-pattern bytes still untouched at the bottom of the stack.
  *
  * @param[in]  task            Task handle, or NULL for the calling task.
  * @param[out] min_free_bytes  Worst-case remaining stack in bytes.
@@ -1022,20 +994,15 @@ void os_task_tick_update(uint32_t elapsed_ticks)
                 /* Tell whichever core may run it, exactly as every other wake path does. Making a
                  * task READY only puts it in a list; something still has to look.
                  *
-                 * Single-core needs no more than the reschedule check at the end of
-                 * os_tick_handler, which is why this line was missing and why nothing noticed.
-                 * Across cores that check is worthless: it runs on THIS core and asks only about
-                 * THIS core's running task, so a task pinned elsewhere was woken here and its own
-                 * core was never told. It then waited for that core's next tick to poll the ready
-                 * bitmap and happen to notice - and if that core was idle in a WFI/WFE, the poll
-                 * that would have found it was itself what needed waking. The task stayed READY
-                 * and its core stayed asleep, each waiting for the other.
+                 * Single-core gets away without this because os_tick_handler re-checks at the
+                 * end. Across cores that check is worthless: it asks only about THIS core's
+                 * running task, so a task pinned elsewhere was woken here and its own core never
+                 * told. If that core was idle in a WFI/WFE, the poll that would have found it was
+                 * itself what needed waking - the task stayed READY and the core stayed asleep.
+                 * Not a latency bug: the wake is lost outright.
                  *
-                 * That is not a latency bug, it is the wake being lost outright: a core that goes
-                 * quiet mid-run and never comes back, with everything else still running normally.
-                 * Safe here for the same reason it is safe in os_task_wake_locked - the caller
-                 * holds the cross-core spinlock, which is what makes reading os_task_current[]
-                 * inside meaningful, and the IPI callback takes no lock of its own. */
+                 * Safe here for the same reason as in os_task_wake_locked: the caller holds the
+                 * cross-core spinlock, and the IPI callback takes no lock of its own. */
                 if (os_kernel_is_running())
                 {
                     os_task_preempt_request(tcb);
@@ -1234,10 +1201,9 @@ void os_task_wait_begin(os_list_t *waiters, uint32_t timeout_ticks)
  * @brief Drop the calling task's pending-wake state: call on every path where a blocking
  *        primitive stops retrying and returns to its caller, signaled or not.
  *
- * This is what keeps os_task_wake_compensate's window narrow. Until this call the task counts as
- * holding an unconsumed wake that a pause or delete must pass on; from here the primitive has
- * finished with the object, so the notification is spent and the list it came from is no longer
- * this task's business - it may not even exist by the time the task blocks on something else.
+ * This is what keeps os_task_wake_compensate's window narrow. Until this call the task holds an
+ * unconsumed wake that a pause or delete must pass on; from here the notification is spent and the
+ * list it came from may not even exist by the time the task blocks on something else.
  *
  * No-op from interrupt context: an ISR borrows the interrupted task's identity and must not
  * discard that task's own wait state.
@@ -1443,10 +1409,9 @@ uint32_t os_task_current_id_get(void)
  * @brief Link a just-acquired mutex into the calling task's owned-mutex list.
  *
  * Only an identifiable task gets an entry. A mutex stores nothing but its owner's id, so an owner
- * that cannot be found by id again at unlock time could never have its list entry removed either -
- * and id 0 (the idle task, or code running before the scheduler starts) is already outside
- * priority inheritance, since os_task_mutex_priority_inherit cannot resolve it. Such an owner
- * simply holds the mutex without owning a list entry for it.
+ * that cannot be found by id at unlock time could never have its entry removed either. Id 0 - the
+ * idle task, or code before the scheduler starts - is already outside priority inheritance and
+ * simply holds the mutex without a list entry.
  *
  * @param[in,out] owner_node  The mutex's own owner_node link.
  * @return None.
@@ -1577,18 +1542,16 @@ void os_task_mutex_waiter_depart(void)
 
 /******************************************************************************************************/
 /**
- * @brief Unlink a released mutex from its owner's owned-mutex list and recompute the owner's
- *        effective priority as max(base_priority, highest waiter still queued on any mutex it
- *        still holds) - correct even when the task holds several mutexes at once.
+ * @brief Unlink a released mutex from its owner's list and recompute the owner's effective
+ *        priority as max(base_priority, highest waiter still queued on any mutex it still holds).
+ *        Correct even when the task holds several mutexes at once.
  *
  * The owner comes from the id passed in, never from the running task: os_mutex_unlock reaches here
  * for a non-owner too, and working on the caller would splice this node out of the REAL owner's
- * list while updating the CALLER's head and tail - two corrupted lists, plus a boost left behind
- * that nothing can recompute away. An unresolvable owner has nothing to undo: id 0 never had a
- * list entry, and a deleted task's entries were detached by os_task_tcb_clear.
+ * list while updating the CALLER's head and tail. An unresolvable owner has nothing to undo.
  *
- * @param[in]     owner_id    Id the mutex recorded for its owner (captured before the unlock cleared it).
- * @param[in,out] owner_node  The mutex's own owner_node link (already unlocked by the caller).
+ * @param[in]     owner_id    Id the mutex recorded for its owner, captured before unlock cleared it.
+ * @param[in,out] owner_node  The mutex's own owner_node link, already unlocked by the caller.
  * @return None.
  */
 void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node_t *owner_node)

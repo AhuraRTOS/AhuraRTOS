@@ -2,34 +2,27 @@
  * @file soc_common.c
  * @brief SoC-owned kernel callbacks shared by every Raspberry Pi RP2 chip.
  *
- * Everything the kernel needs from an RP2 chip except one thing: the core id, the kernel
- * spinlock, the CPU clock symbol the SDK does not otherwise provide, the SysTick vector, and
- * booting core 1. All of it is SIO or plain SDK, and SIO is the same block on the RP2040 and the
- * RP2350 alike, so it lives here once rather than twice.
+ * Everything the kernel needs from an RP2 chip except one thing: the core id, the kernel spinlock,
+ * the CPU clock symbol the SDK does not provide, the SysTick vector, and booting core 1. All of it
+ * is SIO or plain SDK, and SIO is the same block on the RP2040 and the RP2350, so it lives here
+ * once rather than twice. The exception is how a core interrupts the other - FIFO on the RP2040,
+ * doorbells on the RP2350 - which each chip package supplies. See soc_common.h.
  *
- * The exception is how a core interrupts the other one - FIFO on the RP2040, doorbells on the
- * RP2350 - which each chip package supplies as soc_ipi_arm() and
- * os_arch_core_ipi_request_cb(). See soc_common.h.
+ * Compiled INTO whichever chip package the build selected, not into a library of its own, so there
+ * is exactly one definition of each symbol in the link.
  *
- * This file is compiled INTO whichever chip package the build selected, not into a library of its
- * own, so there is exactly one definition of each symbol in the link and no archive-extraction
- * question to get wrong.
+ * The application still copies template/os_cb.c for its own half of the contract: log output, what
+ * a failed assertion does, how a blown stack is reported.
  *
- * The application still copies template/os_cb.c for its own half of the callback contract: where
- * log output goes, what a failed assertion does, how a blown stack is reported. Nothing here
- * answers those.
+ * Most definitions are weak, so a strong one in the application replaces that callback and leaves
+ * the rest. Two are strong and each says why at its own definition: isr_systick and
+ * os_arch_soc_init_cb both have to displace a weak definition that is always linked, and between
+ * two weak definitions the linker keeps whichever it saw first.
  *
- * Most definitions are weak, so a strong definition anywhere in the application replaces that one
- * callback and leaves the rest in place. Two are strong, and each says why at its own definition:
- * isr_systick and os_arch_soc_init_cb both have to displace a weak definition that is always
- * linked - crt0.S's vector stub and the kernel's empty default - and between two weak definitions
- * the linker simply keeps whichever it saw first.
- *
- * Tick source: these packages expect the kernel default, OS_CONFIG_TICK_SOURCE_SYSTICK, where the
- * port programs SysTick itself. Selecting OS_CONFIG_TICK_SOURCE_EXTERNAL means supplying
- * os_arch_tick_init_cb() from the application, because the choice of timer is then the
- * application's; the package deliberately does not guess one, so the omission is a link error
- * naming the function rather than a kernel whose clock never advances.
+ * Tick source: these packages expect OS_CONFIG_TICK_SOURCE_SYSTICK. Selecting EXTERNAL means
+ * supplying os_arch_tick_init_cb() from the application, since the choice of timer is then the
+ * application's; the package does not guess one, so the omission is a link error rather than a
+ * kernel whose clock never advances.
  *
  * @copyright (c) 2026 Ahura Project Contributors
  *            SPDX-License-Identifier: GPL-3.0-or-later
@@ -173,15 +166,14 @@ void os_arch_soc_idle_cb(void)
  *     __StackOneBottom .. __StackOneTop    core 1's handler stack
  *     __StackLimit                         the bottom of the LOWEST stack, i.e. core 1's
  *
- * That last one is the trap, and the kernel's default walks straight into it: on a dual-core
- * build __StackLimit is core 1's bottom, several kilobytes below core 0's, so an MSPLIM set from
- * it does not guard core 0 at all. Core 0's handler stack could overrun its own 2 KB and keep
- * going down through the whole of core 1's stack before anything objected - corrupting the other
- * core's saved state on the way, then finally faulting during exception stacking, which the fault
- * handler cannot itself stack for. The chip locks up with no fault recorded and both cores dead.
+ * That last one is the trap the kernel's default walks into: on a dual-core build __StackLimit is
+ * core 1's bottom, kilobytes below core 0's, so an MSPLIM set from it does not guard core 0 at all.
+ * Core 0's handler stack could overrun and keep going down through core 1's, corrupting the other
+ * core's saved state, then fault during exception stacking - which the fault handler cannot itself
+ * stack for. The chip locks up with no fault recorded and both cores dead.
  *
- * Sizes come from PICO_STACK_SIZE and PICO_CORE1_STACK_SIZE; this only has to name the right
- * bottom for the right core, and the symbols are absolute, so their addresses are the values.
+ * Sizes come from PICO_STACK_SIZE and PICO_CORE1_STACK_SIZE; the symbols are absolute, so their
+ * addresses are the values.
  */
 uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id)
 {
@@ -215,18 +207,15 @@ uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id)
 /******************************************************************************************************/
 /**
  * @brief Top of the given core's handler (MSP) stack. STRONG, replacing the kernel's missing
- *        default: the vector table only names core 0's initial stack pointer, so the kernel
- *        cannot answer this one for itself on a multi-core build.
+ *        default: the vector table only names core 0's initial stack pointer.
  *
- * The kernel's context switch resets MSP to this value on its first start, abandoning the boot
- * context. If a secondary core answered with the vector table instead, it would reset its MSP
- * to core 0's stack top and the two cores would push handler frames into the same region,
- * overwriting each other's saved state - a hard fault whose frame reads as garbage. This is the
- * exact failure that motivated the callback.
+ * The context switch resets MSP to this value on its first start, abandoning the boot context. A
+ * secondary core answering with the vector table would reset its MSP to core 0's stack top, and the
+ * two cores would push handler frames into the same region, overwriting each other's saved state.
+ * That is the failure that motivated the callback.
  *
- * Sizes come from PICO_STACK_SIZE and PICO_CORE1_STACK_SIZE; the symbols are absolute, so their
- * addresses are the values. Unknown core ids fall back to core 0's stack: the only other stack
- * this package has placed, and a guess of nothing would be far worse than a shared region.
+ * Unknown core ids fall back to core 0's stack: the only other stack this package has placed, and a
+ * guess of nothing would be far worse than a shared region.
  */
 uint32_t os_arch_handler_stack_top_cb(uint32_t core_id)
 {
@@ -288,26 +277,18 @@ void os_arch_soc_init_cb(void)
 /**
  * @brief SysTick vector: advance the kernel clock.
  *
- * The kernel owns exactly one vector, PendSV, and routes the tick through the application instead
- * - on a CMSIS part that means writing os_tick_handler() into the generated SysTick_Handler. The
- * SDK generates nothing of the sort, and its vector table calls the entry isr_systick, so on
- * these chips every project would have to write this same three-line function from the datasheet.
- * The package writes it once.
- *
- * The port has already programmed and enabled SysTick by the time this can fire; all that is
- * missing is the vector, and crt0.S declares its own isr_systick weak precisely so it can be
- * replaced.
+ * The kernel owns exactly one vector, PendSV, and routes the tick through the application. The SDK
+ * generates no SysTick_Handler and its vector table calls the entry isr_systick, so every project
+ * on these chips would otherwise write this same three-line function. The package writes it once.
  *
  * STRONG, and the exception is load-bearing. crt0.S's stub is itself weak, and between two weak
- * definitions the linker keeps whichever it saw first - which is crt0.o, always, because the
- * runtime is linked ahead of this library. A weak definition here therefore loses in silence and
- * the first tick hits crt0.S's `bkpt`. Only a strong definition displaces a weak one regardless
- * of order. This is the same reason the kernel's port defines isr_pendsv strong.
+ * definitions the linker keeps whichever it saw first - crt0.o, always, because the runtime is
+ * linked ahead of this library. A weak definition here loses in silence and the first tick hits
+ * crt0.S's `bkpt`. Same reason the kernel's port defines isr_pendsv strong.
  *
- * The cost is that an application cannot override this one by defining it too - that is a
- * duplicate-symbol error rather than a silent replacement. An application that needs its own work
- * on the tick selects OS_CONFIG_TICK_SOURCE_EXTERNAL, which removes this definition along with
- * the port's SysTick programming and hands the whole timer over.
+ * The cost is that an application cannot override this one; that is a duplicate-symbol error. One
+ * that needs its own work on the tick selects OS_CONFIG_TICK_SOURCE_EXTERNAL, which removes this
+ * definition along with the port's SysTick programming.
  */
 void isr_systick(void)
 {
@@ -343,23 +324,19 @@ void os_arch_core_launch_cb(uint32_t core_id)
 
     /* Core 0's own IPI is armed HERE, and not a line earlier.
      *
-     * On the RP2040 the IPI rides the SIO FIFO, and so does multicore_launch_core1(): the launch is
-     * a handshake in which core 0 pushes six words and core 1 echoes each one back. Those echoes
-     * land in core 0's RX FIFO and raise SIO_IRQ_PROC0 - the very interrupt the kernel uses for
-     * "come and reschedule". Armed before the launch, the handler therefore runs during the
-     * handshake and does two damaging things: multicore_fifo_drain() eats the words the launch is
-     * still waiting to read, and the switch request pends PendSV on a core that has not started its
-     * first task yet. It faulted in the context switch, reading a process stack pointer no task had
-     * ever set.
+     * On the RP2040 the IPI rides the SIO FIFO, and so does multicore_launch_core1(): the launch
+     * is a handshake in which core 0 pushes six words and core 1 echoes each back. Those echoes
+     * land in core 0's RX FIFO and raise SIO_IRQ_PROC0, the very interrupt the kernel uses for
+     * "come and reschedule". Armed before the launch, that handler runs DURING the handshake and
+     * does two damaging things: multicore_fifo_drain() eats the words the launch is still waiting
+     * to read, and the switch request pends PendSV on a core that has not started its first task.
      *
-     * The RP2350 never showed this because its IPI is a doorbell, an entirely separate mechanism
-     * from the FIFO the launch uses - which is why both of its packages ran dual-core cleanly and
-     * only the RP2040 did not. Arming after the launch is correct on both: core 1 cannot send an
-     * IPI before it exists, and multicore_launch_core1() does not return until the handshake is
-     * complete. Core 1 arms its own on the way in, in soc_core1_entry().
+     * The RP2350 never showed this because its IPI is a doorbell, separate from the FIFO the launch
+     * uses. Arming after the launch is correct on both: core 1 cannot send an IPI before it exists,
+     * and multicore_launch_core1() does not return until the handshake is complete. Core 1 arms its
+     * own in soc_core1_entry().
      *
-     * A reschedule request that arrives in the remaining sliver - after the launch returns, before
-     * this line - is not lost so much as deferred: the next tick re-evaluates scheduling anyway. */
+     * A request arriving in the remaining sliver is deferred, not lost: the next tick re-evaluates. */
         soc_ipi_arm();
     }
 }

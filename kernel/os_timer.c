@@ -3,15 +3,13 @@
  * @brief Software timers: expiry is detected by the kernel tick, and callbacks run in FIFO order on
  *        one kernel timer task at OS_CONFIG_TIMER_PRIORITY (the highest priority by default).
  *
- * There is no work queue and no deferred-call API, because a "run this soon" request IS a one-shot
- * timer. The caller declares one with OS_TIMER_DEFINE_ONESHOT and starts it with the context and value the
- * callback should receive - the same object, the same tick, the same delivery queue. Nothing is
- * owned by the kernel, so there is no pool to size and nothing that can be exhausted.
+ * There is no separate work queue, because a "run this soon" request IS a one-shot timer. Nothing
+ * is owned by the kernel, so there is no pool to size and nothing that can be exhausted.
  *
  * Delivery is FIFO. Expiries join os_timer_ready_list in the order the tick notices them and the
- * task takes them from the front, so callbacks run in the order they became ready and never
- * overlap. That ordering is why the list exists at all: scanning a registry for a flag, as this
- * file used to, runs callbacks in slot order, which is not the order they were asked for.
+ * task takes them from the front, so callbacks never overlap and run in the order they became
+ * ready. That is why the list exists: scanning a registry for a flag, as this file used to, runs
+ * callbacks in slot order rather than the order they were asked for.
  *
  * @copyright (c) 2026 Ahura Project Contributors
  *            SPDX-License-Identifier: GPL-3.0-or-later
@@ -46,26 +44,23 @@ _Static_assert((OS_CONFIG_TIMER_PRIORITY >= OS_TASK_PRIO_1_LOWEST) &&
  * The gate every public call in this file passes through first. It rules out three things:
  *
  *   1. Memory that is not a timer. The link state lives inside the object, so a hand-declared
- *      os_timer_t hands the kernel two nodes of garbage, and os_list_remove would store
- *      through node->prev - a write to an address nobody chose, from a plain os_timer_stop.
- *      Only the DEFINE macros set self, so anything else is refused.
+ *      os_timer_t hands the kernel two nodes of garbage, and os_list_remove would store through
+ *      node->prev - a write to an address nobody chose, from a plain os_timer_stop. Only the
+ *      DEFINE macros set self.
  *
- *   2. A COPY of a real timer, whose list nodes still point into the original. A fixed
- *      signature could not see this; self can, because the copy no longer lives there.
+ *   2. A COPY of a real timer, whose list nodes still point into the original. A fixed signature
+ *      could not see this; self can, because the copy no longer lives there.
  *
- *   3. A pool entry, which IS a valid timer and would otherwise pass. Arming a free one links
- *      its running_node into the running list while its ready_node is still on the pool's
- *      free list, and the next expiry overwrites the links the free list holds it by.
+ *   3. A pool entry, which IS a valid timer and would otherwise pass. Arming a free one links its
+ *      running_node into the running list while its ready_node is still on the pool's free list,
+ *      and the next expiry overwrites the links the free list holds it by.
  *
- * Four bytes per timer and one comparison per call, and it subsumes the NULL check these
- * functions needed anyway. Being a marker it is a strong heuristic, not a proof -
- * os_timer_unlink_locked is what makes the unlink path provable.
+ * Four bytes per timer and one comparison per call. Being a marker it is a strong heuristic, not a
+ * proof: os_timer_unlink_locked is what makes the unlink path provable.
  *
- * Failing it is NOT asserted. Every public call here documents OS_ERR_INVALID_ARG as its answer
- * to a bad argument, which makes a bad argument a defined input with a defined result rather than
- * a programming error. An assert would contradict that contract and would make the documented
- * return impossible to test. The asserts left in this file are internal invariants only -
- * conditions no caller can produce, which mean the kernel's own state has gone wrong.
+ * Failing it is NOT asserted. Every public call here documents OS_ERR_INVALID_ARG as its answer to
+ * a bad argument, which makes that a defined input with a defined result rather than a programming
+ * error. The asserts left in this file are internal invariants only.
  */
 #define OS_TIMER_VALID(timer)                                                             \
     (((timer) != NULL) && ((timer)->self == (void *)(timer)) &&                           \
@@ -354,14 +349,12 @@ os_err_t os_timer_value_set(os_timer_t *timer, uint32_t value)
  * timer RESCHEDULES it, so one callback runs carrying only the later event. Right for a
  * debounce, wrong for deferring an interrupt. Every submission here takes its own slot.
  *
- * The slots are the caller's, so FULL means "this pool's entries are all in flight" and
- * nothing else. The delay comes from the pool's definition, already in ticks, so nothing is
- * computed here; 0 skips the countdown and joins the delivery queue at once.
+ * The slots are the caller's, so FULL means "this pool's entries are all in flight". The delay
+ * comes from the pool's definition, already in ticks; 0 joins the delivery queue at once. The entry
+ * returns to the pool as delivery STARTS, so a callback may submit again.
  *
- * The entry returns to the pool as delivery STARTS, so a callback may submit again.
- *
- * Nothing is handed back, so a submission cannot be cancelled or altered afterwards - the
- * entry is the kernel's until it runs. Work that needs cancelling wants a named timer.
+ * Nothing is handed back, so a submission cannot be cancelled or altered. Work that needs
+ * cancelling wants a named timer.
  *
  * @param[in,out] pool     Pool declared with OS_TIMER_DEFINE_SUBMIT.
  * @param[in]     context  Pointer passed to the callback (not copied).
@@ -694,15 +687,13 @@ static void os_timer_task_entry(void *context)
 /**
  * @brief Take the oldest queued expiry, returning what to call.
  *
- * FIFO: the front of the queue is the expiry that has been waiting longest, so callbacks run in
- * the order they became ready.
+ * FIFO: the front of the queue has been waiting longest. A finished one-shot leaves the running
+ * list before its callback runs, so the callback may restart its own timer; a SUBMIT entry goes
+ * back to its pool at the same moment.
  *
- * A finished one-shot leaves the running list before its callback runs, so the callback may
- * restart its own timer; a SUBMIT entry goes back to its pool at the same moment.
- *
- * The callback, context and value are copied out inside the critical section rather than the
- * timer pointer being handed back, so anything done to the object afterwards cannot affect
- * the call already in flight.
+ * The callback, context and value are copied out inside the critical section rather than the timer
+ * pointer being handed back, so anything done to the object afterwards cannot affect a call in
+ * flight.
  *
  * @param[out] callback_out  Callback to invoke, written only when true is returned.
  * @param[out] context_out   Context to pass it, written only when true is returned.
