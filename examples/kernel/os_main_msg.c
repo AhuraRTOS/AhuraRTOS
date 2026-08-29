@@ -5,8 +5,8 @@
  * Two message buffers of the same size, differing only in where their storage
  * came from:
  *
- *   static_buf   OS_MSG_DEFINE_STATIC  - an array the macro declares
- *   dynamic_buf  OS_MSG_DEFINE_DYNAMIC - bytes from the kernel heap
+ *   static_buf   OS_MSG_DEFINE  - an array the macro declares
+ *   dynamic_buf  a plain os_msg_t       - bytes from the kernel heap
  *
  * os_main sends to one, then the other, over and over. Two reader tasks each
  * block on their own buffer and print what arrives. The messages are of
@@ -48,8 +48,8 @@
 /* Storage in BYTES, not in messages: 128 bytes hold a few long messages or many short ones. */
 #define BUF_BYTES   128U
 
-OS_MSG_DEFINE_STATIC(static_buf, BUF_BYTES);   /* storage is an array, ready to use          */
-OS_MSG_DEFINE_DYNAMIC(dynamic_buf);            /* storage comes from os_msg_init_dynamic()   */
+OS_MSG_DEFINE(static_buf, BUF_BYTES);   /* storage is an array, ready to use          */
+static os_msg_t dynamic_buf;                   /* storage comes from os_msg_init_dynamic()   */
 
 /* Every task states its core affinity on a multi-core build: the kernel asks for that argument
  * rather than defaulting it, so the decision is made on purpose at each creation site. These

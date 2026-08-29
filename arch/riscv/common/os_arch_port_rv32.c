@@ -335,37 +335,35 @@ static void os_arch_vector_check(void (*swi_handler)(void))
     uintptr_t slot;
     uintptr_t target;
 
-    if ((mtvec & 0x3UL) != 1UL)
+    /* Vectored mode only, and only a JAL slot this can decode. Anything else is a table
+     * shape the check cannot read, which is not a fault - it simply has nothing to say. */
+    if ((mtvec & 0x3UL) == 1UL)
     {
-        return;                                     /* direct mode: nothing per-cause to check */
-    }
+        slot        = (uintptr_t)(mtvec & ~0x3UL) + ((uintptr_t)OS_ARCH_TRAP_CAUSE_SWI * 4U);
+        instruction = *(const volatile uint32_t *)slot;
 
-    slot        = (uintptr_t)(mtvec & ~0x3UL) + ((uintptr_t)OS_ARCH_TRAP_CAUSE_SWI * 4U);
-    instruction = *(const volatile uint32_t *)slot;
-
-    if ((instruction & 0x7FUL) != 0x6FUL)
-    {
-        return;                                     /* not a JAL: a table shape this cannot read */
-    }
-
+        if ((instruction & 0x7FUL) == 0x6FUL)
+        {
     /* Reassemble the JAL immediate, which the encoding scatters across the instruction word:
      * imm[20] at bit 31, imm[10:1] at 30:21, imm[11] at 20, imm[19:12] at 19:12, and bit 0 is
      * always zero. */
-    offset = ((instruction >> 21) & 0x3FFUL) << 1;
-    offset |= ((instruction >> 20) & 0x1UL) << 11;
-    offset |= ((instruction >> 12) & 0xFFUL) << 12;
-    offset |= ((instruction >> 31) & 0x1UL) << 20;
+            offset = ((instruction >> 21) & 0x3FFUL) << 1;
+            offset |= ((instruction >> 20) & 0x1UL) << 11;
+            offset |= ((instruction >> 12) & 0xFFUL) << 12;
+            offset |= ((instruction >> 31) & 0x1UL) << 20;
 
-    if ((offset & (1UL << 20)) != 0UL)
-    {
-        offset |= ~((1UL << 21) - 1UL);             /* sign-extend the 21-bit displacement */
-    }
+            if ((offset & (1UL << 20)) != 0UL)
+            {
+                offset |= ~((1UL << 21) - 1UL);     /* sign-extend the 21-bit displacement */
+            }
 
-    target = slot + (uintptr_t)(int32_t)offset;
+            target = slot + (uintptr_t)(int32_t)offset;
 
-    if (target != (uintptr_t)swi_handler)
-    {
-        os_arch_config_fault_trap();
+            if (target != (uintptr_t)swi_handler)
+            {
+                os_arch_config_fault_trap();
+            }
+        }
     }
 #else
     (void)swi_handler;

@@ -340,6 +340,24 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
 #define OS_STACK_ALIGNED
 #endif
 
+/* Alignment for a byte array that will hold objects of a type the macro was never told about.
+ *
+ * OS_QUEUE_DEFINE takes an item size rather than an item type, so the compiler has nothing
+ * to infer the storage's alignment from. Eight covers every fundamental type on the 32-bit targets
+ * this kernel builds for - uint64_t and double are the widest - and is what os_mem_alloc already
+ * returns for the dynamic queues, so both kinds of queue hold their items exactly the same way.
+ *
+ * Same compiler order as OS_STACK_ALIGNED above, and for the same reason. */
+#if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6000000)
+#define OS_ITEM_ALIGNED         __attribute__((aligned(8)))  /* armclang */
+#elif defined(__clang__)
+#define OS_ITEM_ALIGNED         __attribute__((aligned(8)))  /* clang    */
+#elif defined(__GNUC__)
+#define OS_ITEM_ALIGNED         __attribute__((aligned(8)))  /* GCC      */
+#else
+#define OS_ITEM_ALIGNED
+#endif
+
 /** The .name line the two DEFINE macros below emit, or nothing at all.
  *
  *  A whole initializer rather than just its value, because OS_CONFIG_TASK_NAME_ENABLE at 0 takes
@@ -372,7 +390,7 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
         .stack_memory = (void *)(task_name##_stack_buf),        \
         .stack_bytes  = sizeof(task_name##_stack_buf)           \
     };                                                          \
-    static os_task_t task_name = { .storage = &task_name##_task_storage }
+    os_task_t task_name = { .storage = &task_name##_task_storage }
 
 /** OS_TASK_DEFINE, plus attributes on the stack - for when WHERE the stack lives matters as much
  *  as how big it is: fast on-chip RAM (DTCM, CCM), a no-init section that survives a reset, a
@@ -398,7 +416,7 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
         .stack_memory = (void *)(task_name##_stack_buf),            \
         .stack_bytes  = sizeof(task_name##_stack_buf)               \
     };                                                              \
-    static os_task_t task_name = { .storage = &task_name##_task_storage }
+    os_task_t task_name = { .storage = &task_name##_task_storage }
 
 /** Task behaviour for os_task_create: what the task runs, with what, and at what priority. What it
  *  is called and where its stack lives came from OS_TASK_DEFINE, so neither appears here.
@@ -841,23 +859,35 @@ os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms);
  * A queue is an object plus an item buffer. Which macro declares it decides where that buffer
  * comes from, and that is the only difference between the three kinds:
  *
- *   STATIC    OS_QUEUE_DEFINE_STATIC(sensor_q, sample_t, 8);
+ *   STATIC    OS_QUEUE_DEFINE(sensor_q, sizeof(sample_t), 8);
  *             / the macro declares the buffer too; usable where it stands
  *
- *   ATTR      OS_QUEUE_DEFINE_STATIC_ATTR(rx_q, sample_t, 8,
+ *   ATTR      OS_QUEUE_DEFINE_ATTR(rx_q, sizeof(sample_t), 8,
  *                                  __attribute__((section(".dma"))));
  *             / the same, with the array placed where you need it
  *
- *   DYNAMIC   OS_QUEUE_DEFINE_DYNAMIC(log_q);
- *             os_queue_init_dynamic(&log_q, item_size, capacity);
- *             / file scope declares only the object; the call obtains the buffer
+ *   DYNAMIC   os_queue_t log_q;
+ *             os_queue_init_dynamic(&log_q, sizeof(sample_t), capacity);
+ *             / a plain object, declared by you; the call obtains the buffer
  *
- * Only the dynamic kind has an init call; the other two are initialized where they are declared
- * and take no geometry, since both values are read off the array. Every call after that is the
- * same for all three, teardown included.
+ * All three take the item size the same way, as a byte count, so moving a queue from one kind to
+ * another changes where the storage comes from and nothing else. Only the dynamic kind has an init
+ * call; the other two are initialized where they are declared. Every call after that is the same
+ * for all three, teardown included.
 */
 
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
+
+/******************************************************************************************************/
+/**
+ * @brief What a send does about an item when the queue is already full.
+ */
+typedef enum
+{
+    OS_QUEUE_MODE_NORMAL    = 0, /**< Full means wait or refuse, exactly as timeout_ms says. */
+    OS_QUEUE_MODE_OVERWRITE = 1  /**< Full means drop the oldest item rather than lose this one. */
+
+} os_queue_mode_t;
 
 /******************************************************************************************************/
 /**
@@ -865,15 +895,16 @@ os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms);
  */
 typedef struct
 {
-    uint8_t   *buffer;
-    size_t    item_size;
-    size_t    capacity;
-    size_t    head;
-    size_t    tail;
-    size_t    count;
-    os_list_t send_waiters;    /**< Tasks blocked because the queue is full.  */
-    os_list_t receive_waiters; /**< Tasks blocked because the queue is empty. */
-    bool      buffer_owned;    /**< Buffer came from os_queue_init_dynamic: os_queue_cleanup frees it. */
+    uint8_t         *buffer;
+    size_t          item_size;
+    size_t          capacity;
+    size_t          head;
+    size_t          tail;
+    size_t          count;
+    os_list_t       send_waiters;    /**< Tasks blocked because the queue is full.  */
+    os_list_t       receive_waiters; /**< Tasks blocked because the queue is empty. */
+    bool            buffer_owned;    /**< Buffer came from os_queue_init_dynamic: os_queue_cleanup frees it. */
+    os_queue_mode_t mode;            /**< What a send does when full; OS_QUEUE_MODE_NORMAL is the zero. */
 
 } os_queue_t;
 
@@ -887,66 +918,81 @@ typedef struct
  *  empty queue with empty waiter lists an init call would otherwise write at run time. That is why
  *  a queue defined this way is usable where it stands, with nothing to call and no status to check.
  *
- *  Its only parameter is "array" on purpose: a macro parameter named after a struct field would be
- *  substituted inside the designated initializers, turning ".capacity" into ".8" and failing to
- *  compile. Nothing here may be called buffer, item_size or capacity. */
-#define OS_QUEUE_INITIALIZER(array)                            \
+ *  Neither parameter is named after a struct field, and that is deliberate: a macro parameter
+ *  named after one would be substituted inside the designated initializers, turning ".capacity"
+ *  into ".8" and failing to compile. Nothing here may be called buffer, item_size or capacity,
+ *  which is why the item size arrives as "item_bytes".
+ *
+ *  The capacity is divided back out of the array rather than passed in, so it still cannot
+ *  disagree with the storage that actually exists. That is the half of the old derived geometry
+ *  worth keeping now that the item size is given rather than read off an element type. */
+#define OS_QUEUE_INITIALIZER(array, item_bytes)                \
     {                                                          \
         .buffer    = (uint8_t *)(array),                       \
-        .item_size = sizeof((array)[0]),                       \
-        .capacity  = (sizeof(array) / sizeof((array)[0])),     \
+        .item_size = (item_bytes),                             \
+        .capacity  = (sizeof(array) / (item_bytes)),           \
     }
 
 /** Define a queue with statically allocated storage, ready to use where it stands. The queue
  *  object is declared as plain "name" (what every os_queue_* call takes the address of), and the
- *  backing array gets the decorated "name_msg_buf", which nothing should name by hand.
+ *  backing array gets the decorated "name_queue_buf", which nothing should name by hand.
  *
- *  No init call to pair it with, and no geometry to pass: both values are read off the array, so
- *  they cannot disagree with the storage that exists. "type" is the item type, not a byte count,
- *  so the buffer is typed and the compiler checks what goes into it.
+ *  No init call to pair it with. The item size is a BYTE COUNT, taken exactly the way
+ *  os_queue_init_dynamic takes it, so the static and dynamic forms read alike and a queue can move
+ *  between them without its declaration changing shape. Capacity is divided back out of the array,
+ *  so it cannot disagree with the storage that exists.
  *
- *      OS_QUEUE_DEFINE_STATIC(sensor_q, sensor_sample_t, 8);
+ *      OS_QUEUE_DEFINE(sensor_q, sizeof(sensor_sample_t), 8);
  *      status = os_queue_send(&sensor_q, &sample, 10U);
  *
- *  Both objects are static, so this belongs at file scope. Use OS_QUEUE_DEFINE_STATIC_ATTR to place the
- *  array somewhere particular, or OS_QUEUE_DEFINE_DYNAMIC for a run-time geometry. */
-#define OS_QUEUE_DEFINE_STATIC(name, type, item_count)      \
-    static type       name##_queue_buf[(item_count)];       \
-    static os_queue_t name = OS_QUEUE_INITIALIZER(name##_queue_buf)
+ *  The array is plain bytes carrying OS_ITEM_ALIGNED, since a byte count says nothing about what
+ *  the items need to be aligned for. os_queue_send and os_queue_receive copy through memcpy, so
+ *  what actually goes in is whatever the caller hands a pointer to - a byte count cannot make the
+ *  compiler check that for you, which a typed array could.
+ *
+ *  This belongs at file scope. The ARRAY is static, since nothing outside should name it; the
+ *  QUEUE is not, so a header can share it with `extern os_queue_t sensor_q;` and other files can
+ *  send to it. That also means the name has to be unique across the whole link.
+ *
+ *  Use OS_QUEUE_DEFINE_ATTR to place the array somewhere particular. For a geometry not
+ *  known until run time, declare a plain os_queue_t and call os_queue_init_dynamic(). */
+#define OS_QUEUE_DEFINE(name, item_bytes, item_count)                                \
+    static uint8_t    name##_queue_buf[(item_bytes) * (item_count)] OS_ITEM_ALIGNED; \
+    os_queue_t name = OS_QUEUE_INITIALIZER(name##_queue_buf, (item_bytes))
 
-/** OS_QUEUE_DEFINE_STATIC, plus attributes on the item array - for when WHERE the storage lives
+/** OS_QUEUE_DEFINE, plus attributes on the item array - for when WHERE the storage lives
  *  matters as much as how much of it there is: a named linker section, DMA-capable RAM, a
- *  particular alignment. OS_QUEUE_DEFINE_STATIC puts its array in ordinary .bss with no way to say
+ *  particular alignment. OS_QUEUE_DEFINE puts its array in ordinary .bss with no way to say
  *  otherwise; this puts whatever you pass on that same array.
  *
- *      OS_QUEUE_DEFINE_STATIC_ATTR(rx_q, sample_t, 8, __attribute__((section(".dma_buffers"))));
+ *      OS_QUEUE_DEFINE_ATTR(rx_q, sizeof(sample_t), 8,
+ *                                  __attribute__((section(".dma_buffers"))));
  *      ...
  *      status = os_queue_send(&rx_q, &sample, 10U);
  *
- *  Identical to OS_QUEUE_DEFINE_STATIC in every other way - same handle, same array name, same
+ *  Identical to OS_QUEUE_DEFINE in every other way - same handle, same array name, same
  *  geometry read off the array so it cannot disagree with the storage. The named section still has
  *  to exist in the linker script; nothing here can create it.
  *
  *  Variadic on purpose: attributes are taken as the rest of the line, so several may be given
  *  whatever commas they contain - the same reason OS_TASK_DEFINE_ATTR is. */
-#define OS_QUEUE_DEFINE_STATIC_ATTR(name, type, item_count, ...)   \
-    static type       name##_queue_buf[(item_count)] __VA_ARGS__;  \
-    static os_queue_t name = OS_QUEUE_INITIALIZER(name##_queue_buf)
+#define OS_QUEUE_DEFINE_ATTR(name, item_bytes, item_count, ...)                                  \
+    static uint8_t    name##_queue_buf[(item_bytes) * (item_count)] OS_ITEM_ALIGNED __VA_ARGS__; \
+    os_queue_t name = OS_QUEUE_INITIALIZER(name##_queue_buf, (item_bytes))
 
 /* --- Dynamic storage: the item buffer comes from the kernel heap ------------------------------ */
 
-/** Define the object for a queue whose item buffer comes from the kernel heap. Only the object is
- *  declared here - os_queue_init_dynamic(), called in code, is what obtains the buffer - so this
- *  says at the declaration site which kind of queue "name" is, and keeps the queue object out of
- *  the allocation so its lifetime stays obvious and a failed init leaves nothing to clean up.
+/* There is no DEFINE macro for a dynamic queue, because there would be nothing in it to write:
+ * the object is a plain os_queue_t and os_queue_init_dynamic() is what obtains the buffer. So
+ * declare it however its lifetime wants - at file scope, as a local, inside a struct:
  *
- *      OS_QUEUE_DEFINE_DYNAMIC(rx_q);
+ *      static os_queue_t rx_q;
  *      ...
  *      status = os_queue_init_dynamic(&rx_q, sizeof(sample_t), capacity_from_config);
  *
- *  Zero-initialized like any static object, which is the state os_queue_init_dynamic() expects. */
-#define OS_QUEUE_DEFINE_DYNAMIC(name) \
-    static os_queue_t name
+ * os_queue_init_dynamic() expects the object zeroed, which static storage gives for free and any
+ * other placement gets from a { 0 } initializer. Keeping the object out of the allocation is what
+ * makes its lifetime obvious and leaves a failed init with nothing to clean up. */
 
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
 /******************************************************************************************************/
@@ -963,8 +1009,29 @@ os_err_t os_queue_init_dynamic(os_queue_t *queue, size_t item_size, size_t capac
 /******************************************************************************************************/
 /**
  * @brief Send one item into queue, waiting up to timeout_ms when full.
+ *
+ * What a full queue does depends on the mode. OS_QUEUE_MODE_NORMAL, the default, waits out
+ * timeout_ms and then answers OS_ERR_FULL (nothing to wait with) or OS_ERR_TIMEOUT.
+ *
+ * OS_QUEUE_MODE_OVERWRITE spends the same timeout the same way - it would still rather deliver
+ * every item than drop one - but when the time is up it drops the OLDEST item instead of
+ * refusing, and returns OS_ERR_NONE. So the timeout reads as "how long to try not to lose
+ * anything", and OS_WAIT_NOTHING means never wait and never fail, which is the form an ISR
+ * wants. OS_WAIT_FOREVER in this mode never drops anything, because its time never runs out.
  */
 os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms);
+
+/******************************************************************************************************/
+/**
+ * @brief Choose what a send does when the queue is full. Every queue starts in
+ *        OS_QUEUE_MODE_NORMAL, which the zero of static storage gives for free.
+ *
+ * Takes effect from the next send. A sender already blocked on this queue keeps the timeout it
+ * started with and is not woken: when that timeout expires it re-reads the mode and acts on
+ * whatever it is by then, which is the same answer it would have reached had the mode been set
+ * a moment earlier.
+ */
+os_err_t os_queue_mode_set(os_queue_t *queue, os_queue_mode_t mode);
 
 /******************************************************************************************************/
 /**
@@ -1003,7 +1070,7 @@ os_err_t os_queue_cleanup(os_queue_t *queue);
  * A queue for messages whose LENGTH varies. Where os_queue_t stores N items of one fixed size, this
  * stores as many messages as fit in a byte budget you choose, each one exactly as long as it is:
  *
- *     OS_MSG_DEFINE_STATIC(cmd_buf, 256U);        / 256 bytes, shared by whatever arrives
+ *     OS_MSG_DEFINE(cmd_buf, 256U);        / 256 bytes, shared by whatever arrives
  *     os_msg_send(&cmd_buf, frame, frame_len, 10U);
  *     os_msg_receive(&cmd_buf, rx, sizeof(rx), &rx_len, OS_WAIT_FOREVER);
  *
@@ -1090,7 +1157,7 @@ typedef struct
  *  byte_size is a BYTE budget, not a message count - that is the whole point of this object - so
  *  just write how much RAM the buffer may have:
  *
- *      OS_MSG_DEFINE_STATIC(cmd_buf, 256U);
+ *      OS_MSG_DEFINE(cmd_buf, 256U);
  *      status = os_msg_send(&cmd_buf, frame, frame_len, 10U);
  *
  *  **Every message costs 2 bytes more than its length**, for the header that records it, so those
@@ -1098,52 +1165,53 @@ typedef struct
  *  to be worked out in advance: os_msg_send() adds those 2 bytes itself and returns OS_ERR_FULL if
  *  the message does not fit.
  *
- *  Both objects are static, so this belongs at file scope. Use OS_MSG_DEFINE_STATIC_ATTR to place the
- *  array somewhere particular, or OS_MSG_DEFINE_DYNAMIC for a capacity not known until run time. */
-#define OS_MSG_DEFINE_STATIC(name, byte_size)        \
-    static uint8_t  name##_msg_buf[(byte_size)];     \
-    static os_msg_t name = OS_MSG_INITIALIZER(name##_msg_buf)
+ *  This belongs at file scope. The ARRAY is static, since nothing outside should name it; the
+ *  MESSAGE BUFFER is not, so a header can share it with `extern os_msg_t cmd_buf;` and other files
+ *  can send to it. That also means the name has to be unique across the whole link.
+ *
+ *  Use OS_MSG_DEFINE_ATTR to place the array somewhere particular. For a capacity not known
+ *  until run time, declare a plain os_msg_t and call os_msg_init_dynamic(). */
+#define OS_MSG_DEFINE(name, byte_size)                 \
+    static uint8_t  name##_msg_buf[(byte_size)];       \
+    os_msg_t name = OS_MSG_INITIALIZER(name##_msg_buf)
 
-/** OS_MSG_DEFINE_STATIC, plus attributes on the byte array - for when WHERE the storage lives
+/** OS_MSG_DEFINE, plus attributes on the byte array - for when WHERE the storage lives
  *  matters as much as how much of it there is: a named linker section, DMA-capable RAM, a
- *  particular alignment. OS_MSG_DEFINE_STATIC puts its array in ordinary .bss with no way to say
+ *  particular alignment. OS_MSG_DEFINE puts its array in ordinary .bss with no way to say
  *  otherwise; this puts whatever you pass on that same array.
  *
- *      OS_MSG_DEFINE_STATIC_ATTR(rx_buf, 512U, __attribute__((section(".dma_buffers"))));
+ *      OS_MSG_DEFINE_ATTR(rx_buf, 512U, __attribute__((section(".dma_buffers"))));
  *      ...
  *      status = os_msg_send(&rx_buf, frame, frame_len, 10U);
  *
- *  Identical to OS_MSG_DEFINE_STATIC in every other way - same handle, same array name, capacity
+ *  Identical to OS_MSG_DEFINE in every other way - same handle, same array name, capacity
  *  read off the array. The named section still has to exist in the linker script; nothing here can
  *  create it.
  *
  *  Variadic on purpose: attributes are taken as the rest of the line, so several may be given
  *  whatever commas they contain - the same reason OS_TASK_DEFINE_ATTR is. */
-#define OS_MSG_DEFINE_STATIC_ATTR(name, byte_size, ...)        \
-    static uint8_t  name##_msg_buf[(byte_size)] __VA_ARGS__;   \
-    static os_msg_t name = OS_MSG_INITIALIZER(name##_msg_buf)
+#define OS_MSG_DEFINE_ATTR(name, byte_size, ...)             \
+    static uint8_t  name##_msg_buf[(byte_size)] __VA_ARGS__; \
+    os_msg_t name = OS_MSG_INITIALIZER(name##_msg_buf)
 
 /* --- Dynamic storage: the byte buffer comes from the kernel heap ------------------------------ */
 
-/** Define the object for a message buffer whose storage comes from the kernel heap. Only the
- *  object is declared here - os_msg_init_dynamic(), called in code, is what obtains the buffer -
- *  so this says at the declaration site which kind of message buffer "name" is, and keeps the
- *  object out of the allocation so its lifetime stays obvious and a failed init leaves nothing to
- *  clean up.
+/* There is no DEFINE macro for a dynamic message buffer, for the same reason there is none for a
+ * dynamic queue: the object is a plain os_msg_t and os_msg_init_dynamic() is what obtains the
+ * storage. Declare it however its lifetime wants:
  *
- *      OS_MSG_DEFINE_DYNAMIC(rx_buf);
+ *      static os_msg_t rx_buf;
  *      ...
  *      status = os_msg_init_dynamic(&rx_buf, bytes_from_config);
  *
- *  Zero-initialized like any static object, which is the state os_msg_init_dynamic() expects. */
-#define OS_MSG_DEFINE_DYNAMIC(name) \
-    static os_msg_t name
+ * os_msg_init_dynamic() expects the object zeroed, which static storage gives for free and any
+ * other placement gets from a { 0 } initializer. */
 
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
 /******************************************************************************************************/
 /**
  * @brief Initialize a message buffer over storage allocated from the kernel heap, for a capacity
- *        not known until run time. byte_size is a BYTE budget exactly as in OS_MSG_DEFINE_STATIC,
+ *        not known until run time. byte_size is a BYTE budget exactly as in OS_MSG_DEFINE,
  *        and every message costs 2 bytes more than its length. Only the buffer is allocated; the
  *        object itself is the caller's, and os_msg_cleanup releases what this obtained.
  */
@@ -1380,7 +1448,7 @@ struct os_timer_pool_s
     OS_STATIC_ASSERT(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER), \
                    "OS_TIMER_DEFINE_PERIODIC: the period is in milliseconds and cannot "  \
                    "be 0 or OS_WAIT_FOREVER");                                            \
-    static os_timer_t timer_name = {                                                      \
+    os_timer_t timer_name = {                                                             \
         .self         = &timer_name,                                                      \
         .period_ticks = OS_TICKS_FROM_MS(timer_period_ms),                                \
         .mode         = OS_TIMER_MODE_PERIODIC,                                           \
@@ -1392,7 +1460,7 @@ struct os_timer_pool_s
     OS_STATIC_ASSERT(((timer_period_ms) != 0U) && ((timer_period_ms) != OS_WAIT_FOREVER), \
                    "OS_TIMER_DEFINE_ONESHOT: the period is in milliseconds and cannot "   \
                    "be 0 or OS_WAIT_FOREVER");                                            \
-    static os_timer_t timer_name = {                                                      \
+    os_timer_t timer_name = {                                                             \
         .self         = &timer_name,                                                      \
         .period_ticks = OS_TICKS_FROM_MS(timer_period_ms),                                \
         .mode         = OS_TIMER_MODE_ONE_SHOT,                                           \
@@ -1428,7 +1496,7 @@ struct os_timer_pool_s
                    "OS_TIMER_DEFINE_SUBMIT: the delay is in milliseconds; use 0 for "     \
                    "as soon as possible");                                                \
     static os_timer_entry_t pool_name##_timer_buf[(pool_depth)];                          \
-    static os_timer_pool_t pool_name = {                                                  \
+    os_timer_pool_t pool_name = {                                                         \
         .self        = &pool_name,                                                        \
         .entries     = pool_name##_timer_buf,                                             \
         .count       = (pool_depth),                                                      \

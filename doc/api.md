@@ -21,8 +21,8 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | **Atomics** | `os_atomic_get` · `os_atomic_set` · `os_atomic_add` · `os_atomic_sub` · `os_atomic_inc` · `os_atomic_dec` · `os_atomic_or` · `os_atomic_and` · `os_atomic_xor` · `os_atomic_nand` · `os_atomic_clear` · `os_atomic_cas` · `os_atomic_test_bit` · `os_atomic_set_bit` · `os_atomic_clear_bit` · `os_atomic_test_and_set_bit` · `os_atomic_test_and_clear_bit` · `os_atomic_set_bit_to` |
 | **Mutex** | `os_mutex_init` · `os_mutex_lock` · `os_mutex_unlock` |
 | **Semaphore** | `os_sem_init` · `os_sem_give` · `os_sem_take` |
-| **Queue** | `OS_QUEUE_DEFINE_STATIC` · `OS_QUEUE_DEFINE_STATIC_ATTR` · `OS_QUEUE_DEFINE_DYNAMIC` · `os_queue_init_dynamic` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
-| **Message buffer** | `OS_MSG_DEFINE_STATIC` · `OS_MSG_DEFINE_STATIC_ATTR` · `OS_MSG_DEFINE_DYNAMIC` · `OS_MSG_SPACE` · `os_msg_init_dynamic` · `os_msg_send` · `os_msg_receive` · `os_msg_count_get` · `os_msg_free_get` · `os_msg_peek_size` · `os_msg_cleanup` |
+| **Queue** | `OS_QUEUE_DEFINE` · `OS_QUEUE_DEFINE_ATTR` · `os_queue_init_dynamic` · `os_queue_mode_set` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
+| **Message buffer** | `OS_MSG_DEFINE` · `OS_MSG_DEFINE_ATTR` · `OS_MSG_SPACE` · `os_msg_init_dynamic` · `os_msg_send` · `os_msg_receive` · `os_msg_count_get` · `os_msg_free_get` · `os_msg_peek_size` · `os_msg_cleanup` |
 | **Event** | `os_event_init` · `os_event_set_bits` · `os_event_clear_bits` · `os_event_wait_bits` |
 | **Task notifications** | `os_notify_give` · `os_notify_wait` |
 | **Software timers** | `OS_TIMER_DEFINE_PERIODIC` / `OS_TIMER_DEFINE_ONESHOT` · `os_timer_start` · `os_timer_restart` · `os_timer_pause` · `os_timer_stop` · `os_timer_period_set` · `os_timer_callback_set` · `os_timer_value_set` |
@@ -361,40 +361,63 @@ and it follows the `timeout_ms` convention above.
 
 ### Queues
 
-A queue copies fixed-size items between tasks, or from an ISR to a task. The
-macro that declares it decides where its item buffer comes from, and that is the
-only difference between the two kinds. Everything else, including every send and
-receive call, is the same.
+A queue copies fixed-size items between tasks, or from an ISR to a task. How it
+is declared decides where its item buffer comes from, and that is the only
+difference between the three columns below. Everything else, including every
+send and receive call, is the same.
 
 | | static | static, placed | dynamic |
 |---|---|---|---|
-| declare | `OS_QUEUE_DEFINE_STATIC(name, type, item_count)` | `OS_QUEUE_DEFINE_STATIC_ATTR(name, type, item_count, ...)` | `OS_QUEUE_DEFINE_DYNAMIC(name)` |
+| declare | `OS_QUEUE_DEFINE(name, item_bytes, item_count)` | `OS_QUEUE_DEFINE_ATTR(name, item_bytes, item_count, ...)` | `os_queue_t name;` |
 | set up | nothing to call | nothing to call | `os_queue_init_dynamic(&name, item_size, cap)` |
 | tear down | `os_queue_cleanup(&name)` | `os_queue_cleanup(&name)` | `os_queue_cleanup(&name)` |
 | needs | nothing | nothing | `OS_CONFIG_ALLOC_ENABLE` |
 
+All three take the item size the same way, as a byte count, so moving a queue
+from one kind to another changes where the storage comes from and nothing else.
 Only the dynamic kind has an init call, because only it has work that cannot
-happen until run time. Neither of the other two takes an item size or a
-capacity: both are read off the array, so they cannot disagree with the storage
-that actually exists.
+happen until run time. The two static kinds still derive their capacity by
+dividing it back out of the array they declared, so a capacity can never
+disagree with the storage that actually exists.
 
-**Static, when the size is known at compile time.** `OS_QUEUE_DEFINE_STATIC`
+**Static, when the size is known at compile time.** `OS_QUEUE_DEFINE`
 declares the queue and its buffer together *and* initializes them, so the queue
 is usable where it stands:
 
 ```c
 typedef struct { uint32_t id; uint8_t payload[6]; } sample_t;
 
-OS_QUEUE_DEFINE_STATIC(sensor_q, sample_t, 8);   /* file scope: both objects are static */
+OS_QUEUE_DEFINE(sensor_q, sizeof(sample_t), 8);  /* file scope */
 
 os_queue_send(&sensor_q, &sample, 10U);          /* no init call, nothing to check */
 ```
 
-There is deliberately no init call to pair it with. The item size and capacity
-come from the declaration itself, so they cannot disagree with the storage that
-actually exists - handing a queue a capacity larger than its buffer is otherwise
-easy to do and silently reads or writes past the end of it. The buffer is
-declared as `sensor_q_queue_buf` and should never be named by hand.
+The queue object has external linkage and the array behind it does not. That is
+what lets one file declare the queue and a header share it:
+
+```c
+/* sensors.c */  OS_QUEUE_DEFINE(sensor_q, sizeof(sample_t), 8);
+/* sensors.h */  extern os_queue_t sensor_q;
+```
+
+Nothing outside should ever name `sensor_q_queue_buf`, which is why that one
+stays private. The same split applies to every `DEFINE` macro in the kernel: the
+object is shareable, its storage is not. It also means each name has to be unique
+across the whole link.
+
+There is deliberately no init call to pair it with. The capacity is divided back
+out of the array the macro declared rather than passed in, so it cannot disagree
+with the storage that actually exists - handing a queue a capacity larger than
+its buffer is otherwise easy to do and silently reads or writes past the end of
+it. The buffer is declared as `sensor_q_queue_buf` and should never be named by
+hand.
+
+The array is plain bytes, aligned for any fundamental type, because a byte count
+says nothing about what the items need. That is the one thing an item size costs
+against an item type: `os_queue_send` copies through `memcpy` from whatever
+pointer it is handed, so nothing checks that what goes in is what the queue was
+sized for. Write `sizeof(sample_t)` rather than a literal and the declaration
+stays honest on its own.
 
 Everything the macro leaves out of the initializer - head, tail, count, the
 waiter lists - is zero-initialized under the C rules for static storage, which
@@ -402,12 +425,13 @@ is byte-for-byte the state an init call would have written. The cost is that the
 queue object lands in `.data` rather than `.bss`, so its initializer image
 occupies flash.
 
-**Dynamic, when the size is only known at run time.** `OS_QUEUE_DEFINE_DYNAMIC`
-declares just the object; `os_queue_init_dynamic` allocates the item buffer from
-the kernel heap and initializes the queue over it:
+**Dynamic, when the size is only known at run time.** There is no macro for this
+one, because there would be nothing in it to write: declare a plain `os_queue_t`
+wherever its lifetime wants to live, and `os_queue_init_dynamic` allocates the
+item buffer from the kernel heap and initializes the queue over it:
 
 ```c
-OS_QUEUE_DEFINE_DYNAMIC(rx_q);   /* the object is still yours; only the buffer is allocated */
+static os_queue_t rx_q;          /* the object is still yours; only the buffer is allocated */
 
 os_err_t status = os_queue_init_dynamic(&rx_q, item_size, capacity);
 ...
@@ -420,13 +444,13 @@ and a failed call leaves nothing to clean up. `os_queue_init_dynamic` returns
 `OS_ERR_INVALID_ARG` for a zero or overflowing geometry rather than wrapping
 it into a small allocation that later sends would index past.
 
-**Storage you lay out yourself.** For a buffer `OS_QUEUE_DEFINE_STATIC` cannot
+**Storage you lay out yourself.** For a buffer `OS_QUEUE_DEFINE` cannot
 express - a named linker section, DMA-capable RAM, a particular alignment -
 say where the array goes. It is initialized at compile time exactly like the
 plain static kind, so there is still nothing to call:
 
 ```c
-OS_QUEUE_DEFINE_STATIC_ATTR(rx_q, sample_t, 8,
+OS_QUEUE_DEFINE_ATTR(rx_q, sizeof(sample_t), 8,
                             __attribute__((section(".dma_buffers"))));
 
 os_queue_send(&rx_q, &sample, 10U);
@@ -443,13 +467,46 @@ compile error rather than a silently wrong capacity - `sizeof` on a pointer
 would derive nonsense and every send past the first would run off the end of the
 storage.
 
+**What a full queue does is a setting.** By default a send into a full queue
+waits out its timeout and then refuses, which is what you want when losing an
+item is worse than blocking a producer. A telemetry or sensor stream is the
+other way round: the newest reading matters and the oldest is the one nobody
+will miss. `os_queue_mode_set` picks between them.
+
+```c
+os_queue_mode_set(&sensor_q, OS_QUEUE_MODE_OVERWRITE);
+```
+
+| | `OS_QUEUE_MODE_NORMAL` (default) | `OS_QUEUE_MODE_OVERWRITE` |
+|---|---|---|
+| space free | item is queued | item is queued |
+| full, `OS_WAIT_NOTHING` | `OS_ERR_FULL` | drops the oldest, returns `OS_ERR_NONE` |
+| full, a timeout | waits, then `OS_ERR_TIMEOUT` | waits, then drops the oldest |
+| full, `OS_WAIT_FOREVER` | waits for a slot | waits for a slot, forever |
+
+The timeout keeps its meaning in overwrite mode, and that is the point of it:
+it is how long the sender tries **not** to lose anything before giving up and
+dropping the oldest. So `OS_WAIT_NOTHING` means never wait and never fail, which
+is the form an ISR wants, and `OS_WAIT_FOREVER` never drops anything at all
+because its time never runs out.
+
+What goes is the oldest item only, and what stays keeps its order - the queue is
+still a FIFO, just one that forgets from the front under pressure. `count` stays
+at capacity across an overwrite, because nothing left the queue; one item took
+another's place.
+
+The mode takes effect from the next send. A sender already blocked keeps the
+timeout it started with and is not woken: when that runs out it re-reads the
+mode and acts on whatever it is by then, which is the same answer it would have
+reached had the call landed a moment sooner.
+
 **Teardown is the same call for every kind.** `os_queue_cleanup` empties the
 queue, and what happens to the storage depends on who owns it, so code tearing
 down a mixed set of queues does not need to track which kind each one is:
 
 - A buffer from `os_queue_init_dynamic` goes back to the heap, and the geometry
   goes with it. Re-use means another `os_queue_init_dynamic`.
-- A buffer from `OS_QUEUE_DEFINE_STATIC` or `OS_QUEUE_DEFINE_STATIC_ATTR` is not the
+- A buffer from `OS_QUEUE_DEFINE` or `OS_QUEUE_DEFINE_ATTR` is not the
   kernel's to release, so the queue keeps its storage and is left empty and
   immediately usable - a statically defined queue needs no init call after
   cleanup either, exactly as it needed none before.
@@ -467,7 +524,7 @@ messages whose length varies**, out of one byte budget you choose. Enabled with
 built on the other.
 
 ```c
-OS_MSG_DEFINE_STATIC(cmd_buf, 4U * OS_MSG_SPACE(32U));   /* 136 bytes of storage */
+OS_MSG_DEFINE(cmd_buf, 4U * OS_MSG_SPACE(32U));   /* 136 bytes of storage */
 
 os_msg_send(&cmd_buf, frame, frame_len, 10U);
 
@@ -496,9 +553,9 @@ header, so write the budget in the terms the application thinks in and let
 `OS_MSG_SPACE` add the overhead:
 
 ```c
-OS_MSG_DEFINE_STATIC(cmd_buf, 256U);                      /* 256 bytes of storage */
+OS_MSG_DEFINE(cmd_buf, 256U);                      /* 256 bytes of storage */
 
-OS_MSG_DEFINE_STATIC_ATTR(rx_buf, 512U,                   /* the same, placed */
+OS_MSG_DEFINE_ATTR(rx_buf, 512U,                   /* the same, placed */
                           __attribute__((section(".dma_buffers"))));
 ```
 
@@ -546,12 +603,12 @@ anything that sends or receives in between changes the answer.
 
 **Storage comes in the same three kinds as a queue's**, and for the same reason:
 these are the only two kernel objects that own a buffer.
-`OS_MSG_DEFINE_STATIC` sizes it at compile time, `OS_MSG_DEFINE_STATIC_ATTR` does
-the same with attributes on the array, and `OS_MSG_DEFINE_DYNAMIC` plus
+`OS_MSG_DEFINE` sizes it at compile time, `OS_MSG_DEFINE_ATTR` does
+the same with attributes on the array, and a plain `os_msg_t` plus
 `os_msg_init_dynamic()` takes a byte budget not known until run time:
 
 ```c
-OS_MSG_DEFINE_DYNAMIC(rx_buf);
+static os_msg_t rx_buf;
 ...
 status = os_msg_init_dynamic(&rx_buf, 4U * OS_MSG_SPACE(mtu_from_config));
 ```

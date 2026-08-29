@@ -180,13 +180,14 @@ static uint8_t soc_handler_stack[OS_CONFIG_CORE_COUNT - 1U][SOC_CONFIG_HANDLER_S
  */
 uint32_t os_arch_handler_stack_top_cb(uint32_t core_id)
 {
-    if (core_id == 0U)
+    uint32_t top = 0U;                              /* core 0 keeps the linker's stack */
+
+    if (core_id != 0U)
     {
-        /* core 0 keeps the linker's stack */
-        return 0U;                                  
+        top = (uint32_t)(uintptr_t)&soc_handler_stack[core_id - 1U][SOC_CONFIG_HANDLER_STACK_SIZE];
     }
 
-    return (uint32_t)(uintptr_t)&soc_handler_stack[core_id - 1U][SOC_CONFIG_HANDLER_STACK_SIZE];
+    return top;
 }
 
 /******************************************************************************************************/
@@ -195,12 +196,14 @@ uint32_t os_arch_handler_stack_top_cb(uint32_t core_id)
  */
 uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id)
 {
-    if (core_id == 0U)
+    uint32_t limit = 0U;                            /* core 0 keeps the linker's stack */
+
+    if (core_id != 0U)
     {
-        return 0U;
+        limit = (uint32_t)(uintptr_t)&soc_handler_stack[core_id - 1U][0];
     }
 
-    return (uint32_t)(uintptr_t)&soc_handler_stack[core_id - 1U][0];
+    return limit;
 }
 
 /*
@@ -295,11 +298,8 @@ void os_arch_tick_init_cb(void)
 {
     uint32_t clock_hz = os_arch_clock_hz_get();
 
-    if ((clock_hz == 0U) || (OS_CONFIG_TICK_HZ == 0U))
+    if ((clock_hz != 0U) && (OS_CONFIG_TICK_HZ != 0U))
     {
-        return;
-    }
-
     if (get_core_num() == 0U)
     {
         /* Count clk_sys rather than the `ticks` block's 1 MHz reference. That makes the tick period
@@ -312,12 +312,10 @@ void os_arch_tick_init_cb(void)
 
     soc_tick_interval = clock_hz / OS_CONFIG_TICK_HZ;
 
-    if (soc_tick_interval == 0U)
+    /* A zero interval means a tick faster than the clock: nothing sane to program, so the
+     * comparator and the enable below are skipped along with it. */
+    if (soc_tick_interval != 0U)
     {
-        /* tick faster than the clock: nothing sane to program */
-        return;                                     
-    }
-
     riscv_timer_set_mtimecmp(riscv_timer_get_mtime() + (uint64_t)soc_tick_interval);
 
     /* The HANDLER is registered once; the comparator above and the enable below are per core.
@@ -339,6 +337,8 @@ void os_arch_tick_init_cb(void)
     }
 
     irq_set_enabled(SIO_IRQ_MTIMECMP, true);
+    }
+    }
 }
 
 /*

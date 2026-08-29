@@ -177,12 +177,12 @@ static os_mutex_t     os_test_bench_mutex;
 static os_sem_t os_test_bench_sem;
 #endif
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
-OS_QUEUE_DEFINE_STATIC_ATTR(os_test_bench_queue, uint32_t, 4, );
+OS_QUEUE_DEFINE_ATTR(os_test_bench_queue, sizeof(uint32_t), 4, );
 #endif
 #if (OS_CONFIG_MSG_ENABLE == 1U)
 /* Room for one message of the longest size benchmarked below, header included - only one is
  * ever in flight, since each sample sends and then receives. */
-OS_MSG_DEFINE_STATIC_ATTR(os_test_bench_msg, OS_MSG_SPACE(64U), );
+OS_MSG_DEFINE_ATTR(os_test_bench_msg, OS_MSG_SPACE(64U), );
 #endif
 #if (OS_CONFIG_EVENT_ENABLE == 1U)
 static os_event_t os_test_bench_event;
@@ -272,11 +272,11 @@ static os_sem_t os_test_sync_sem;   /* helper -> main "ready" signal */
 #endif
 
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
-/* Defined with OS_QUEUE_DEFINE_STATIC_ATTR rather than OS_QUEUE_DEFINE_STATIC so the suite covers that
+/* Defined with OS_QUEUE_DEFINE_ATTR rather than OS_QUEUE_DEFINE so the suite covers that
  * macro too - with an empty attribute list, which has to compile as readily as a real one. Tests
  * reset it with os_queue_cleanup(), which empties a queue without freeing storage it does not
  * own. */
-OS_QUEUE_DEFINE_STATIC_ATTR(os_test_queue, uint32_t, 3, );
+OS_QUEUE_DEFINE_ATTR(os_test_queue, sizeof(uint32_t), 3, );
 #endif
 
 #if (OS_CONFIG_EVENT_ENABLE == 1U)
@@ -460,7 +460,7 @@ static __IO uint32_t os_test_stress_shared_counter; /* protected exclusively by 
 
 static os_sem_t    os_test_stress_sem;
 static os_event_t  os_test_stress_event;
-OS_QUEUE_DEFINE_STATIC_ATTR(os_test_stress_queue, uint32_t, OS_TEST_STRESS_QUEUE_CAPACITY, );
+OS_QUEUE_DEFINE_ATTR(os_test_stress_queue, sizeof(uint32_t), OS_TEST_STRESS_QUEUE_CAPACITY, );
 #endif
 
 /*
@@ -494,6 +494,7 @@ static void test_semaphore(void);
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
 static void test_queue(void);
 static void test_queue_define_and_dynamic(void);
+static void test_queue_overwrite(void);
 #if (OS_CONFIG_ATOMIC_ENABLE == 1U)
 static void test_atomic(void);
 #endif
@@ -508,6 +509,7 @@ static void test_event_group(void);
 static void test_timer(void);
 #endif
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
+static void test_timer_retune(void);
 static void test_timer_isr(void);
 static void test_timer_pool(void);
 static void test_timer_real_world(void);
@@ -1637,11 +1639,11 @@ typedef struct
 
 } test_queue_item_t;
 
-OS_QUEUE_DEFINE_STATIC(os_test_defined_queue, test_queue_item_t, 4);
+OS_QUEUE_DEFINE(os_test_defined_queue, sizeof(test_queue_item_t), 4);
 
 /******************************************************************************************************/
 /**
- * @brief Covers both ways of getting a queue: OS_QUEUE_DEFINE_STATIC static storage, and
+ * @brief Covers both ways of getting a queue: OS_QUEUE_DEFINE static storage, and
  *        os_queue_init_dynamic heap storage, including that cleanup frees one and not the other.
  */
 static void test_queue_define_and_dynamic(void)
@@ -1656,20 +1658,22 @@ static void test_queue_define_and_dynamic(void)
 
     test_print_section("Queue Definition (static macro and dynamic allocation)");
 
-    /* --- OS_QUEUE_DEFINE_STATIC --- */
+    /* --- OS_QUEUE_DEFINE --- */
 
     AHURA_TEST_CHECK(sizeof(os_test_defined_queue_queue_buf) == (4U * sizeof(test_queue_item_t)),
-                      "OS_QUEUE_DEFINE_STATIC() sized the buffer for 4 items of the declared type (%u bytes)",
+                      "OS_QUEUE_DEFINE() sized the buffer for 4 items of the declared size (%u bytes)",
                       (unsigned)sizeof(os_test_defined_queue_queue_buf));
+    AHURA_TEST_CHECK((((uintptr_t)os_test_defined_queue_queue_buf) % 8U) == 0U,
+                      "and aligned it for any fundamental type, which a byte count cannot imply");
 
     /* Nothing has been called on this queue: every field below was written by the macro at compile
      * time. The geometry has to match the declaration, since getting either wrong is exactly the
-     * out-of-bounds bug that deriving it from the declaration exists to make impossible. */
+     * out-of-bounds bug this check exists to catch. */
     AHURA_TEST_CHECK(os_test_defined_queue.item_size == sizeof(test_queue_item_t),
-                      "the item size comes from the declared type with no init call (%u bytes)",
+                      "the item size is the byte count the macro was given, with no init call (%u bytes)",
                       (unsigned)os_test_defined_queue.item_size);
     AHURA_TEST_CHECK(os_test_defined_queue.capacity == 4U,
-                      "the capacity comes from the declared count (%u)",
+                      "the capacity is divided back out of the array the macro declared (%u)",
                       (unsigned)os_test_defined_queue.capacity);
     AHURA_TEST_CHECK(os_test_defined_queue.buffer == (uint8_t *)os_test_defined_queue_queue_buf,
                       "the queue points at the buffer the macro declared");
@@ -1784,6 +1788,145 @@ static void test_queue_define_and_dynamic(void)
     (void)os_queue_receive(&os_test_defined_queue, &got, OS_WAIT_NOTHING);
 }
 
+/*
+ * ***********************************************************************************************************
+ * Queue overwrite mode
+ * ***********************************************************************************************************
+*/
+
+/* Three slots, because three is the smallest capacity where "the oldest went and the rest kept
+ * their order" is a different statement from "something went". */
+OS_QUEUE_DEFINE(os_test_ow_queue, sizeof(uint32_t), 3);
+
+/******************************************************************************************************/
+/**
+ * @brief Fill os_test_ow_queue with 1, 2, 3 and report whether all three were accepted.
+ */
+static bool test_ow_fill(void)
+{
+    uint32_t value;
+    bool     ok = true;
+
+    for (value = 1U; value <= 3U; value++)
+    {
+        ok = ok && (os_queue_send(&os_test_ow_queue, &value, OS_WAIT_NOTHING) == OS_ERR_NONE);
+    }
+
+    return ok;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Drain three items and report whether they came out as first, first+1, first+2.
+ */
+static bool test_ow_drain_is(uint32_t first)
+{
+    uint32_t value;
+    uint32_t index;
+    bool     ok = true;
+
+    for (index = 0U; index < 3U; index++)
+    {
+        ok = ok && (os_queue_receive(&os_test_ow_queue, &value, OS_WAIT_NOTHING) == OS_ERR_NONE);
+        ok = ok && (value == (first + index));
+    }
+
+    return ok;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief OS_QUEUE_MODE_OVERWRITE: which item is dropped, when it is dropped, and where it works.
+ */
+static void test_queue_overwrite(void)
+{
+    uint32_t value;
+    uint32_t start_tick;
+    uint32_t waited;
+    os_err_t status;
+
+    test_print_section("Queue Overwrite Mode (a full queue drops its oldest)");
+
+    /* --- the default is the behaviour that was always there --- */
+
+    AHURA_TEST_CHECK(os_test_ow_queue.mode == OS_QUEUE_MODE_NORMAL,
+                      "a queue starts in OS_QUEUE_MODE_NORMAL, which static zeroing gives for free");
+    AHURA_TEST_CHECK(test_ow_fill(), "three items fill its three slots");
+
+    value = 4U;
+    AHURA_TEST_CHECK(os_queue_send(&os_test_ow_queue, &value, OS_WAIT_NOTHING) == OS_ERR_FULL,
+                      "and a fourth is refused, exactly as before this mode existed");
+
+    /* --- the setter --- */
+
+    AHURA_TEST_CHECK((os_queue_mode_set(NULL, OS_QUEUE_MODE_OVERWRITE) == OS_ERR_INVALID_ARG) &&
+                     (os_queue_mode_set(&os_test_ow_queue, (os_queue_mode_t)7) == OS_ERR_INVALID_ARG),
+                      "os_queue_mode_set() refuses a NULL queue and a mode it does not know");
+    AHURA_TEST_CHECK(os_queue_mode_set(&os_test_ow_queue, OS_QUEUE_MODE_OVERWRITE) == OS_ERR_NONE,
+                      "and accepts OS_QUEUE_MODE_OVERWRITE, even on a queue already full");
+
+    /* --- which item goes --- */
+
+    value = 4U;
+    AHURA_TEST_CHECK(os_queue_send(&os_test_ow_queue, &value, OS_WAIT_NOTHING) == OS_ERR_NONE,
+                      "the same send now succeeds instead of returning OS_ERR_FULL");
+    AHURA_TEST_CHECK(os_queue_count_get(&os_test_ow_queue) == 3U,
+                      "the count stays at capacity, because one item took another's place");
+    AHURA_TEST_CHECK(test_ow_drain_is(2U),
+                      "the OLDEST is what went: 2, 3, 4 come out, still in order");
+    AHURA_TEST_CHECK(os_queue_count_get(&os_test_ow_queue) == 0U, "and the queue drains empty");
+
+    for (value = 1U; value <= 10U; value++)
+    {
+        (void)os_queue_send(&os_test_ow_queue, &value, OS_WAIT_NOTHING);
+    }
+    AHURA_TEST_CHECK(test_ow_drain_is(8U),
+                      "ten items through three slots leave exactly the newest three, in order");
+
+    /* --- when it goes --- */
+
+    AHURA_TEST_CHECK(test_ow_fill(), "the queue is full again");
+
+    start_tick = os_tick_get();
+    value      = 4U;
+    AHURA_TEST_CHECK(os_queue_send(&os_test_ow_queue, &value, 60U) == OS_ERR_NONE,
+                      "a send with a timeout into a full queue succeeds in this mode too");
+    waited = os_tick_get() - start_tick;
+    AHURA_TEST_CHECK(waited >= OS_TICKS_FROM_MS(50U),
+                      "but only after spending its timeout trying not to drop anything (%lu ticks)",
+                      (unsigned long)waited);
+    AHURA_TEST_CHECK(test_ow_drain_is(2U), "and then the oldest is what it dropped");
+
+    /* --- where it works: the path an ISR takes --- */
+
+    AHURA_TEST_CHECK(test_ow_fill(), "the queue is full once more");
+
+    /* A locked scheduler cannot block, which is the same condition an ISR meets. OS_WAIT_FOREVER
+     * is the strongest way to ask: in the default mode this is OS_ERR_FULL, and a send that
+     * tried to wait here would never come back at all. */
+    os_kernel_lock();
+    value  = 4U;
+    status = os_queue_send(&os_test_ow_queue, &value, OS_WAIT_FOREVER);
+    os_kernel_unlock();
+
+    AHURA_TEST_CHECK(status == OS_ERR_NONE,
+                      "OS_WAIT_FOREVER on a full queue returns at once when the caller cannot "
+                      "block, which is what makes this mode usable from an ISR");
+    AHURA_TEST_CHECK(test_ow_drain_is(2U), "having dropped the oldest, as everywhere else");
+
+    /* --- and back --- */
+
+    AHURA_TEST_CHECK(os_queue_mode_set(&os_test_ow_queue, OS_QUEUE_MODE_NORMAL) == OS_ERR_NONE,
+                      "os_queue_mode_set() takes it back to OS_QUEUE_MODE_NORMAL");
+    AHURA_TEST_CHECK(test_ow_fill(), "the queue fills");
+
+    value = 4U;
+    AHURA_TEST_CHECK(os_queue_send(&os_test_ow_queue, &value, OS_WAIT_NOTHING) == OS_ERR_FULL,
+                      "and refuses again, so the mode is genuinely a setting and not a one-way door");
+
+    (void)os_queue_cleanup(&os_test_ow_queue);
+}
+
 /******************************************************************************************************/
 static void test_queue(void)
 {
@@ -1798,12 +1941,13 @@ static void test_queue(void)
 
     test_print_section("Queue");
 
-    /* No init call: OS_QUEUE_DEFINE_STATIC_ATTR initialized os_test_queue over its own array at compile time.
-     * The geometry below is what the macro derived from the array, never a number passed by hand. */
-    AHURA_TEST_CHECK((os_test_queue.buffer == (uint8_t *)os_test_queue_queue_buf) &&
-                      (os_test_queue.item_size == sizeof(os_test_queue_queue_buf[0])) &&
-                      (os_test_queue.capacity == (sizeof(os_test_queue_queue_buf) / sizeof(os_test_queue_queue_buf[0]))),
-                      "OS_QUEUE_DEFINE_STATIC_ATTR() bound the queue to its own array, geometry derived");
+    /* No init call: OS_QUEUE_DEFINE_ATTR initialized os_test_queue over its own array at compile time.
+     * The item size is the byte count the macro was given; the capacity is still divided back out of
+     * the array, so it cannot disagree with the storage that actually exists. */
+    AHURA_TEST_CHECK((os_test_queue.buffer == os_test_queue_queue_buf) &&
+                      (os_test_queue.item_size == sizeof(uint32_t)) &&
+                      (os_test_queue.capacity == (sizeof(os_test_queue_queue_buf) / sizeof(uint32_t))),
+                      "OS_QUEUE_DEFINE_ATTR() bound the queue to its own array, capacity derived");
     AHURA_TEST_CHECK(os_queue_count_get(&os_test_queue) == 0U, "a fresh queue reports 0 items");
     AHURA_TEST_CHECK(os_queue_free_get(&os_test_queue) == os_test_queue.capacity,
                       "a fresh queue reports its whole capacity free (%lu)",
@@ -1867,7 +2011,7 @@ static void test_queue(void)
  * messages leaves head and tail at a different offset on every lap and the ring is forced to wrap
  * mid-message rather than only at a tidy boundary. That wrap is the one thing a byte ring can get
  * wrong that a slot queue cannot. */
-OS_MSG_DEFINE_STATIC(os_test_msg, 3U * OS_MSG_SPACE(16U));
+OS_MSG_DEFINE(os_test_msg, 3U * OS_MSG_SPACE(16U));
 
 /******************************************************************************************************/
 /**
@@ -1895,9 +2039,9 @@ static void test_msg(void)
 
     test_print_section("Message Buffer (variable length)");
 
-    /* No init call: OS_MSG_DEFINE_STATIC initialized the object over its own array at compile time. */
+    /* No init call: OS_MSG_DEFINE initialized the object over its own array at compile time. */
     AHURA_TEST_CHECK(capacity == (3U * OS_MSG_SPACE(16U)),
-                      "OS_MSG_DEFINE_STATIC() sized the buffer in bytes (%lu)", (unsigned long)capacity);
+                      "OS_MSG_DEFINE() sized the buffer in bytes (%lu)", (unsigned long)capacity);
     AHURA_TEST_CHECK(os_msg_count_get(&os_test_msg) == 0U, "a fresh buffer holds 0 messages");
     AHURA_TEST_CHECK(os_msg_free_get(&os_test_msg) == capacity, "a fresh buffer reports every byte free");
     AHURA_TEST_CHECK(os_msg_peek_size(&os_test_msg) == 0U, "peek on an empty buffer reports 0");
@@ -2016,7 +2160,7 @@ static void test_msg(void)
 
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
     {
-        OS_MSG_DEFINE_DYNAMIC(dynamic_msg);
+        static os_msg_t dynamic_msg;
 
         size_t  msg_heap_before;
         size_t  dyn_len;
@@ -2476,6 +2620,151 @@ void OS_CONFIG_ARCH_SVC_HANDLER(void)
     {
         os_test_isr_stop_status = os_timer_stop(&os_test_isr_timer);
     }
+}
+
+/*
+ * ***********************************************************************************************************
+ * Timer retune: what os_timer_value_set, os_timer_callback_set and os_timer_period_set DO
+ * ***********************************************************************************************************
+*/
+
+static void timer_retune_a_cb(void *context, uint32_t value);
+static void timer_retune_b_cb(void *context, uint32_t value);
+
+/* Its own object rather than a shared one: this section repoints the callback and moves the
+ * period a long way in both directions, and doing that to a timer another section also uses
+ * would leave that one's assumptions silently wrong. The declared period is overwritten
+ * before every start below, so the number here only has to be legal. */
+OS_TIMER_DEFINE_PERIODIC(os_test_retune_timer, 60U, timer_retune_a_cb);
+
+/* Only its ADDRESS is ever read; the contents mean nothing. */
+static uint32_t          os_test_retune_marker    = 0U;
+static __IO uint32_t     os_test_retune_a_runs    = 0U;
+static __IO uint32_t     os_test_retune_a_value   = 0U;
+static __IO uint32_t     os_test_retune_b_runs    = 0U;
+static __IO uint32_t     os_test_retune_b_value   = 0U;
+static void * volatile   os_test_retune_b_context = NULL;
+
+/******************************************************************************************************/
+static void timer_retune_a_cb(void *context, uint32_t value)
+{
+    (void)context;
+    os_test_retune_a_value = value;
+    os_test_retune_a_runs++;
+}
+
+/******************************************************************************************************/
+static void timer_retune_b_cb(void *context, uint32_t value)
+{
+    os_test_retune_b_context = context;
+    os_test_retune_b_value   = value;
+    os_test_retune_b_runs++;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Retuning a timer that is already running: the value, the callback and the period.
+ *
+ * Each of the three is documented to take effect at a particular moment, and each is checked
+ * against that moment rather than merely for a return code.
+ */
+static void test_timer_retune(void)
+{
+    uint32_t before;
+    uint32_t start_tick;
+    uint32_t waited;
+
+    test_print_section("Timer Retune (value, callback and period on a running timer)");
+
+    /* --- os_timer_value_set --------------------------------------------------------------- */
+
+    os_test_retune_a_runs  = 0U;
+    os_test_retune_a_value = 0U;
+    (void)os_timer_callback_set(&os_test_retune_timer, timer_retune_a_cb);
+    (void)os_timer_period_set(&os_test_retune_timer, 40U);
+
+    AHURA_TEST_CHECK(os_timer_start(&os_test_retune_timer, &os_test_retune_marker, 0x1111U) == OS_ERR_NONE,
+                      "a periodic timer starts carrying the value os_timer_start was given");
+    os_delay_ms(70U);
+    AHURA_TEST_CHECK((os_test_retune_a_runs > 0U) && (os_test_retune_a_value == 0x1111U),
+                      "and the callback receives exactly that value (0x%lX)",
+                      (unsigned long)os_test_retune_a_value);
+
+    AHURA_TEST_CHECK(os_timer_value_set(&os_test_retune_timer, 0x2222U) == OS_ERR_NONE,
+                      "os_timer_value_set() accepts a new value on a RUNNING timer");
+    before = os_test_retune_a_runs;
+    os_delay_ms(100U);
+    AHURA_TEST_CHECK(os_test_retune_a_runs > before,
+                      "the timer keeps firing across the change, so nothing was disarmed");
+    AHURA_TEST_CHECK(os_test_retune_a_value == 0x2222U,
+                      "and every expiry from then on carries the new value (0x%lX)",
+                      (unsigned long)os_test_retune_a_value);
+
+    /* --- os_timer_callback_set ------------------------------------------------------------ */
+
+    os_test_retune_b_runs    = 0U;
+    os_test_retune_b_value   = 0U;
+    os_test_retune_b_context = NULL;
+
+    AHURA_TEST_CHECK(os_timer_callback_set(&os_test_retune_timer, timer_retune_b_cb) == OS_ERR_NONE,
+                      "os_timer_callback_set() repoints a RUNNING timer");
+    before = os_test_retune_a_runs;
+    os_delay_ms(100U);
+
+    AHURA_TEST_CHECK(os_test_retune_b_runs > 0U, "the new callback is what runs from then on");
+    AHURA_TEST_CHECK(os_test_retune_a_runs == before, "and the old one is never called again");
+    AHURA_TEST_CHECK(os_test_retune_b_context == &os_test_retune_marker,
+                      "the context stays as os_timer_start left it, which is what the header promises");
+    AHURA_TEST_CHECK(os_test_retune_b_value == 0x2222U,
+                      "and so does the value: repointing the callback does not touch it");
+
+    (void)os_timer_stop(&os_test_retune_timer);
+
+    /* --- os_timer_period_set -------------------------------------------------------------- */
+
+    /* A countdown already under way keeps the time it had. Retuning 100 ms UP to 600 ms with
+     * about 80 ms left to run puts the two possible answers 500 ms apart, so no timing
+     * tolerance on any of the four boards can mistake one for the other. */
+    os_test_retune_b_runs = 0U;
+    (void)os_timer_period_set(&os_test_retune_timer, 100U);
+    (void)os_timer_start(&os_test_retune_timer, &os_test_retune_marker, 0x2222U);
+    os_delay_ms(20U);
+
+    AHURA_TEST_CHECK(os_timer_period_set(&os_test_retune_timer, 600U) == OS_ERR_NONE,
+                      "os_timer_period_set() accepts a much longer period mid-countdown");
+
+    start_tick = os_tick_get();
+    while ((os_test_retune_b_runs == 0U) &&
+           ((os_tick_get() - start_tick) < OS_TICKS_FROM_MS(400U)))
+    {
+        os_delay_ms(5U);
+    }
+    waited = os_tick_get() - start_tick;
+
+    AHURA_TEST_CHECK((os_test_retune_b_runs > 0U) && (waited < OS_TICKS_FROM_MS(300U)),
+                      "the countdown already under way keeps its own remaining time (%lu ticks, not ~600 ms)",
+                      (unsigned long)waited);
+
+    os_test_retune_b_runs = 0U;
+    os_delay_ms(300U);
+    AHURA_TEST_CHECK(os_test_retune_b_runs == 0U,
+                      "and the new period is what the reload AFTER it uses, so nothing fires yet");
+
+    /* os_timer_restart is the documented way to apply a new period from this moment. */
+    (void)os_timer_period_set(&os_test_retune_timer, 40U);
+    os_test_retune_b_runs = 0U;
+
+    AHURA_TEST_CHECK(os_timer_restart(&os_test_retune_timer, &os_test_retune_marker, 0x3333U) == OS_ERR_NONE,
+                      "os_timer_restart() accepts the retuned timer");
+    os_delay_ms(90U);
+    AHURA_TEST_CHECK(os_test_retune_b_runs > 0U,
+                      "and applies the new period from that moment rather than the old countdown");
+    AHURA_TEST_CHECK(os_test_retune_b_value == 0x3333U,
+                      "carrying the value that restart itself was given (0x%lX)",
+                      (unsigned long)os_test_retune_b_value);
+
+    AHURA_TEST_CHECK(os_timer_stop(&os_test_retune_timer) == OS_ERR_NONE,
+                      "and it stops cleanly at the end of all that retuning");
 }
 
 /******************************************************************************************************/
@@ -4737,7 +5026,7 @@ typedef struct
 } test_qprod_ctx_t;
 
 static test_qprod_ctx_t os_test_qprod_ctx[OS_TEST_QPROD_COUNT];
-OS_QUEUE_DEFINE_DYNAMIC(os_test_qprod_queue);
+static os_queue_t       os_test_qprod_queue;
 static __IO uint32_t    os_test_qprod_sent[OS_TEST_QPROD_COUNT];
 
 /******************************************************************************************************/
@@ -7014,7 +7303,7 @@ static void test_smp_semaphore_pingpong(void)
  *        duplication or reordering - and a capacity below the combined send rate forces the FULL
  *        path and backpressure through the cross-core wake.
  */
-OS_QUEUE_DEFINE_STATIC_ATTR(test_smp_queue, uint32_t, 4, );
+OS_QUEUE_DEFINE_ATTR(test_smp_queue, sizeof(uint32_t), 4, );
 
 static __IO uint32_t test_smp_queue_expected[2] = { 1U, 1U };
 static __IO bool     test_smp_queue_ok          = true;
@@ -7531,7 +7820,7 @@ static void test_smp_deferred_submit(void)
 static __IO uint32_t test_smp_soak_guarded = 0U;
 static os_atomic_t  test_smp_soak_atomic   = OS_ATOMIC_INIT(0);
 static os_sem_t test_smp_soak_sem;
-OS_QUEUE_DEFINE_STATIC_ATTR(test_smp_soak_queue, uint32_t, 4, );
+OS_QUEUE_DEFINE_ATTR(test_smp_soak_queue, sizeof(uint32_t), 4, );
 static __IO uint32_t test_smp_soak_done[4] = { 0U, 0U, 0U, 0U };
 static __IO uint32_t test_smp_soak_seen[4] = { 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU };
 static __IO bool     test_smp_soak_ok      = true;
@@ -7856,7 +8145,10 @@ static void test_priority_api(void)
  */
 static void test_queue_accounting(void)
 {
-    const size_t capacity = sizeof(os_test_queue_queue_buf) / sizeof(os_test_queue_queue_buf[0]);
+    /* Derived from the declaration rather than read back out of the queue, so this stays an
+     * independent expectation. The array is bytes now, so the item size has to be the one
+     * os_test_queue was declared with; dividing by the element size would just give 1. */
+    const size_t capacity = sizeof(os_test_queue_queue_buf) / sizeof(uint32_t);
     uint32_t     item     = 0U;
     size_t       sent     = 0U;
     bool         held     = true;
@@ -8076,6 +8368,7 @@ void os_test(void)
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
     test_queue();
     test_queue_define_and_dynamic();
+    test_queue_overwrite();
 #if (OS_CONFIG_ATOMIC_ENABLE == 1U)
     test_atomic();
 #endif
@@ -8090,6 +8383,7 @@ void os_test(void)
     test_timer();
 #endif
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
+    test_timer_retune();
     test_timer_isr();
     test_timer_pool();
     test_timer_real_world();

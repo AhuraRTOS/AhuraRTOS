@@ -394,8 +394,8 @@ size_t os_msg_peek_size(const os_msg_t *msg)
  * header and nothing else, so every send against it would be refused and the object would be
  * useless in a way only visible at run time.
  *
- * @param[in,out] msg        Message buffer object, from OS_MSG_DEFINE_DYNAMIC.
- * @param[in]     byte_size  Storage to allocate, in bytes, exactly as for OS_MSG_DEFINE_STATIC.
+ * @param[in,out] msg        Message buffer object, on zero-initialized storage.
+ * @param[in]     byte_size  Storage to allocate, in bytes, exactly as for OS_MSG_DEFINE.
  *                           Every message stored in it costs 2 bytes more than its length.
  * @return os_err_t  OS_ERR_NONE, OS_ERR_INVALID_ARG for NULL or a budget too small to hold one
  *                    message, OS_ERR_NO_MEMORY if the heap could not supply it, or OS_ERR_BUSY if

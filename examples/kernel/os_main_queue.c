@@ -9,9 +9,9 @@
  * Two queues carry the same items, to show the only thing that differs between
  * them, which is where the item buffer comes from:
  *
- *   - os_main_static_queue  OS_QUEUE_DEFINE_STATIC: sized and initialized at compile time,
+ *   - os_main_static_queue  OS_QUEUE_DEFINE: sized and initialized at compile time,
  *                     usable with nothing to call first.
- *   - os_main_dynamic_queue OS_QUEUE_DEFINE_DYNAMIC + os_queue_init_dynamic(), buffer taken
+ *   - os_main_dynamic_queue a plain os_queue_t + os_queue_init_dynamic(), buffer taken
  *                     from the kernel heap, so the capacity could just as well be a
  *                     run-time value.
  *
@@ -61,15 +61,16 @@ OS_TASK_DEFINE(consumer, 512U);
 
 /* Declares the queue AND its buffer, and initializes both at compile time - there is nothing to
  * call before the first send. The buffer is os_main_static_queue_queue_buf and should never be named by
- * hand; the item size and capacity come from this declaration, so they cannot disagree with the
- * storage that actually exists. */
-OS_QUEUE_DEFINE_STATIC(os_main_static_queue, uint32_t, QUEUE_CAPACITY);
+ * hand. The item size is a byte count, the same argument os_queue_init_dynamic takes below, which
+ * is what lets these two queues differ in storage and in nothing else. */
+OS_QUEUE_DEFINE(os_main_static_queue, sizeof(uint32_t), QUEUE_CAPACITY);
 
 #if (OS_CONFIG_ALLOC_ENABLE == 1U)
-/* Declares the queue object only: os_queue_init_dynamic() below allocates the item buffer. Keeping
- * the object out of the allocation makes its lifetime obvious and means a failed init leaves
- * nothing to clean up. */
-OS_QUEUE_DEFINE_DYNAMIC(os_main_dynamic_queue);
+/* A plain queue object: os_queue_init_dynamic() below allocates the item buffer. There is no
+ * macro for this because there would be nothing in it to write. Keeping the object out of the
+ * allocation makes its lifetime obvious and means a failed init leaves nothing to clean up.
+ * Static storage zeroes it, which is the state os_queue_init_dynamic() expects. */
+static os_queue_t os_main_dynamic_queue;
 #endif
 
 /*
@@ -119,7 +120,7 @@ void os_main(void)
 {
     uint32_t next_value = 0U;
 
-    /* os_main_static_queue needs no setup: OS_QUEUE_DEFINE_STATIC initialized it at compile time, and
+    /* os_main_static_queue needs no setup: OS_QUEUE_DEFINE initialized it at compile time, and
      * there is no status to check because nothing can fail. Only the dynamic queue has an init
      * call, and only it can fail. */
 

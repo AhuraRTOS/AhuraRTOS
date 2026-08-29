@@ -298,16 +298,14 @@ void os_arch_tick_init(void)
     uint32_t clock_hz = os_arch_clock_hz_get();
     uint32_t reload_value;
 
-    if ((clock_hz == 0U) || (OS_CONFIG_TICK_HZ == 0U))
+    /* A zero clock, a zero tick rate, or a reload the timer cannot hold all mean there is
+     * nothing sane to program, so the whole body is skipped rather than each bailing out. */
+    if ((clock_hz != 0U) && (OS_CONFIG_TICK_HZ != 0U))
     {
-        return;
-    }
-
     reload_value = (clock_hz / OS_CONFIG_TICK_HZ);
-    if ((reload_value == 0U) || (reload_value > (OS_ARCH_SYST_RVR_RELOAD_MSK + 1UL)))
+
+    if ((reload_value != 0U) && (reload_value <= (OS_ARCH_SYST_RVR_RELOAD_MSK + 1UL)))
     {
-        return;
-    }
 
     OS_ARCH_REG_SYST_CSR = 0U;
     OS_ARCH_REG_SYST_RVR = reload_value - 1UL;
@@ -315,6 +313,8 @@ void os_arch_tick_init(void)
     OS_ARCH_REG_SYST_CSR = OS_ARCH_SYST_CSR_CLKSOURCE_MSK |
                            OS_ARCH_SYST_CSR_TICKINT_MSK |
                            OS_ARCH_SYST_CSR_ENABLE_MSK;
+    }
+    }
 #endif
 }
 
@@ -330,13 +330,11 @@ void os_arch_tick_init(void)
  */
 uint32_t* os_arch_task_stack_initialize(uint8_t *stack_base, size_t stack_bytes, void (*entry)(void *context), void *context)
 {
-    uint32_t *stack_top;
+    uint32_t *stack_top = NULL;
 
-    if ((stack_base == NULL) || (entry == (void (*)(void *))0) || (stack_bytes < OS_CONFIG_MIN_STACK_SIZE))
+    if ((stack_base != NULL) && (entry != (void (*)(void *))0) &&
+        (stack_bytes >= OS_CONFIG_MIN_STACK_SIZE))
     {
-        return NULL;
-    }
-
     /* The hardware exception frame must sit on an 8-byte aligned address. */
     stack_top = (uint32_t *)((uintptr_t)(stack_base + stack_bytes) & ~(uintptr_t)0x7U);
 
@@ -360,6 +358,7 @@ uint32_t* os_arch_task_stack_initialize(uint8_t *stack_base, size_t stack_bytes,
     *(--stack_top) = 0U;                                    /* R6   */
     *(--stack_top) = 0U;                                    /* R5   */
     *(--stack_top) = 0U;                                    /* R4   */
+    }
 
     return stack_top;
 }

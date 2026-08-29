@@ -77,13 +77,14 @@ OS_WEAK void os_arch_core_ipi_request_cb(uint32_t core_id)
     if (core_id == (uint32_t)get_core_num())
     {
         OS_ARCH_CONTEXT_SWITCH_REQUEST();
-        return;
     }
-
-    /* Non-blocking on purpose. A full FIFO already means an unhandled signal is waiting at the
-     * other core, which is the same result this call wants, and blocking here would stall a
-     * scheduler path with interrupts masked. */
-    (void)multicore_fifo_push_timeout_us(SOC_IPI_TOKEN, 0);
+    else
+    {
+        /* Non-blocking on purpose. A full FIFO already means an unhandled signal is waiting at
+         * the other core, which is the same result this call wants, and blocking here would
+         * stall a scheduler path with interrupts masked. */
+        (void)multicore_fifo_push_timeout_us(SOC_IPI_TOKEN, 0);
+    }
 }
 
 /******************************************************************************************************/

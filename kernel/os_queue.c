@@ -44,6 +44,10 @@ static os_err_t os_queue_bind_buffer(os_queue_t *queue, void *buffer, size_t ite
  * The item copy happens inside a critical section: keep item_size small.
  * Nonzero timeouts are only honored from task context after os_start.
  *
+ * In OS_QUEUE_MODE_OVERWRITE the same timeout is spent the same way, but when it runs out the
+ * oldest item is dropped instead of the send being refused, so this returns OK on every path a
+ * bound queue can reach. That makes timeout_ms read as "how long to try not to lose anything".
+ *
  * @param[in,out] queue       Queue object.
  * @param[in]     item        Item data to copy.
  * @param[in]     timeout_ms  OS_WAIT_NOTHING, a duration in ms, or OS_WAIT_FOREVER.
@@ -84,6 +88,38 @@ os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
                 status  = OS_ERR_NONE;
                 waiting = false;
             }
+            else if ((queue->mode == OS_QUEUE_MODE_OVERWRITE) && (queue->capacity != 0U) &&
+                     ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()) ||
+                      (remaining_ticks == 0U)))
+            {
+                /* Full, and out of patience: the oldest item makes room for this one.
+                 *
+                 * Full means head == tail, so the slot tail names IS the oldest item, and
+                 * writing there overwrites exactly it. Both cursors then move together and
+                 * count stays at capacity, because nothing left the queue - one item simply
+                 * took another's place.
+                 *
+                 * The capacity test is not defensive about the arithmetic above it: an unbound
+                 * queue has capacity 0, counts as full, and would divide by zero here. It falls
+                 * through to OS_ERR_FULL instead, exactly as it does in the default mode. */
+                uint8_t *slot = &queue->buffer[queue->tail * queue->item_size];
+
+                queue->head = (queue->head + 1U) % queue->capacity;
+
+                (void)memcpy(slot, item, queue->item_size);
+                queue->tail = (queue->tail + 1U) % queue->capacity;
+
+                /* Same wake as an ordinary insert. A full queue can hold no blocked receiver, so
+                 * this normally finds an empty list; it is here so the two insert paths cannot
+                 * drift apart. */
+                (void)os_task_waiters_wake_one(&queue->receive_waiters);
+
+                os_task_wait_end();
+                os_critical_exit();
+
+                status  = OS_ERR_NONE;
+                waiting = false;
+            }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
             {
                 os_task_wait_end();
@@ -116,10 +152,16 @@ os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
                 }
                 else
                 {
+                    /* The wait ran out. Rather than answer here, go round once more with no
+                     * budget left and let the branches above decide while they hold the critical
+                     * section - which is what makes dropping an item safe in OVERWRITE mode, and
+                     * is why that decision cannot be taken out here.
+                     *
+                     * A receive that landed in this window is picked up on the way past, so the
+                     * send succeeds rather than reporting a timeout it no longer had. */
                     os_task_wait_end();
 
-                    status  = OS_ERR_TIMEOUT;
-                    waiting = false;
+                    remaining_ticks = 0U;
                 }
             }
         }
@@ -217,6 +259,39 @@ os_err_t os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_ms
 
 /******************************************************************************************************/
 /**
+ * @brief Choose what a send does when the queue is full.
+ *
+ * Under the critical section because a send on another core reads this field to decide whether
+ * it may drop an item, and a half-written answer there is the difference between losing data and
+ * refusing it.
+ *
+ * Blocked senders are deliberately NOT woken: each keeps the timeout it started with and re-reads
+ * the mode when that expires, which is the same answer it would have reached had this call landed
+ * a moment sooner.
+ *
+ * @param[in,out] queue  Queue to configure.
+ * @param[in]     mode   OS_QUEUE_MODE_NORMAL or OS_QUEUE_MODE_OVERWRITE.
+ * @return os_err_t  OS_ERR_NONE, or OS_ERR_INVALID_ARG for a NULL queue or an unknown mode.
+ */
+os_err_t os_queue_mode_set(os_queue_t *queue, os_queue_mode_t mode)
+{
+    os_err_t status = OS_ERR_INVALID_ARG;
+
+    if ((queue != NULL) &&
+        ((mode == OS_QUEUE_MODE_NORMAL) || (mode == OS_QUEUE_MODE_OVERWRITE)))
+    {
+        os_critical_enter();
+        queue->mode = mode;
+        os_critical_exit();
+
+        status = OS_ERR_NONE;
+    }
+
+    return status;
+}
+
+/******************************************************************************************************/
+/**
  * @brief Get current queue item count.
  *
  * @param[in] queue  Queue object.
@@ -279,12 +354,12 @@ size_t os_queue_free_get(const os_queue_t *queue)
 /**
  * @brief Initialize a queue over an item buffer allocated from the kernel heap.
  *
- * For a geometry not known until run time: OS_QUEUE_DEFINE_DYNAMIC declares the object, this gives
- * it a buffer, and os_queue_cleanup releases that buffer because this is what obtained it.
+ * For a geometry not known until run time: the caller declares a plain os_queue_t, this gives it a
+ * buffer, and os_queue_cleanup releases that buffer because this is what obtained it.
  * Everything else behaves identically. The object itself is still the caller's - only the buffer
  * comes from the heap - so a failed call leaves nothing to clean up.
  *
- * @param[out] queue      Queue object, on zero-initialized storage (OS_QUEUE_DEFINE_DYNAMIC).
+ * @param[out] queue      Queue object, on zero-initialized storage.
  * @param[in]  item_size  Size of one item in bytes.
  * @param[in]  capacity   Number of items the queue can hold.
  * @return os_err_t  OS_ERR_NONE, OS_ERR_INVALID_ARG for a zero/overflowing geometry,

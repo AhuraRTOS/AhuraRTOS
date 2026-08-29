@@ -450,33 +450,32 @@ static void os_timer_pool_prepare_locked(os_timer_pool_t *pool)
 {
     uint32_t index;
 
-    if (pool->ready)
+    /* Prepared once; a second call has nothing to do. */
+    if (!pool->ready)
     {
-        return;
+        os_list_init(&pool->free_list);
+
+        for (index = 0U; index < pool->count; index++)
+        {
+            os_timer_entry_t *entry = &pool->entries[index];
+
+            entry->pool           = pool;
+            entry->timer.self     = &entry->timer;
+            entry->timer.mode     = OS_TIMER_MODE_SUBMIT;
+            entry->timer.callback = pool->callback;
+            entry->timer.active   = false;
+            entry->timer.paused   = false;
+            entry->timer.queued   = false;
+
+            /* period_ticks is what makes an object count as armable, so a pool with no delay still
+             * gets a nonzero period its entries will never actually count down. */
+            entry->timer.period_ticks = (pool->delay_ticks == 0U) ? 1U : pool->delay_ticks;
+
+            os_list_push_back(&pool->free_list, &entry->timer.ready_node);
+        }
+
+        pool->ready = true;
     }
-
-    os_list_init(&pool->free_list);
-
-    for (index = 0U; index < pool->count; index++)
-    {
-        os_timer_entry_t *entry = &pool->entries[index];
-
-        entry->pool           = pool;
-        entry->timer.self     = &entry->timer;
-        entry->timer.mode     = OS_TIMER_MODE_SUBMIT;
-        entry->timer.callback = pool->callback;
-        entry->timer.active   = false;
-        entry->timer.paused   = false;
-        entry->timer.queued   = false;
-
-        /* period_ticks is what makes an object count as armable, so a pool with no delay still
-         * gets a nonzero period its entries will never actually count down. */
-        entry->timer.period_ticks = (pool->delay_ticks == 0U) ? 1U : pool->delay_ticks;
-
-        os_list_push_back(&pool->free_list, &entry->timer.ready_node);
-    }
-
-    pool->ready = true;
 }
 
 /******************************************************************************************************/

@@ -165,7 +165,7 @@ HAL headers.
 | `os_main_kernel_lock.c` | Deferring preemption with `os_kernel_lock` while interrupts keep running |
 | `os_main_mutex.c` | Mutual exclusion with `os_mutex_*` |
 | `os_main_sem.c` | Counting semaphore, producer and consumer |
-| `os_main_queue.c` | Message queue, producer and consumer, both static (`OS_QUEUE_DEFINE_STATIC`) and dynamic (`os_queue_init_dynamic`) storage |
+| `os_main_queue.c` | Message queue, producer and consumer, both static (`OS_QUEUE_DEFINE`) and dynamic (`os_queue_init_dynamic`) storage |
 | `os_main_event.c` | Event, waiting on multiple bits |
 | `os_main_notify.c` | Task notifications with `os_notify_*` |
 | `os_main_timer.c` | Periodic, one-shot and deferred calls, and the difference between `os_timer_start` and `os_timer_submit` |

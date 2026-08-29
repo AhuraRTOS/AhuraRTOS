@@ -643,19 +643,22 @@ OS_INLINE void os_arch_isr_priority_check(void)
 {
 #if (OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY != 0U)
     uint32_t ipsr;
-    uint32_t priority;
+    uint32_t priority = 0U;
+    bool     checked  = false;
 
     __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
 
+    /* Task context has no interrupt priority to check, so it simply never reaches the
+     * comparison; `checked` is what carries that instead of an early return. */
     if (ipsr == OS_ARCH_IPSR_THREAD_MODE)
     {
-        return; /* task context */
+        checked = false;
     }
-
-    if (ipsr >= OS_ARCH_IPSR_IRQ_BASE)
+    else if (ipsr >= OS_ARCH_IPSR_IRQ_BASE)
     {
         /* External interrupt: priority byte in NVIC_IPR. */
         priority = (uint32_t)OS_ARCH_REG_NVIC_IPR_BASE[ipsr - OS_ARCH_IPSR_IRQ_BASE];
+        checked  = true;
     }
     else if (ipsr >= OS_ARCH_IPSR_SYSHANDLER_BASE)
     {
@@ -668,6 +671,7 @@ OS_INLINE void os_arch_isr_priority_check(void)
          * and is held to the same rule. PendSV (14) and SysTick (15) sit at
          * the lowest priority and pass the comparison anyway. */
         priority = (uint32_t)OS_ARCH_REG_SHPR_BASE[ipsr - OS_ARCH_IPSR_SYSHANDLER_BASE];
+        checked  = true;
     }
     else
     {
@@ -675,13 +679,12 @@ OS_INLINE void os_arch_isr_priority_check(void)
          * no mask backend can defer them, so a kernel API call from them
          * is never safe - trap unconditionally. */
         os_arch_config_fault_trap();
-        return;
     }
 
     /* Raw-byte comparison is exact because os_arch_init rejects thresholds
      * with unimplemented bits and priority groupings with subpriority bits
      * (both would make this differ from the hardware's masking decision). */
-    if (priority < (uint32_t)OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY)
+    if (checked && (priority < (uint32_t)OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY))
     {
         os_arch_config_fault_trap();
     }

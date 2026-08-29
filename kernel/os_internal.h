@@ -342,26 +342,21 @@ OS_FORCE_INLINE bool os_internal_can_block(void)
  */
 OS_INLINE uint32_t os_internal_timeout_to_ticks(uint32_t timeout_ms)
 {
-    if (timeout_ms == OS_WAIT_FOREVER)
-    {
-        return OS_WAIT_FOREVER;
-    }
+    uint32_t result = OS_WAIT_FOREVER;
 
-#if (OS_CONFIG_TICK_HZ == 1000U)
-    /* 1 ms = 1 tick: identity, no 64-bit math on the hot path. */
-    return timeout_ms;
-#else
+    if (timeout_ms != OS_WAIT_FOREVER)
     {
+#if (OS_CONFIG_TICK_HZ == 1000U)
+        /* 1 ms = 1 tick: identity, no 64-bit math on the hot path. */
+        result = timeout_ms;
+#else
         uint64_t ticks = (((uint64_t)timeout_ms * (uint64_t)OS_CONFIG_TICK_HZ) + 999ULL) / 1000ULL;
 
-        if (ticks >= (uint64_t)OS_WAIT_FOREVER)
-        {
-            return OS_WAIT_FOREVER - 1U;
-        }
-
-        return (uint32_t)ticks;
-    }
+        result = (ticks >= (uint64_t)OS_WAIT_FOREVER) ? (OS_WAIT_FOREVER - 1U) : (uint32_t)ticks;
 #endif
+    }
+
+    return result;
 }
 
 /******************************************************************************************************/
@@ -375,16 +370,16 @@ OS_INLINE uint32_t os_internal_timeout_to_ticks(uint32_t timeout_ms)
  */
 OS_INLINE uint32_t os_internal_wait_remaining(uint32_t budget_ticks, uint32_t start_tick)
 {
-    uint32_t elapsed;
+    uint32_t result = OS_WAIT_FOREVER;
 
-    if (budget_ticks == OS_WAIT_FOREVER)
+    if (budget_ticks != OS_WAIT_FOREVER)
     {
-        return OS_WAIT_FOREVER;
+        uint32_t elapsed = os_tick_get() - start_tick;
+
+        result = (elapsed >= budget_ticks) ? 0U : (budget_ticks - elapsed);
     }
 
-    elapsed = os_tick_get() - start_tick;
-
-    return (elapsed >= budget_ticks) ? 0U : (budget_ticks - elapsed);
+    return result;
 }
 
 /*

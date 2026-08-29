@@ -414,12 +414,14 @@ OS_WEAK uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id)
 #if (OS_CONFIG_CORE_COUNT > 1U)
     if (core_id != 0U)
     {
-        return 0U;
+        /* No stack placed for a core this port does not know about. */
+        stack_limit = NULL;
     }
+    else
 #else
     (void)core_id;
 #endif
-
+    {
     /* Two names for the same thing: __StackLimit in CMSIS-style scripts, _sstack in several
      * vendor-generated ones. Both weak, so either naming works unmodified and neither existing
      * resolves to 0. */
@@ -428,6 +430,7 @@ OS_WEAK uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id)
     if (stack_limit == NULL)
     {
         stack_limit = &_sstack;
+    }
     }
 
     return (uint32_t)(uintptr_t)stack_limit;
@@ -487,16 +490,14 @@ void os_arch_tick_init(void)
     uint32_t clock_hz = os_arch_clock_hz_get();
     uint32_t reload_value;
 
-    if ((clock_hz == 0U) || (OS_CONFIG_TICK_HZ == 0U))
+    /* A zero clock, a zero tick rate, or a reload the timer cannot hold all mean there is
+     * nothing sane to program, so the whole body is skipped rather than each bailing out. */
+    if ((clock_hz != 0U) && (OS_CONFIG_TICK_HZ != 0U))
     {
-        return;
-    }
-
     reload_value = (clock_hz / OS_CONFIG_TICK_HZ);
-    if ((reload_value == 0U) || (reload_value > (OS_ARCH_SYST_RVR_RELOAD_MSK + 1UL)))
+
+    if ((reload_value != 0U) && (reload_value <= (OS_ARCH_SYST_RVR_RELOAD_MSK + 1UL)))
     {
-        return;
-    }
 
     /* Cached for tickless idle: os_arch_elapsed_ticks_get() restores exactly
      * this cadence after a suppressed sleep. */
@@ -508,6 +509,8 @@ void os_arch_tick_init(void)
     OS_ARCH_REG_SYST_CSR = OS_ARCH_SYST_CSR_CLKSOURCE_MSK |
                            OS_ARCH_SYST_CSR_TICKINT_MSK |
                            OS_ARCH_SYST_CSR_ENABLE_MSK;
+    }
+    }
 #endif
 }
 
@@ -523,13 +526,11 @@ void os_arch_tick_init(void)
  */
 uint32_t* os_arch_task_stack_initialize(uint8_t *stack_base, size_t stack_bytes, void (*entry)(void *context), void *context)
 {
-    uint32_t *stack_top;
+    uint32_t *stack_top = NULL;
 
-    if ((stack_base == NULL) || (entry == (void (*)(void *))0) || (stack_bytes < OS_CONFIG_MIN_STACK_SIZE))
+    if ((stack_base != NULL) && (entry != (void (*)(void *))0) &&
+        (stack_bytes >= OS_CONFIG_MIN_STACK_SIZE))
     {
-        return NULL;
-    }
-
     /* The hardware exception frame must sit on an 8-byte aligned address. */
     stack_top = (uint32_t *)((uintptr_t)(stack_base + stack_bytes) & ~(uintptr_t)0x7U);
 
@@ -557,6 +558,7 @@ uint32_t* os_arch_task_stack_initialize(uint8_t *stack_base, size_t stack_bytes,
     /* PSPLIM ignores its low 3 bits, so round the limit up: an overflow then
      * always faults before writing outside the caller's stack memory. */
     *(--stack_top) = ((uint32_t)(uintptr_t)stack_base + 7U) & ~(uint32_t)0x7U; /* PSPLIM */
+    }
 
     return stack_top;
 }
@@ -574,12 +576,7 @@ uint32_t* os_arch_task_stack_initialize(uint8_t *stack_base, size_t stack_bytes,
  */
 uint32_t os_arch_cycle_count_get(void)
 {
-    if (os_arch_dwt_available)
-    {
-        return OS_ARCH_REG_DWT_CYCCNT;
-    }
-
-    return os_arch_cycle_systick_get();
+    return os_arch_dwt_available ? OS_ARCH_REG_DWT_CYCCNT : os_arch_cycle_systick_get();
 }
 
 /******************************************************************************************************/
@@ -599,13 +596,10 @@ uint32_t os_arch_elapsed_ticks_get(void)
     uint32_t cvr;
     uint32_t clock_hz;
     uint32_t elapsed_cycles;
-    uint32_t elapsed_ticks;
+    uint32_t elapsed_ticks = 0U;   /* no window was armed */
 
-    if (os_arch_planned_idle_ticks == 0U)
+    if (os_arch_planned_idle_ticks != 0U)
     {
-        return 0U;
-    }
-
     /* Single CSR read: it clears COUNTFLAG as a side effect, so it must be sampled once. */
     csr = OS_ARCH_REG_SYST_CSR;
 
@@ -656,6 +650,7 @@ uint32_t os_arch_elapsed_ticks_get(void)
                            OS_ARCH_SYST_CSR_ENABLE_MSK;
 
     os_arch_planned_idle_ticks = 0U;
+    }
 
     /* The kernel interrupt mask taken in os_arch_sleep_prepare stays held: os_arch_sleep_finish()
      * releases it once os_tick.c has announced this sleep and restored the application's hardware.
@@ -692,12 +687,15 @@ void os_arch_sleep_finish(void)
  */
 static uint64_t os_arch_max_window_ticks_get(void)
 {
-    if (os_arch_tick_reload_cycles == 0U)
+    uint64_t window = 0U;   /* the normal tick was never set up */
+
+    if (os_arch_tick_reload_cycles != 0U)
     {
-        return 0U;
+        window = (uint64_t)(OS_ARCH_SYST_RVR_RELOAD_MSK + 1UL) /
+                 (uint64_t)os_arch_tick_reload_cycles;
     }
 
-    return (uint64_t)(OS_ARCH_SYST_RVR_RELOAD_MSK + 1UL) / (uint64_t)os_arch_tick_reload_cycles;
+    return window;
 }
 
 
@@ -725,19 +723,14 @@ void os_arch_sleep_prepare(uint32_t planned_ticks)
     /* Below 2 ticks there is nothing meaningful to suppress (planned_ticks - 1
      * would be 0); os_arch_elapsed_ticks_get() then reports 0 and this idle
      * pass behaves like a plain WFI. */
-    if (planned_ticks < 2U)
+    if (planned_ticks >= 2U)
     {
-        return;
-    }
-
     clock_hz = os_arch_clock_hz_get();
 
     /* No usable clock, or the normal tick was never actually set up
      * (os_arch_tick_init bailed at boot): nothing safe to reprogram. */
-    if ((clock_hz == 0U) || (os_arch_tick_reload_cycles == 0U))
+    if ((clock_hz != 0U) && (os_arch_tick_reload_cycles != 0U))
     {
-        return;
-    }
 
     /* Cap the TICK COUNT first, then re-derive the cycle budget from the capped
      * count: (planned_ticks - 1) * reload_cycles can vastly exceed uint32_t
@@ -745,11 +738,9 @@ void os_arch_sleep_prepare(uint32_t planned_ticks)
      * overflow. */
     max_window_ticks = os_arch_max_window_ticks_get();
 
-    if (max_window_ticks == 0U)
+    /* Zero is defensive only: unreachable given the reload range os_arch_tick_init enforces. */
+    if (max_window_ticks != 0U)
     {
-        return; /* defensive only: unreachable given the reload range os_arch_tick_init enforces */
-    }
-
     if ((uint64_t)(planned_ticks - 1U) > max_window_ticks)
     {
         planned_ticks = (uint32_t)max_window_ticks + 1U;
@@ -771,6 +762,9 @@ void os_arch_sleep_prepare(uint32_t planned_ticks)
     OS_ARCH_REG_SYST_CSR = OS_ARCH_SYST_CSR_CLKSOURCE_MSK |
                            OS_ARCH_SYST_CSR_TICKINT_MSK |
                            OS_ARCH_SYST_CSR_ENABLE_MSK;
+    }
+    }
+    }
 }
 
 /******************************************************************************************************/
@@ -851,32 +845,29 @@ static bool os_arch_dwt_enable(void)
     uint32_t first_sample;
     uint32_t attempt;
 
-    if ((control & OS_ARCH_DWT_CTRL_NOCYCCNT_MSK) != 0U)
+    bool counting = false;
+
+    /* Not implemented, or the enable was refused because the debug power domain is down. */
+    if ((control & OS_ARCH_DWT_CTRL_NOCYCCNT_MSK) == 0U)
     {
-        return false; /* not implemented */
-    }
+        OS_ARCH_REG_DWT_CYCCNT = 0U;
+        OS_ARCH_REG_DWT_CTRL   = control | OS_ARCH_DWT_CTRL_CYCCNTENA_MSK;
 
-    OS_ARCH_REG_DWT_CYCCNT = 0U;
-    OS_ARCH_REG_DWT_CTRL   = control | OS_ARCH_DWT_CTRL_CYCCNTENA_MSK;
-
-    if ((OS_ARCH_REG_DWT_CTRL & OS_ARCH_DWT_CTRL_CYCCNTENA_MSK) == 0U)
-    {
-        return false; /* enable refused (debug power domain down) */
-    }
-
-    /* Confirm it counts. The bound is generous next to the handful of cycles a working counter
-     * needs to move, and it runs exactly once, so the cost is invisible against boot. */
-    first_sample = OS_ARCH_REG_DWT_CYCCNT;
-
-    for (attempt = 0U; attempt < 64U; attempt++)
-    {
-        if (OS_ARCH_REG_DWT_CYCCNT != first_sample)
+        if ((OS_ARCH_REG_DWT_CTRL & OS_ARCH_DWT_CTRL_CYCCNTENA_MSK) != 0U)
         {
-            return true;
+            /* Confirm it counts. The bound is generous next to the handful of cycles a working
+             * counter needs to move, and it runs exactly once, so the cost is invisible against
+             * boot. `counting` ends the loop through its own condition. */
+            first_sample = OS_ARCH_REG_DWT_CYCCNT;
+
+            for (attempt = 0U; (attempt < 64U) && !counting; attempt++)
+            {
+                counting = (OS_ARCH_REG_DWT_CYCCNT != first_sample);
+            }
         }
     }
 
-    return false;
+    return counting;
 }
 
 /******************************************************************************************************/

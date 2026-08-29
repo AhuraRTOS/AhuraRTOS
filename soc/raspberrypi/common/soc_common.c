@@ -187,22 +187,29 @@ uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id)
 {
     extern uint32_t __StackBottom;
 
+    /* No third core exists on any RP2 part; an unknown id says so rather than guessing an
+     * address, which is what the 0 initialiser means here. */
+    uint32_t limit = 0U;
+
 #if (OS_CONFIG_CORE_COUNT > 1U)
     extern uint32_t __StackOneBottom;
 
     if (core_id == 1U)
     {
-        return (uint32_t)(uintptr_t)&__StackOneBottom;
+        limit = (uint32_t)(uintptr_t)&__StackOneBottom;
     }
+    else
 #endif
-
-    if (core_id != 0U)
+    if (core_id == 0U)
     {
-        /* No third core exists on any RP2 part; say so rather than guess an address. */
-        return 0U;
+        limit = (uint32_t)(uintptr_t)&__StackBottom;
+    }
+    else
+    {
+        /* limit stays 0 */
     }
 
-    return (uint32_t)(uintptr_t)&__StackBottom;
+    return limit;
 }
 
 /******************************************************************************************************/
@@ -225,18 +232,21 @@ uint32_t os_arch_handler_stack_top_cb(uint32_t core_id)
 {
     extern uint32_t __StackTop;
 
+    /* Unknown core ids fall back to core 0's stack, as the comment above explains. */
+    uint32_t top = (uint32_t)(uintptr_t)&__StackTop;
+
 #if (OS_CONFIG_CORE_COUNT > 1U)
     extern uint32_t __StackOneTop;
 
     if (core_id == 1U)
     {
-        return (uint32_t)(uintptr_t)&__StackOneTop;
+        top = (uint32_t)(uintptr_t)&__StackOneTop;
     }
 #else
     (void)core_id;
 #endif
 
-    return (uint32_t)(uintptr_t)&__StackTop;
+    return top;
 }
 
 /******************************************************************************************************/
@@ -324,15 +334,12 @@ void isr_systick(void)
  */
 void os_arch_core_launch_cb(uint32_t core_id)
 {
-    if (core_id != 1U)
+    /* Unreachable while SOC_CORE_COUNT holds OS_CONFIG_CORE_COUNT to 2, which soc_common.h
+     * enforces at compile time. Kept as a guard rather than an assert because a wrong id here
+     * would launch nothing at all, silently. */
+    if (core_id == 1U)
     {
-        /* Unreachable while SOC_CORE_COUNT holds OS_CONFIG_CORE_COUNT to 2, which soc_common.h
-         * enforces at compile time. Kept as a guard rather than an assert because a wrong id here
-         * would launch nothing at all, silently. */
-        return;
-    }
-
-    multicore_launch_core1(soc_core1_entry);
+        multicore_launch_core1(soc_core1_entry);
 
     /* Core 0's own IPI is armed HERE, and not a line earlier.
      *
@@ -353,7 +360,8 @@ void os_arch_core_launch_cb(uint32_t core_id)
      *
      * A reschedule request that arrives in the remaining sliver - after the launch returns, before
      * this line - is not lost so much as deferred: the next tick re-evaluates scheduling anyway. */
-    soc_ipi_arm();
+        soc_ipi_arm();
+    }
 }
 
 /******************************************************************************************************/
@@ -403,28 +411,31 @@ void os_arch_soc_diagnose_cb(void)
         printf("               started and then died. Decode CFSR for which fault, and look\r\n");
         printf("               up pc in the .elf to find where.\r\n");
         (void)fflush(stdout);
-        return;
-    }
-
-    printf("         [soc] ");
-
-    if (soc_core_reached == 0xFFU)
-    {
-        printf("core 1 NEVER reached its entry point.\r\n");
-        printf("         multicore_launch_core1() did not deliver it, even though the same call\r\n");
-        printf("         works from main() in the SDK's own example - so the difference is the\r\n");
-        printf("         context os_start() calls it from, not the SDK.\r\n");
     }
     else
     {
-        printf("core %u DID reach its entry point.\r\n", (unsigned)soc_core_reached);
-        printf("         So the launch, the vector table and this package are fine, and the\r\n");
-        printf("         fault is in what follows: soc_ipi_arm() or the kernel's own\r\n");
-        printf("         os_core_start() path.\r\n");
-    }
+        printf("         [soc] ");
 
-    printf("         (no HARDFAULT line above means neither core faulted)\r\n");
-    (void)fflush(stdout);
+        if (soc_core_reached == 0xFFU)
+        {
+            printf("core 1 NEVER reached its entry point.\r\n");
+            printf("         Check how this board was programmed before suspecting the kernel.\r\n");
+            printf("         A debugger load with no chip reset after it leaves core 1 halted\r\n");
+            printf("         from the debug session, and multicore_launch_core1() then never\r\n");
+            printf("         delivers it. Press the reset button, or flash a UF2 through\r\n");
+            printf("         BOOTSEL, and run again before reading anything into this line.\r\n");
+        }
+        else
+        {
+            printf("core %u DID reach its entry point.\r\n", (unsigned)soc_core_reached);
+            printf("         So the launch, the vector table and this package are fine, and the\r\n");
+            printf("         fault is in what follows: soc_ipi_arm() or the kernel's own\r\n");
+            printf("         os_core_start() path.\r\n");
+        }
+
+        printf("         (no HARDFAULT line above means neither core faulted)\r\n");
+        (void)fflush(stdout);
+    }
 #endif
 }
 
@@ -781,19 +792,19 @@ static void soc_panic_puts(const char *text)
 #ifdef PICO_DEFAULT_UART
     uart_hw_t *hw = uart_get_hw(uart_default);
 
-    if (text == NULL)
+    /* Nothing to print - and finding that out by dereferencing it is the fault this avoids,
+     * on a path that only ever runs while the system is already panicking. */
+    if (text != NULL)
     {
-        return;
-    }
-
-    while (*text != '\0')
-    {
-        while ((hw->fr & UART_UARTFR_TXFF_BITS) != 0U)
+        while (*text != '\0')
         {
-        }
+            while ((hw->fr & UART_UARTFR_TXFF_BITS) != 0U)
+            {
+            }
 
-        hw->dr = (uint32_t)(uint8_t)*text;
-        text++;
+            hw->dr = (uint32_t)(uint8_t)*text;
+            text++;
+        }
     }
 #else
     (void)text;
