@@ -418,6 +418,19 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
     };                                                              \
     os_task_t task_name = { .storage = &task_name##_task_storage }
 
+/** Name a task defined in another file, so this one can start, pause or delete it.
+ *
+ *      / worker.c
+ *      OS_TASK_DEFINE(worker, 512U);
+ *
+ *      / worker.h
+ *      OS_TASK_DECLARE(worker);
+ *
+ *  Only the HANDLE crosses. The stack and the storage descriptor stay private to the file that
+ *  defined them, which is the whole reason they are declared static there - nothing outside has
+ *  any business naming them, and the handle already carries everything the kernel needs. */
+#define OS_TASK_DECLARE(task_name)      extern os_task_t task_name
+
 /** Task behaviour for os_task_create: what the task runs, with what, and at what priority. What it
  *  is called and where its stack lives came from OS_TASK_DEFINE, so neither appears here.
  *  Two forms, and the signature of each is the SAME whatever OS_CONFIG_CORE_COUNT is:
@@ -980,6 +993,19 @@ typedef struct
     static uint8_t    name##_queue_buf[(item_bytes) * (item_count)] OS_ITEM_ALIGNED __VA_ARGS__; \
     os_queue_t name = OS_QUEUE_INITIALIZER(name##_queue_buf, (item_bytes))
 
+/** Name a queue defined in another file, so this one can send to it or receive from it.
+ *
+ *      / sensors.c
+ *      OS_QUEUE_DEFINE(sensor_q, sizeof(sample_t), 8);
+ *
+ *      / sensors.h
+ *      OS_QUEUE_DECLARE(sensor_q);
+ *
+ *  Only the QUEUE crosses; its item array stays private to the file that defined it. The name has
+ *  to match the DEFINE exactly, since that is the symbol the linker resolves against. Works for
+ *  either static macro, and for a dynamic queue too - by then it is the same object. */
+#define OS_QUEUE_DECLARE(name)          extern os_queue_t name
+
 /* --- Dynamic storage: the item buffer comes from the kernel heap ------------------------------ */
 
 /* There is no DEFINE macro for a dynamic queue, because there would be nothing in it to write:
@@ -1191,6 +1217,17 @@ typedef struct
 #define OS_MSG_DEFINE_ATTR(name, byte_size, ...)             \
     static uint8_t  name##_msg_buf[(byte_size)] __VA_ARGS__; \
     os_msg_t name = OS_MSG_INITIALIZER(name##_msg_buf)
+
+/** Name a message buffer defined in another file, so this one can send to it or receive from it.
+ *
+ *      / console.c
+ *      OS_MSG_DEFINE(cmd_buf, 256U);
+ *
+ *      / console.h
+ *      OS_MSG_DECLARE(cmd_buf);
+ *
+ *  Only the OBJECT crosses; its byte array stays private to the file that defined it. */
+#define OS_MSG_DECLARE(name)            extern os_msg_t name
 
 /* --- Dynamic storage: the byte buffer comes from the kernel heap ------------------------------ */
 
@@ -1501,6 +1538,30 @@ struct os_timer_pool_s
         .delay_ticks = OS_TICKS_FROM_MS(pool_delay_ms),                                   \
         .callback    = (pool_callback)                                                    \
     }
+
+/** Name a timer defined in another file, so this one can start, stop or retune it. One macro for
+ *  both kinds, because OS_TIMER_DEFINE_PERIODIC and OS_TIMER_DEFINE_ONESHOT declare the same
+ *  object and differ only in the mode written into it.
+ *
+ *      / blink.c
+ *      OS_TIMER_DEFINE_PERIODIC(blink, 500U, on_blink);
+ *
+ *      / blink.h
+ *      OS_TIMER_DECLARE(blink);
+ */
+#define OS_TIMER_DECLARE(timer_name)    extern os_timer_t timer_name
+
+/** Name a deferred-call pool defined in another file, so this one can submit to it.
+ *
+ *      / uart.c
+ *      OS_TIMER_DEFINE_SUBMIT(uart_defer, 8U, 0U, on_uart_event);
+ *
+ *      / uart.h
+ *      OS_TIMER_POOL_DECLARE(uart_defer);
+ *
+ *  A pool rather than a timer, since that is what OS_TIMER_DEFINE_SUBMIT declares. Only the pool
+ *  crosses; its entry array stays private. */
+#define OS_TIMER_POOL_DECLARE(pool_name) extern os_timer_pool_t pool_name
 
 /******************************************************************************************************/
 /**

@@ -21,8 +21,8 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | **Atomics** | `os_atomic_get` · `os_atomic_set` · `os_atomic_add` · `os_atomic_sub` · `os_atomic_inc` · `os_atomic_dec` · `os_atomic_or` · `os_atomic_and` · `os_atomic_xor` · `os_atomic_nand` · `os_atomic_clear` · `os_atomic_cas` · `os_atomic_test_bit` · `os_atomic_set_bit` · `os_atomic_clear_bit` · `os_atomic_test_and_set_bit` · `os_atomic_test_and_clear_bit` · `os_atomic_set_bit_to` |
 | **Mutex** | `os_mutex_init` · `os_mutex_lock` · `os_mutex_unlock` |
 | **Semaphore** | `os_sem_init` · `os_sem_give` · `os_sem_take` |
-| **Queue** | `OS_QUEUE_DEFINE` · `OS_QUEUE_DEFINE_ATTR` · `os_queue_init_dynamic` · `os_queue_mode_set` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
-| **Message buffer** | `OS_MSG_DEFINE` · `OS_MSG_DEFINE_ATTR` · `os_msg_init_dynamic` · `os_msg_send` · `os_msg_receive` · `os_msg_count_get` · `os_msg_free_get` · `os_msg_peek_size` · `os_msg_cleanup` |
+| **Queue** | `OS_QUEUE_DEFINE` · `OS_QUEUE_DEFINE_ATTR` · `OS_QUEUE_DECLARE` · `os_queue_init_dynamic` · `os_queue_mode_set` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
+| **Message buffer** | `OS_MSG_DEFINE` · `OS_MSG_DEFINE_ATTR` · `OS_MSG_DECLARE` · `os_msg_init_dynamic` · `os_msg_send` · `os_msg_receive` · `os_msg_count_get` · `os_msg_free_get` · `os_msg_peek_size` · `os_msg_cleanup` |
 | **Event** | `os_event_init` · `os_event_set_bits` · `os_event_clear_bits` · `os_event_wait_bits` |
 | **Task notifications** | `os_notify_give` · `os_notify_wait` |
 | **Software timers** | `OS_TIMER_DEFINE_PERIODIC` / `OS_TIMER_DEFINE_ONESHOT` · `os_timer_start` · `os_timer_restart` · `os_timer_pause` · `os_timer_stop` · `os_timer_period_set` · `os_timer_callback_set` · `os_timer_value_set` |
@@ -397,12 +397,27 @@ what lets one file declare the queue and a header share it:
 
 ```c
 /* sensors.c */  OS_QUEUE_DEFINE(sensor_q, sizeof(sample_t), 8);
-/* sensors.h */  extern os_queue_t sensor_q;
+/* sensors.h */  OS_QUEUE_DECLARE(sensor_q);
 ```
 
 Nothing outside should ever name `sensor_q_queue_buf`, which is why that one
 stays private. The same split applies to every `DEFINE` macro in the kernel: the
-object is shareable, its storage is not. It also means each name has to be unique
+object is shareable, its storage is not, and every one of them has a matching
+`DECLARE` for the file that only wants to use it:
+
+| defined with | declared elsewhere with |
+|---|---|
+| `OS_TASK_DEFINE` · `OS_TASK_DEFINE_ATTR` | `OS_TASK_DECLARE(name)` |
+| `OS_QUEUE_DEFINE` · `OS_QUEUE_DEFINE_ATTR` | `OS_QUEUE_DECLARE(name)` |
+| `OS_MSG_DEFINE` · `OS_MSG_DEFINE_ATTR` | `OS_MSG_DECLARE(name)` |
+| `OS_TIMER_DEFINE_PERIODIC` · `OS_TIMER_DEFINE_ONESHOT` | `OS_TIMER_DECLARE(name)` |
+| `OS_TIMER_DEFINE_SUBMIT` | `OS_TIMER_POOL_DECLARE(name)` |
+
+Each expands to the `extern` you would have written by hand, which is the point:
+it cannot name the wrong type, and it cannot drift from the `DEFINE` it pairs
+with. Semaphores, mutexes and event groups have no `DECLARE` because they have no
+`DEFINE` either - they are plain objects you declare with whatever linkage you
+want. It also means each name has to be unique
 across the whole link.
 
 There is deliberately no init call to pair it with. The capacity is divided back

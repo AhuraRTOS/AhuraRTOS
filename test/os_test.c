@@ -2911,6 +2911,16 @@ OS_TIMER_DEFINE_SUBMIT(os_test_pool,      TEST_POOL_SIZE, 0U,  test_pool_cb);
 OS_TIMER_DEFINE_SUBMIT(os_test_pool_slow, TEST_POOL_SIZE, 60U, test_pool_cb);
 OS_TIMER_DEFINE_SUBMIT(os_test_pool_b,    2U,             0U,  test_pool_other_cb);
 
+/* The DECLARE macros, exercised the only way a declaration can be: by compiling. Each names an
+ * object this file also DEFINES, so the compiler sees both and rejects any disagreement about the
+ * type. Nothing at run time depends on these lines - if one of the object types ever changes and
+ * its DECLARE is not changed with it, the build stops here rather than in somebody's project. */
+OS_TASK_DECLARE(worker);
+OS_QUEUE_DECLARE(os_test_queue);
+OS_MSG_DECLARE(os_test_msg);
+OS_TIMER_DECLARE(os_test_timer_periodic);
+OS_TIMER_POOL_DECLARE(os_test_pool);
+
 /* The contrast case: one ordinary one-shot, started twice. */
 OS_TIMER_DEFINE_ONESHOT(os_test_coalesce, 30U, test_coalesce_cb);
 
