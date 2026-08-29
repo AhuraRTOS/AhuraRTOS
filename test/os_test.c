@@ -43,15 +43,21 @@ static uint32_t os_test_fail_count = 0U;
 #define TEST_TASK_CONFIG(entry, context, priority) \
     OS_TASK_CONFIG((entry), (context), (priority))
 #else
-/* PINNED TO CORE 0, not OS_TASK_CORE_ANY, and for now that is an experiment rather than a
- * decision. With ANY, this suite hangs at a different point in Task Lifecycle on almost every run
- * - sometimes a fault, sometimes a task that never runs, sometimes a dead stop with no output.
- * Non-determinism at that scale is a race, and the only thing ANY adds is migration between cores.
+/* PINNED TO CORE 0, not OS_TASK_CORE_ANY. This began as an experiment: with ANY, the suite used
+ * to stop at a different point on almost every run, and pinning removed migration as a variable
+ * while leaving core 1 busy with its own pinned worker, so the two cores still contend for the
+ * kernel's locks.
  *
- * Pinning removes exactly that variable while leaving core 1 busy with its own pinned worker, so
- * the two cores still contend for the kernel's locks. If the suite then runs clean, the fault is
- * in migration specifically; if it still breaks, migration is innocent and the contention itself
- * is at fault. Either answer is worth more than another run of the same test. */
+ * The experiment has since been answered from the other end. test_smp_core_any() runs four
+ * unpinned workers against each other and checks the three things that failure could look like:
+ * exact accounting under the kernel lock, a per-task stack sentinel that two cores sharing one
+ * stack would smash, and a bounded wait so a worker that never finishes is reported rather than
+ * left to hang the run. It passes on hardware. Unpinned scheduling is not the broken thing.
+ *
+ * The pinning stays anyway, and deliberately: unpinning the WHOLE suite changes the timing of
+ * every section at once, which is a different question from whether migration works, and one
+ * bounded section that can fail on its own is worth more than a suite that stops somewhere new
+ * each run. */
 #define TEST_TASK_CONFIG(entry, context, priority) \
     OS_TASK_CONFIG((entry), (context), (priority), OS_TASK_CORE(0))
 #endif
@@ -544,6 +550,7 @@ static void test_list(void);
 #if (OS_CONFIG_CORE_COUNT > 1U)
 static void test_multicore(void);
 static void test_multicore_watch(uint32_t watch_ms, const char *when);
+static void test_smp_core_any(void);
 static void test_smp_critical_nested(void);
 #if (OS_CONFIG_ATOMIC_ENABLE == 1U)
 static void test_smp_atomic_contention(void);
@@ -7876,6 +7883,176 @@ static void test_smp_soak_entry(void *context)
     test_smp_soak_done[slot] = 1U;
 }
 
+/*
+ * ***********************************************************************************************************
+ * Multi-core: OS_TASK_CORE_ANY, the one affinity the rest of this suite avoids
+ * ***********************************************************************************************************
+*/
+
+#define TEST_ANY_WORKERS     4U
+#define TEST_ANY_ROUNDS      150U
+#define TEST_ANY_SENTINEL    0x5A5AC0DEUL
+
+static __IO uint32_t test_any_gate    = 0U;
+static __IO uint32_t test_any_done[TEST_ANY_WORKERS];
+static __IO uint32_t test_any_cores[TEST_ANY_WORKERS];   /* bitmask of cores this worker ran on */
+static __IO uint32_t test_any_smashed = 0U;
+static __IO uint32_t test_any_guarded = 0U;              /* plain RMW under os_critical_enter */
+
+static void test_any_worker_entry(void *context);
+
+/******************************************************************************************************/
+/**
+ * @brief One unpinned worker: note the core, count once under the lock, then yield and check
+ *        that this task's own stack is still its own.
+ *
+ * The yield is the point. It is the cheapest way to ask the scheduler to reconsider where this
+ * task belongs, so the loop offers TEST_ANY_ROUNDS chances to migrate rather than one.
+ *
+ * @param context The worker's slot index, as a small integer cast to a pointer.
+ */
+static void test_any_worker_entry(void *context)
+{
+    uint32_t slot     = (uint32_t)(uintptr_t)context;
+    uint32_t sentinel = TEST_ANY_SENTINEL;   /* deliberately on THIS task's stack */
+    uint32_t cores    = 0U;
+    uint32_t i;
+
+    while (test_any_gate == 0U)
+    {
+    }
+
+    for (i = 0U; i < TEST_ANY_ROUNDS; i++)
+    {
+        cores |= (1UL << os_arch_core_id_get());
+
+        os_critical_enter();
+        test_any_guarded = test_any_guarded + 1U;
+        os_critical_exit();
+
+        os_task_yield();
+
+        /* If two cores ever dispatched this one task, they shared this stack frame, and the
+         * loop counter and this word are the first things that would not survive it. */
+        if (sentinel != TEST_ANY_SENTINEL)
+        {
+            test_any_smashed = 1U;
+        }
+    }
+
+    test_any_cores[slot] = cores;
+    test_any_done[slot]  = 1U;
+
+    /* Returns rather than parking, so the TCB slot goes back for whatever runs next - and
+     * terminating on whichever core the scheduler last left this task on is itself part of
+     * what this section is here to exercise. */
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Four OS_TASK_CORE_ANY workers at once: does unpinned scheduling hold together?
+ */
+static void test_smp_core_any(void)
+{
+    uint32_t index;
+    uint32_t waited;
+    uint32_t ran     = 0U;
+    uint32_t both    = 0U;
+    bool     created = true;
+    bool     started = true;
+
+    test_print_section("Multi-core (SMP): OS_TASK_CORE_ANY, four unpinned workers");
+
+    test_any_gate    = 0U;
+    test_any_smashed = 0U;
+    test_any_guarded = 0U;
+
+    for (index = 0U; index < TEST_ANY_WORKERS; index++)
+    {
+        test_any_done[index]  = 0U;
+        test_any_cores[index] = 0U;
+    }
+
+    /* BELOW the test task, exactly as test_multicore's workers are, and for a reason that is
+     * easy to get wrong: these spin on the gate rather than blocking on it. A spinner that
+     * outranks the task holding the gate never gives the CPU back, so the gate is never opened
+     * and the run stops there. That is a property of the priority, not of the affinity. */
+    created = created && (os_task_create(&test_smp_a,
+                  OS_TASK_CONFIG(test_any_worker_entry, (void *)0U, OS_TASK_PRIO_2,
+                                 OS_TASK_CORE_ANY)) == OS_ERR_NONE);
+    created = created && (os_task_create(&test_smp_b,
+                  OS_TASK_CONFIG(test_any_worker_entry, (void *)1U, OS_TASK_PRIO_2,
+                                 OS_TASK_CORE_ANY)) == OS_ERR_NONE);
+    created = created && (os_task_create(&test_smp_c,
+                  OS_TASK_CONFIG(test_any_worker_entry, (void *)2U, OS_TASK_PRIO_2,
+                                 OS_TASK_CORE_ANY)) == OS_ERR_NONE);
+    created = created && (os_task_create(&test_smp_d,
+                  OS_TASK_CONFIG(test_any_worker_entry, (void *)3U, OS_TASK_PRIO_2,
+                                 OS_TASK_CORE_ANY)) == OS_ERR_NONE);
+
+    AHURA_TEST_CHECK(created, "four tasks are created with OS_TASK_CORE_ANY");
+
+    started = started && (os_task_start(&test_smp_a) == OS_ERR_NONE);
+    started = started && (os_task_start(&test_smp_b) == OS_ERR_NONE);
+    started = started && (os_task_start(&test_smp_c) == OS_ERR_NONE);
+    started = started && (os_task_start(&test_smp_d) == OS_ERR_NONE);
+
+    AHURA_TEST_CHECK(started, "and all four start");
+
+    test_any_gate = 1U;
+
+    /* Bounded on purpose. A worker that never finishes is the exact symptom that made this
+     * suite pin everything, so it has to be reported rather than allowed to hang the run. */
+    for (waited = 0U; waited < 5000U; waited++)
+    {
+        if ((test_any_done[0] != 0U) && (test_any_done[1] != 0U) &&
+            (test_any_done[2] != 0U) && (test_any_done[3] != 0U))
+        {
+            break;
+        }
+
+        os_delay_ms(1U);
+    }
+
+    AHURA_TEST_CHECK((test_any_done[0] != 0U) && (test_any_done[1] != 0U) &&
+                     (test_any_done[2] != 0U) && (test_any_done[3] != 0U),
+                      "all four finish their %u rounds within 5 s (%lu %lu %lu %lu)",
+                      (unsigned)TEST_ANY_ROUNDS,
+                      (unsigned long)test_any_done[0], (unsigned long)test_any_done[1],
+                      (unsigned long)test_any_done[2], (unsigned long)test_any_done[3]);
+
+    AHURA_TEST_CHECK(test_any_smashed == 0U,
+                      "no worker found its own stack disturbed, so no task ran on two cores at once");
+
+    AHURA_TEST_CHECK(test_any_guarded == (TEST_ANY_ROUNDS * TEST_ANY_WORKERS),
+                      "every guarded increment landed exactly once (%lu of %u)",
+                      (unsigned long)test_any_guarded,
+                      (unsigned)(TEST_ANY_ROUNDS * TEST_ANY_WORKERS));
+
+    for (index = 0U; index < TEST_ANY_WORKERS; index++)
+    {
+        if (test_any_cores[index] != 0U)
+        {
+            ran++;
+        }
+
+        /* More than one bit set means this task was seen on both cores over its life. */
+        if ((test_any_cores[index] & (test_any_cores[index] - 1U)) != 0U)
+        {
+            both++;
+        }
+    }
+
+    AHURA_TEST_CHECK(ran == TEST_ANY_WORKERS,
+                      "each worker recorded a core it ran on, so none was starved outright");
+
+    /* Reported, not required: an unpinned task the scheduler never moves is doing nothing
+     * wrong, so a hard check here would fail for a reason that is not a defect. */
+    printf("  [INFO] %lu of %u unpinned workers were seen on both cores\r\n",
+           (unsigned long)both, (unsigned)TEST_ANY_WORKERS);
+}
+
+/******************************************************************************************************/
 static void test_smp_soak_mixed(void)
 {
     uint32_t waited;
@@ -8501,6 +8678,7 @@ void os_test(void)
 #if (OS_CONFIG_SEM_ENABLE == 1U) && (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_ATOMIC_ENABLE == 1U)
     test_smp_soak_mixed();
 #endif
+    test_smp_core_any();
     test_multicore_watch(TEST_MC_WATCH_MS, "at the end of the whole run");
 #endif
     test_unsupported_features();
