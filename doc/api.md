@@ -22,7 +22,7 @@ compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 | **Mutex** | `os_mutex_init` · `os_mutex_lock` · `os_mutex_unlock` |
 | **Semaphore** | `os_sem_init` · `os_sem_give` · `os_sem_take` |
 | **Queue** | `OS_QUEUE_DEFINE` · `OS_QUEUE_DEFINE_ATTR` · `os_queue_init_dynamic` · `os_queue_mode_set` · `os_queue_send` · `os_queue_receive` · `os_queue_count_get` · `os_queue_free_get` · `os_queue_cleanup` |
-| **Message buffer** | `OS_MSG_DEFINE` · `OS_MSG_DEFINE_ATTR` · `OS_MSG_SPACE` · `os_msg_init_dynamic` · `os_msg_send` · `os_msg_receive` · `os_msg_count_get` · `os_msg_free_get` · `os_msg_peek_size` · `os_msg_cleanup` |
+| **Message buffer** | `OS_MSG_DEFINE` · `OS_MSG_DEFINE_ATTR` · `os_msg_init_dynamic` · `os_msg_send` · `os_msg_receive` · `os_msg_count_get` · `os_msg_free_get` · `os_msg_peek_size` · `os_msg_cleanup` |
 | **Event** | `os_event_init` · `os_event_set_bits` · `os_event_clear_bits` · `os_event_wait_bits` |
 | **Task notifications** | `os_notify_give` · `os_notify_wait` |
 | **Software timers** | `OS_TIMER_DEFINE_PERIODIC` / `OS_TIMER_DEFINE_ONESHOT` · `os_timer_start` · `os_timer_restart` · `os_timer_pause` · `os_timer_stop` · `os_timer_period_set` · `os_timer_callback_set` · `os_timer_value_set` |
@@ -524,7 +524,7 @@ messages whose length varies**, out of one byte budget you choose. Enabled with
 built on the other.
 
 ```c
-OS_MSG_DEFINE(cmd_buf, 4U * OS_MSG_SPACE(32U));   /* 136 bytes of storage */
+OS_MSG_DEFINE(cmd_buf, 136U);   /* four 32-byte commands, headers included */
 
 os_msg_send(&cmd_buf, frame, frame_len, 10U);
 
@@ -543,14 +543,14 @@ one thing the receiver needed, which is how many of those bytes are real.
 | | queue | message buffer |
 |---|---|---|
 | capacity is | a slot count × one item size | a byte budget, shared |
-| an item costs | one slot, always | its own length + `OS_MSG_HEADER_BYTES` |
+| an item costs | one slot, always | its own length plus 2 bytes |
 | a short item | costs a whole slot | costs what it is |
 | back-pressure reads as | free **slots** | free **bytes** |
 | storage kinds | static, own buffer, heap | static, own buffer |
 
-**Sizing it.** Capacity is in bytes, and each message carries a small length
-header, so write the budget in the terms the application thinks in and let
-`OS_MSG_SPACE` add the overhead:
+**Sizing it.** Capacity is a byte budget, so write it in the terms the
+application already thinks in and add 2 bytes per message for the length header
+each one carries:
 
 ```c
 OS_MSG_DEFINE(cmd_buf, 256U);                      /* 256 bytes of storage */
@@ -585,14 +585,13 @@ otherwise be silent:
 - **A zero-length message** is refused. Use a semaphore or a notification to
   signal without carrying bytes.
 
-**Reading the free count.** `os_msg_free_get()` reports free **bytes**, and has
-to be read against `OS_MSG_SPACE`, not against a raw length - a buffer with
-exactly `length` bytes free still has no room, because the message pays for its
-own header too:
+**Reading the free count.** `os_msg_free_get()` reports free **bytes**, and a
+message needs its length plus 2, so a buffer with exactly `len` bytes free still
+has no room for a `len`-byte message:
 
 ```c
-if (os_msg_free_get(&cmd_buf) >= OS_MSG_SPACE(len))     /* right */
-if (os_msg_free_get(&cmd_buf) >= len)                   /* wrong: forgets the header */
+if (os_msg_free_get(&cmd_buf) >= (len + 2U))     /* right */
+if (os_msg_free_get(&cmd_buf) >= len)            /* wrong: forgets the header */
 ```
 
 **Most code needs none of this.** `os_msg_send()` adds the 2 bytes itself and
@@ -610,13 +609,12 @@ the same with attributes on the array, and a plain `os_msg_t` plus
 ```c
 static os_msg_t rx_buf;
 ...
-status = os_msg_init_dynamic(&rx_buf, 4U * OS_MSG_SPACE(mtu_from_config));
+status = os_msg_init_dynamic(&rx_buf, 4U * (mtu_from_config + 2U));
 ```
 
-`byte_size` is a byte budget exactly as in the static macro, so size it with
-`OS_MSG_SPACE`. A budget too small to hold even one message - anything under
-`OS_MSG_SPACE(1)` - is `OS_ERR_INVALID_ARG` rather than an object that exists and
-refuses every send it is ever given. Only the buffer is allocated; the object
+`byte_size` is a byte budget exactly as in the static macro, headers included. A
+budget too small to hold even one message is `OS_ERR_INVALID_ARG` rather than an
+object that exists and refuses every send it is ever given. Only the buffer is allocated; the object
 itself is yours, which is why a failed init leaves nothing to clean up.
 
 **Teardown** is `os_msg_cleanup()`, and every kind converges on it, so a caller

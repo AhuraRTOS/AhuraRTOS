@@ -318,9 +318,9 @@ size_t os_msg_count_get(const os_msg_t *msg)
 /**
  * @brief Get how many bytes of storage are still free, length headers included.
  *
- * The number back-pressure actually wants, but it has to be read against OS_MSG_SPACE rather than
- * against a payload length: a message of L bytes fits when this returns at least OS_MSG_SPACE(L),
- * because every message carries its own header. A snapshot either way - anything that sends or
+ * The number back-pressure actually wants, but it has to be read against the payload length PLUS
+ * its header: a message of L bytes fits when this returns at least L + 2, because every message
+ * carries its own two-byte length. A snapshot either way - anything that sends or
  * receives in between changes the answer - so treat a large enough result as "worth trying", not
  * as a guarantee that the next send cannot report OS_ERR_FULL.
  *
@@ -390,9 +390,9 @@ size_t os_msg_peek_size(const os_msg_t *msg)
  *
  * There is no geometry product to overflow here, unlike os_queue_init_dynamic: a message buffer is
  * sized in bytes directly, so byte_size is already the allocation size. What it does check is that
- * the budget can hold at least one message - a buffer smaller than OS_MSG_SPACE(1) has room for a
- * header and nothing else, so every send against it would be refused and the object would be
- * useless in a way only visible at run time.
+ * the budget can hold at least one message - a buffer of two bytes or fewer has room for a header
+ * and nothing else, so every send against it would be refused and the object would be useless in a
+ * way only visible at run time.
  *
  * @param[in,out] msg        Message buffer object, on zero-initialized storage.
  * @param[in]     byte_size  Storage to allocate, in bytes, exactly as for OS_MSG_DEFINE.

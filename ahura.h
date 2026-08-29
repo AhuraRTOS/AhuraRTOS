@@ -1105,12 +1105,10 @@ os_err_t os_queue_cleanup(os_queue_t *queue);
 
 /** Storage one message of "length" bytes occupies: its bytes plus its header.
  *
- *  Rarely needed. os_msg_send() does this arithmetic itself, so the ordinary way to find out
- *  whether a message fits is to send it and look at the status. This is here for the one case that
- *  cannot be answered that way - stating a worst case the buffer must be able to hold, such as
- *  "four commands of up to 32 bytes even when nothing has been read yet", which is
- *  4U * OS_MSG_SPACE(32U). It is also what os_msg_free_get() has to be read against, since that
- *  reports raw bytes and knows nothing about headers. */
+ *  Not something callers should need. os_msg_send() does this arithmetic itself and answers
+ *  OS_ERR_FULL, and a budget is written as "so many messages of so many bytes, plus 2 each",
+ *  which is the same sum in the terms the application already thinks in. Kept because the
+ *  kernel's own size checks are written against it. */
 #define OS_MSG_SPACE(length)    ((size_t)(length) + (size_t)OS_MSG_HEADER_BYTES)
 
 /******************************************************************************************************/
