@@ -184,6 +184,7 @@ uint32_t os_task_current_id_get(void);
  */
 bool os_task_current_is_idle(void);
 
+
 /******************************************************************************************************/
 /**
  * @brief Whether a PendSV on this core would actually switch or round-robin (os_task.c,
@@ -223,6 +224,14 @@ uint32_t* os_task_stack_select_next(void);
  * @brief Return ticks until the next finite-delay sleeper wakes, UINT32_MAX when none (os_task.c).
  */
 uint32_t os_task_next_delay_ticks_get(void);
+
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief Tell core 0 a deadline nearer than its suppressed tickless window has just been armed.
+ */
+void os_tickless_deadline_armed(void);
+#endif
 
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
 /*

@@ -204,6 +204,33 @@ uint32_t os_cpu_usage_get(void)
 
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 
+/* Tickless idle is single-core only, for now.
+ *
+ * os_tick_handler above gives core 0 sole ownership of the kernel time base, so suppressing core
+ * 0's tick stops delays and timers for EVERY core. os_tickless_idle_process masks interrupts before
+ * it plans a window, which closes the race against this core's own ISRs and does nothing at all
+ * about another core: core 1 keeps running tasks and can arm a timeout inside a window core 0 has
+ * already committed to sleeping through. The four-worker SMP soak shows it as workers that never
+ * finish, not as anything that looks like a clock problem.
+ *
+ * Asking whether the other cores are idle does not fix it - a core can take work the instant after
+ * it answers. What does is the core creating the nearer deadline nudging core 0 out of its window,
+ * which is a change to the delay-insert path and not yet written.
+ *
+ * A compile error rather than a silent degrade, for the same reason the sleep hooks are a link
+ * error: a build that enables tickless and quietly gets nothing is the outcome worth preventing. */
+/** Tick at which a window was last planned, so the idle loop walks the deadline lists once per
+ *  tick rather than once per pass. */
+static __IO uint32_t os_tickless_last_plan_tick = 0U;
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+/** Raised by core 0 from the moment it starts planning a window until that window has closed.
+ *
+ *  Read by the other cores, which is the whole point: core 0 cannot know about a deadline that
+ *  does not exist yet, so whoever creates one has to say so. */
+static __IO bool os_tickless_window_open = false;
+#endif
+
 /******************************************************************************************************/
 /**
  * @brief Get expected idle ticks for tickless decision.
@@ -286,6 +313,25 @@ void os_tickless_idle_process(void)
     owns_time_base = (os_arch_core_id_get() == 0U);
 #endif
 
+    /* At most one planning pass per tick, and this is not an optimisation - it is what keeps the
+     * idle loop from starving the other core.
+     *
+     * os_tickless_expected_idle_ticks_get walks the delay list and the timer list, both under the
+     * cross-core spinlock. The idle task calls this every time round, and a WFE returns as soon as
+     * anything is pending, which on a busy second core is immediately and forever. Without this
+     * guard core 0's idle becomes a spin loop holding and releasing the very lock the other core's
+     * tasks need, and they crawl.
+     *
+     * Twice in one tick cannot answer differently: every deadline those walks read is counted in
+     * ticks. A window that does open moves the clock far past this guard on its own. */
+    if (owns_time_base)
+    {
+        uint32_t now = os_tick_get();
+
+        owns_time_base = (now != os_tickless_last_plan_tick);
+        os_tickless_last_plan_tick = now;
+    }
+
     if (owns_time_base)
     {
         /* Interrupts off BEFORE deciding how long to sleep, and kept off until the sleep has been
@@ -302,6 +348,13 @@ void os_tickless_idle_process(void)
          * Masking first closes it. A WFI still wakes on a pending interrupt while masked, so anything
          * arriving from here on shortens the sleep rather than being missed. */
         mask_state = os_arch_kernel_mask_save();
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+        /* Raised BEFORE the deadlines are read, not before the sleep. Anything another core arms
+         * from here on is either already visible to the read below or answered by the IPI in
+         * os_tickless_deadline_armed - and there is no instant that is neither. */
+        os_tickless_window_open = true;
+#endif
 
         planned_idle_ticks = os_tickless_expected_idle_ticks_get();
 
@@ -325,12 +378,45 @@ void os_tickless_idle_process(void)
             os_arch_sleep_finish();
         }
 
+#if (OS_CONFIG_CORE_COUNT > 1U)
+        /* Lowered before the mask, so a deadline armed while this core is still masked still finds
+         * the window closed and skips an IPI that would wake nobody. */
+        os_tickless_window_open = false;
+#endif
+
         /* Releases the mask taken before the sleep was planned. Nesting is deliberate: the port's own
          * mask (taken in os_arch_sleep_prepare, released by os_arch_sleep_finish above) sits inside
          * this one, and both are save/restore rather than unconditional enables, so the interrupt
          * state the idle task arrived with is what it leaves with. */
         os_arch_kernel_mask_restore(mask_state);
     }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Tell core 0 that a deadline nearer than its suppressed window has just been armed.
+ *
+ * Called from every path that puts a new expiry on a kernel time source: a task joining the delay
+ * list, a timer joining the running list. On a single-core build there is no window anyone else
+ * could be sleeping through and this compiles away entirely.
+ *
+ * The IPI is what ends the window: a WFI wakes on a pending interrupt even with the kernel mask
+ * held, so core 0 leaves the sleep, measures what actually elapsed and announces it. That is the
+ * same path an ordinary early wake takes, so nothing new has to be correct for this to work.
+ *
+ * Cheap where it does not apply: one flag read on a path that is already inside a critical
+ * section, and an IPI only while a window is genuinely open somewhere else.
+ *
+ * @return None.
+ */
+void os_tickless_deadline_armed(void)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    if (os_tickless_window_open && (os_arch_core_id_get() != 0U))
+    {
+        os_arch_core_ipi_request_cb(0U);
+    }
+#endif
 }
 
 /* os_tickless_pre_sleep_cb() and os_tickless_post_sleep_cb() are deliberately NOT defined here.

@@ -416,6 +416,11 @@ os_err_t os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value)
                 entry->paused          = false;
                 entry->active          = true;
                 os_list_push_back(&os_timer_running_list, &entry->running_node);
+
+                #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+                /* A new expiry, which core 0 may already have committed to sleeping past. */
+                os_tickless_deadline_armed();
+                #endif
             }
 
             status = OS_ERR_NONE;
@@ -786,6 +791,11 @@ static os_err_t os_timer_arm(os_timer_t *timer, bool reload, void *context, uint
         if (!os_timer_is_running_linked(timer))
         {
             os_list_push_back(&os_timer_running_list, &timer->running_node);
+
+            #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+            /* A new expiry, which core 0 may already have committed to sleeping past. */
+            os_tickless_deadline_armed();
+            #endif
         }
 
         /* This run's arguments. Written inside the critical section because the tick may be about

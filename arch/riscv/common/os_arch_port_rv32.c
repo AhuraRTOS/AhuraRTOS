@@ -418,15 +418,112 @@ void os_arch_tick_init(void)
 
 /******************************************************************************************************/
 /**
- * @brief Whole ticks elapsed since the last tick interrupt.
+ * @brief Whole ticks elapsed across a suppressed window, and the point the normal cadence resumes.
  *
- * Zero until tickless idle is implemented for this port: the kernel treats that as "no time beyond
- * the ticks already counted", which is exactly right for a build whose tick never stops.
+ * Zero without tickless idle, which is exactly right for a build whose tick never stops: every tick
+ * was counted by its own interrupt, so there is nothing extra to announce.
  */
 uint32_t os_arch_elapsed_ticks_get(void)
 {
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+    return os_arch_tick_resume_cb();
+#else
+    return 0U;
+#endif
+}
+
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+
+/*
+ * ***********************************************************************************************************
+ * Tickless idle
+ * ***********************************************************************************************************
+ *
+ * This port drives the tick from the SoC's mtimecmp (see os_arch_tick_init_cb), so suppressing it
+ * means writing the next deadline rather than stretching a reload. That is simpler than the ARM
+ * arrangement, but the register belongs to the SoC package, not to this layer - the privileged spec
+ * defines mtime and mtimecmp and deliberately not where they live.
+ *
+ * So each entry point here is a one-line delegation to a SoC callback, exactly as os_arch_tick_init
+ * delegates to os_arch_tick_init_cb. The weak defaults below suppress nothing, which keeps a
+ * package that has not implemented them honest: os_tickless_idle_process still runs, still respects
+ * every deadline and still calls the application's sleep hooks, but the sleep is a plain WFI.
+ *
+ * No interrupt mask is taken or handed back here. The kernel already holds its own across the whole
+ * window, and a WFI wakes on a pending interrupt while masked, which is what ends the sleep.
+*/
+
+/******************************************************************************************************/
+/**
+ * @brief Weak default: this SoC package suppresses nothing.
+ *
+ * @return uint32_t  0.
+ */
+OS_WEAK uint32_t os_arch_tick_suppress_max_cb(void)
+{
     return 0U;
 }
+
+/******************************************************************************************************/
+/**
+ * @brief Weak default: nothing to suppress.
+ *
+ * @param[in] ticks  Ignored.
+ * @return None.
+ */
+OS_WEAK void os_arch_tick_suppress_cb(uint32_t ticks)
+{
+    (void)ticks;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Weak default: no window was opened, so none elapsed.
+ *
+ * @return uint32_t  0.
+ */
+OS_WEAK uint32_t os_arch_tick_resume_cb(void)
+{
+    return 0U;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Stretch the tick across a known-idle window.
+ *
+ * @param[in] planned_ticks  How long the kernel expects to be idle.
+ * @return None.
+ */
+void os_arch_sleep_prepare(uint32_t planned_ticks)
+{
+    os_arch_tick_suppress_cb(planned_ticks);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Close out a tickless window and re-arm the periodic tick.
+ *
+ * Nothing to do: os_arch_elapsed_ticks_get already re-armed the cadence, and no mask was taken.
+ * Kept because the kernel calls it on every pass and the ARM ports do have work here.
+ *
+ * @return None.
+ */
+void os_arch_sleep_finish(void)
+{
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Largest number of ticks the timer can suppress in one window.
+ *
+ * @return uint32_t  What the SoC package reports; 0 means a sleep here saves latency, not power.
+ */
+uint32_t os_arch_max_suppressed_ticks_get(void)
+{
+    return os_arch_tick_suppress_max_cb();
+}
+
+#endif /* OS_CONFIG_TICKLESS_ENABLE */
 
 /*
  * ***********************************************************************************************************

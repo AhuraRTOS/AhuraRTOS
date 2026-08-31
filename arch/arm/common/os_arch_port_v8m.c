@@ -93,6 +93,9 @@
 static uint32_t os_arch_tick_reload_cycles      = 0U;
 static uint32_t os_arch_planned_idle_ticks      = 0U;
 static uint32_t os_arch_suppressed_reload_cycles = 0U;
+
+/** Cycles of the tick already running when the window opened; the first boundary falls there. */
+static uint32_t os_arch_suppressed_head_cycles = 0U;
 static uint32_t os_arch_sleep_mask_state        = 0U;
 
 /* Whether os_arch_sleep_mask_state actually holds a mask os_arch_sleep_finish must release. */
@@ -617,18 +620,15 @@ uint32_t os_arch_elapsed_ticks_get(void)
          * actually programmed for this window. */
         cvr            = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
         elapsed_cycles = (os_arch_suppressed_reload_cycles - 1U) - cvr;
-        clock_hz       = os_arch_clock_hz_get();
 
-        if (clock_hz == 0U)
+        /* Boundaries, not a plain cycles-to-ticks conversion. The window did not begin on a tick
+         * boundary: the first one falls after os_arch_suppressed_head_cycles, and whole periods
+         * follow it. Dividing the raw elapsed cycles instead would report a tick before the first
+         * boundary was ever reached. */
+        if ((elapsed_cycles >= os_arch_suppressed_head_cycles) && (os_arch_tick_reload_cycles != 0U))
         {
-            elapsed_ticks = os_arch_planned_idle_ticks - 1U; /* clock vanished mid-sleep: degrade conservatively */
-        }
-        else
-        {
-            uint64_t scaled_ticks = (uint64_t)elapsed_cycles * (uint64_t)OS_CONFIG_TICK_HZ;
-
-            scaled_ticks /= (uint64_t)clock_hz;
-            elapsed_ticks = (uint32_t)scaled_ticks;
+            elapsed_ticks = 1U + ((elapsed_cycles - os_arch_suppressed_head_cycles) /
+                                  os_arch_tick_reload_cycles);
         }
 
         if (elapsed_ticks > (os_arch_planned_idle_ticks - 1U))
@@ -715,6 +715,7 @@ static uint64_t os_arch_max_window_ticks_get(void)
 void os_arch_sleep_prepare(uint32_t planned_ticks)
 {
     uint32_t clock_hz;
+    uint32_t remaining_cycles;
     uint64_t max_window_ticks;
     uint64_t suppressed_cycles64;
 
@@ -735,18 +736,29 @@ void os_arch_sleep_prepare(uint32_t planned_ticks)
     /* Cap the TICK COUNT first, then re-derive the cycle budget from the capped
      * count: (planned_ticks - 1) * reload_cycles can vastly exceed uint32_t
      * range for realistic tick counts, so capping after multiplying would
-     * overflow. */
+     * overflow. One tick of headroom is left because the remainder below is
+     * added on top and can be almost a whole reload by itself. */
     max_window_ticks = os_arch_max_window_ticks_get();
 
     /* Zero is defensive only: unreachable given the reload range os_arch_tick_init enforces. */
-    if (max_window_ticks != 0U)
+    if (max_window_ticks > 1U)
     {
-    if ((uint64_t)(planned_ticks - 1U) > max_window_ticks)
+    if ((uint64_t)(planned_ticks - 1U) > (max_window_ticks - 1U))
     {
-        planned_ticks = (uint32_t)max_window_ticks + 1U;
+        planned_ticks = (uint32_t)max_window_ticks;
     }
 
-    suppressed_cycles64 = (uint64_t)(planned_ticks - 1U) * (uint64_t)os_arch_tick_reload_cycles;
+    /* Whatever is left of the tick ALREADY RUNNING, kept rather than discarded.
+     *
+     * The deadline the kernel asked for is planned_ticks tick BOUNDARIES away, and the first of
+     * them is this remainder away - not a whole period. Zeroing CVR here, as this once did,
+     * silently shortens every window to planned_ticks - 1 periods while os_arch_elapsed_ticks_get
+     * still reports planned_ticks, so the clock gains a tick per window. A single sleep looks
+     * right; twenty of them are twenty ticks fast. */
+    remaining_cycles = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
+
+    suppressed_cycles64 = (uint64_t)remaining_cycles +
+                          ((uint64_t)(planned_ticks - 1U) * (uint64_t)os_arch_tick_reload_cycles);
 
     /* Committed to reprogramming SysTick: hold the kernel interrupt mask until
      * os_arch_elapsed_ticks_get() restores normal cadence and releases it, so a
@@ -755,6 +767,7 @@ void os_arch_sleep_prepare(uint32_t planned_ticks)
     os_arch_sleep_mask_held           = true;
     os_arch_planned_idle_ticks        = planned_ticks;
     os_arch_suppressed_reload_cycles  = (uint32_t)suppressed_cycles64;
+    os_arch_suppressed_head_cycles    = remaining_cycles;
 
     OS_ARCH_REG_SYST_CSR = 0U;
     OS_ARCH_REG_SYST_RVR = os_arch_suppressed_reload_cycles - 1UL;

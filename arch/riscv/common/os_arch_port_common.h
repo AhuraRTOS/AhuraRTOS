@@ -859,6 +859,45 @@ void os_arch_sleep_finish(void);
  * @brief Largest number of ticks the timer can suppress in one window.
  */
 uint32_t os_arch_max_suppressed_ticks_get(void);
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: how many ticks this chip's timer can skip in one window, 0 if it cannot.
+ *
+ * The three callbacks below exist for the same reason os_arch_tick_init_cb does: the RISC-V
+ * privileged spec defines mtime and mtimecmp but not where they live, so only the SoC package can
+ * reach them. Each has a weak default in the port that suppresses nothing, so a package without
+ * them links and idles in a plain WFI.
+ *
+ * @return uint32_t  Ceiling on one suppressed window, in ticks.
+ */
+uint32_t os_arch_tick_suppress_max_cb(void);
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: push the tick deadline out so no tick interrupt arrives for `ticks` periods.
+ *
+ * Called with the kernel's interrupts already masked. The window must land on the SAME tick grid
+ * the periodic cadence uses, or every sleep loses whatever fraction of a tick it rounded away and
+ * the clock drifts by that much per wake.
+ *
+ * @param[in] ticks  How many tick periods to skip; always at least OS_CONFIG_TICKLESS_MIN_IDLE.
+ * @return None.
+ */
+void os_arch_tick_suppress_cb(uint32_t ticks);
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: close the window - report what really elapsed and re-arm the normal cadence.
+ *
+ * Counts WHOLE ticks only, and must NOT count the tick whose interrupt is already pending behind
+ * the kernel's mask: that one is delivered by the ordinary tick ISR as soon as the mask is
+ * released, and counting it here too would advance the clock twice for one tick.
+ *
+ * @return uint32_t  Whole ticks elapsed since os_arch_tick_suppress_cb, excluding any already
+ *                    pending in the interrupt controller.
+ */
+uint32_t os_arch_tick_resume_cb(void);
 #endif
 
 /*

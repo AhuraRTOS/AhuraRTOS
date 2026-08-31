@@ -546,6 +546,9 @@ static void test_bench_row(const char *name, uint32_t best, uint32_t worst, uint
 static void test_benchmarks(void);
 static void test_tickless_hooks(void);
 static void test_tickless_sleep(void);
+static void test_tickless_bounds(void);
+static void test_tickless_drift(void);
+static void test_tickless_sleeper_entry(void *context);
 static void test_list(void);
 #if (OS_CONFIG_CORE_COUNT > 1U)
 static void test_multicore(void);
@@ -5881,9 +5884,183 @@ static void test_tickless_hooks(void)
 }
 
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U) && (OS_CONFIG_TIMER_ENABLE == 1U)
+/** Holds a delay deadline for test_tickless_bounds. 40 ticks, deliberately unlike any other bound
+ *  the suite has in flight: a value that collides with one of those makes a wrong answer look
+ *  right, which is exactly how the first version of this check passed while proving nothing. */
+static __IO uint32_t os_test_tickless_helper_done = 0U;
+OS_TASK_DEFINE(os_test_tickless_task, 512U);
+
+/******************************************************************************************************/
+static void test_tickless_sleeper_entry(void *context)
+{
+    (void)context;
+
+    os_delay_ms(40U);
+    os_test_tickless_helper_done = 1U;
+}
+
 /******************************************************************************************************/
 /**
- * @brief End-to-end tickless sleep, called directly (bypassing the not-yet-wired idle task, same
+ * @brief The window must never outlast the nearest deadline the kernel already knows about.
+ *
+ * os_tickless_expected_idle_ticks_get() is the whole safety argument for tickless idle: sleeping
+ * past a timer expiry or a sleeping task makes that deadline late by the rest of the window, and
+ * nothing downstream can recover it. Checked against each bound separately, because a
+ * min() that dropped one term would still look right against the others.
+ */
+static void test_tickless_bounds(void)
+{
+    uint32_t planned;
+    uint32_t ceiling;
+
+    test_print_section("Tickless Bounds (the window never outlasts a known deadline)");
+
+    ceiling = (uint32_t)OS_CONFIG_MAX_SUPPRESSED_TICKS;
+
+    /* Nothing pending: the ceiling is the only bound left. */
+    planned = os_tickless_expected_idle_ticks_get();
+    AHURA_TEST_CHECK(planned <= ceiling,
+                      "with nothing pending the window stops at OS_CONFIG_MAX_SUPPRESSED_TICKS (%lu <= %lu)",
+                      (unsigned long)planned, (unsigned long)ceiling);
+
+    /* A timer due in 10 ticks must cap it at 10. */
+    os_test_oneshot_fired = 0U;
+    (void)os_timer_period_set(&os_test_timer_oneshot, 10U);
+    (void)os_timer_start(&os_test_timer_oneshot, NULL, 0U);
+
+    planned = os_tickless_expected_idle_ticks_get();
+    (void)os_timer_stop(&os_test_timer_oneshot);
+
+    AHURA_TEST_CHECK(planned <= 10U,
+                      "a timer due in 10 ticks caps the window at 10 (planned=%lu)",
+                      (unsigned long)planned);
+
+    /* And a sleeping task does the same. The helper below sleeps 12 ticks; this task samples the
+     * planned window while it is on the delay list, so the bound has to come from that task.
+     *
+     * Every timer is stopped first, and that is not tidiness: the one-shot above was still armed
+     * the first time this ran, so the window it capped was the TIMER's and the check passed while
+     * proving nothing about the delay list at all. A bound test has to be the only bound. */
+    os_test_tickless_helper_done = 0U;
+
+    (void)os_timer_stop(&os_test_timer_oneshot);
+    (void)os_timer_stop(&os_test_timer_periodic);
+
+    if (os_task_create(&os_test_tickless_task,
+                       TEST_TASK_CONFIG(test_tickless_sleeper_entry, NULL, TEST_PRIO_LOW)) == OS_ERR_NONE)
+    {
+        (void)os_task_start(&os_test_tickless_task);
+        os_delay_ms(2U);                       /* let it reach its os_delay_ms and block */
+
+        planned = os_tickless_expected_idle_ticks_get();
+
+        /* What bounds the window is the delay REMAINING, not the 40 the task asked for: the wait
+         * above has already spent a couple of ticks of it. Both ends are checked, because a
+         * result well under 40 would mean some other deadline capped the window and this check
+         * never touched the delay list at all. */
+        AHURA_TEST_CHECK((planned <= 40U) && (planned >= 34U),
+                          "a task sleeping 40 ticks is what caps the window (planned=%lu, its "
+                          "remaining delay)",
+                          (unsigned long)planned);
+
+        os_delay_ms(50U);                      /* let it finish and free its slot */
+        AHURA_TEST_CHECK(os_test_tickless_helper_done == 1U, "the sleeping task woke and finished");
+    }
+    else
+    {
+        AHURA_TEST_CHECK(false, "a helper task could be created to hold a delay deadline");
+    }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Many windows back to back: does the kernel clock keep up with a counter that never stops?
+ *
+ * mcycle is the reference because nothing tickless does can touch it: it free-runs at clk_sys
+ * whether the tick is suppressed or not. Converting the cycles that passed into ticks gives what
+ * os_tick_get() should have advanced by, and the difference is the accumulated error.
+ *
+ * A single window hides this completely. Rounding half a tick away per wake is invisible once and
+ * ruinous over an hour, which is why this runs enough windows for a systematic loss to stand out
+ * against the jitter budget.
+ */
+static void test_tickless_drift(void)
+{
+    const uint32_t rounds  = 20U;
+    const uint32_t horizon = 8U;
+
+    uint32_t max_suppressed;
+    uint32_t clock_hz;
+    uint32_t i;
+    uint32_t cycles0;
+    uint32_t cycles1;
+    uint32_t tick0;
+    uint32_t tick1;
+    uint32_t measured;
+    uint32_t expected;
+    uint32_t drift;
+    uint64_t scaled;
+
+    test_print_section("Tickless Drift (many windows against a counter that never stops)");
+
+    max_suppressed = os_tickless_max_suppressed_ticks_get();
+    clock_hz       = os_arch_clock_hz_get();
+
+    if ((max_suppressed < horizon) || (clock_hz == 0U))
+    {
+        printf("  [SKIP] this port suppresses nothing (max=%lu) or has no clock to measure "
+               "against\r\n", (unsigned long)max_suppressed);
+        return;
+    }
+
+    (void)os_timer_stop(&os_test_timer_oneshot);
+    os_test_oneshot_fired = 0U;
+
+    cycles0 = os_arch_cycle_count_get();
+    tick0   = os_tick_get();
+
+    for (i = 0U; i < rounds; i++)
+    {
+        (void)os_timer_period_set(&os_test_timer_oneshot, horizon);
+        (void)os_timer_start(&os_test_timer_oneshot, NULL, 0U);
+
+        os_tickless_idle_process();
+    }
+
+    cycles1 = os_arch_cycle_count_get();
+    tick1   = os_tick_get();
+
+    (void)os_timer_stop(&os_test_timer_oneshot);
+
+    measured = tick1 - tick0;
+
+    /* Cycles to ticks, in 64 bits: at 150 MHz a couple of hundred milliseconds is already tens of
+     * millions of cycles, and multiplying by the tick rate overflows 32 long before that. */
+    scaled   = (uint64_t)(cycles1 - cycles0) * (uint64_t)OS_CONFIG_TICK_HZ;
+    scaled  /= (uint64_t)clock_hz;
+    expected = (uint32_t)scaled;
+
+    drift = (measured > expected) ? (measured - expected) : (expected - measured);
+
+    AHURA_TEST_CHECK(measured > 0U,
+                      "%lu windows of %lu ticks advanced the kernel clock (%lu ticks)",
+                      (unsigned long)rounds, (unsigned long)horizon, (unsigned long)measured);
+
+    /* A quarter of a tick lost per window would land at 5 here, so the budget is jitter only. */
+    AHURA_TEST_CHECK(drift <= ((rounds / 4U) + 2U),
+                      "and stayed with the free-running counter: %lu ticks measured, %lu expected, "
+                      "drift %lu",
+                      (unsigned long)measured, (unsigned long)expected, (unsigned long)drift);
+
+    printf("  [INFO] %lu cycles over %lu windows, %s\r\n",
+           (unsigned long)(cycles1 - cycles0), (unsigned long)rounds,
+           (measured >= expected) ? "clock ran fast or exact" : "clock ran slow");
+}
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/**
+ * @brief End-to-end tickless sleep, driven from this task rather than waiting for the idle task,
  *        as test_tickless_hooks() does for the sleep-bracket callbacks): arms a one-shot timer as
  *        a horizon, calls os_tickless_idle_process() once, and checks the real elapsed time was
  *        measured accurately - proving actual SysTick suppression, not just that the call is
@@ -5923,9 +6100,9 @@ static void test_tickless_sleep(void)
         return;
     }
 
-    printf("  [INFO] calling os_tickless_idle_process() directly from this task (not the idle\r\n"
-           "         task - see doc/porting.md \"Tickless idle\") to verify the suppress/measure\r\n"
-           "         mechanism before that wiring lands.\r\n");
+    printf("  [INFO] driving os_tickless_idle_process() from this task rather than waiting for\r\n"
+           "         the idle task, so the window is bounded by a timer this test owns and\r\n"
+           "         the measurement is repeatable.\r\n");
 
     /* Half the safe maximum, floored at the maximum itself when that is already small, capped so
      * the test does not run unreasonably long on a platform where the safe window is huge. */
@@ -5990,6 +6167,20 @@ static void test_tickless_sleep(void)
 static void test_tickless_sleep(void)
 {
     test_print_section("Tickless Sleep (end-to-end)");
+    printf("  [SKIP] requires OS_CONFIG_TICKLESS_ENABLE=1 and OS_CONFIG_TIMER_ENABLE=1\r\n");
+}
+
+/******************************************************************************************************/
+static void test_tickless_bounds(void)
+{
+    test_print_section("Tickless Bounds (the window never outlasts a known deadline)");
+    printf("  [SKIP] requires OS_CONFIG_TICKLESS_ENABLE=1 and OS_CONFIG_TIMER_ENABLE=1\r\n");
+}
+
+/******************************************************************************************************/
+static void test_tickless_drift(void)
+{
+    test_print_section("Tickless Drift (many windows against a counter that never stops)");
     printf("  [SKIP] requires OS_CONFIG_TICKLESS_ENABLE=1 and OS_CONFIG_TIMER_ENABLE=1\r\n");
 }
 #endif /* OS_CONFIG_TICKLESS_ENABLE && OS_CONFIG_TIMER_ENABLE */
@@ -8647,7 +8838,9 @@ void os_test(void)
     test_task_footprint();
     test_context_switch_timing();
     test_tickless_hooks();
+    test_tickless_bounds();
     test_tickless_sleep();
+    test_tickless_drift();
     test_list();
     test_priority_api();
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)

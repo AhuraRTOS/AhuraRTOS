@@ -285,6 +285,118 @@ static void soc_tick_isr(void)
     os_tick_handler();
 }
 
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+
+/*
+ * ***********************************************************************************************************
+ * Tickless idle
+ * ***********************************************************************************************************
+ *
+ * mtime free-runs at clk_sys and mtimecmp is an absolute deadline, so a suppressed window is one
+ * write: put the next interrupt N tick periods out instead of one. The port cannot do it because
+ * the privileged spec never says where these registers live; this package can.
+*/
+
+/** Deadline of the tick that would have fired next, captured when the window opened. */
+static uint64_t soc_tickless_base;
+
+/** Ticks the kernel asked to skip, so the report can be clamped to what was actually promised. */
+static uint32_t soc_tickless_planned;
+
+/******************************************************************************************************/
+/**
+ * @brief How many ticks this chip can skip in one window.
+ *
+ * mtimecmp is 64 bits against a clk_sys-rate mtime, so nothing here runs out before the kernel's
+ * own ceiling does: at 150 MHz the counter needs about 3900 years to wrap.
+ *
+ * @return uint32_t  The kernel's configured ceiling.
+ */
+uint32_t os_arch_tick_suppress_max_cb(void)
+{
+    /* An unprogrammed tick has no grid to suppress against. */
+    return (soc_tick_interval != 0U) ? (uint32_t)OS_CONFIG_MAX_SUPPRESSED_TICKS : 0U;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Push the tick deadline out so no interrupt arrives for `ticks` tick periods.
+ *
+ * The interrupt is programmed for tick `ticks`, which sits at base + (ticks - 1) * interval: the
+ * deadline already in mtimecmp IS the first of them, so only the remaining ones are added.
+ *
+ * @param[in] ticks  Tick periods to skip; the kernel guarantees at least OS_CONFIG_TICKLESS_MIN_IDLE.
+ * @return None.
+ */
+void os_arch_tick_suppress_cb(uint32_t ticks)
+{
+    if ((soc_tick_interval != 0U) && (ticks > 1U))
+    {
+        soc_tickless_base    = riscv_timer_get_mtimecmp();
+        soc_tickless_planned = ticks;
+
+        riscv_timer_set_mtimecmp(soc_tickless_base +
+                                 ((uint64_t)(ticks - 1U) * (uint64_t)soc_tick_interval));
+    }
+    else
+    {
+        soc_tickless_planned = 0U;
+    }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Close the window: report the whole ticks that really passed and restore the cadence.
+ *
+ * The tick whose deadline has already been reached is deliberately NOT counted here. Its interrupt
+ * is latched in the SIO controller behind the kernel's mask and the ordinary soc_tick_isr delivers
+ * it - advancing mtimecmp by one interval of its own - the moment that mask is released. Counting
+ * it in both places would advance the clock twice for one tick.
+ *
+ * @return uint32_t  Whole ticks elapsed, excluding that pending one.
+ */
+uint32_t os_arch_tick_resume_cb(void)
+{
+    uint32_t elapsed = 0U;
+
+    if (soc_tickless_planned != 0U)
+    {
+        uint64_t now = riscv_timer_get_mtime();
+
+        if (now >= soc_tickless_base)
+        {
+            /* Boundaries crossed: the one at base, plus one per whole interval since. */
+            elapsed = 1U + (uint32_t)((now - soc_tickless_base) / (uint64_t)soc_tick_interval);
+        }
+
+        /* One short of the promise at most: the last tick of a fully elapsed window is the one
+         * already pending, and a window that woke early cannot have passed more than it planned. */
+        if (elapsed > (soc_tickless_planned - 1U))
+        {
+            elapsed = soc_tickless_planned - 1U;
+        }
+
+        /* Back onto the grid, not onto `now`. base + elapsed * interval is the next boundary that
+         * has not passed, so the cadence resumes exactly where it would have been had every
+         * suppressed tick fired - which is what keeps repeated windows from drifting.
+         *
+         * Skipped when the window ran to completion: the pending interrupt's own ISR advances
+         * mtimecmp by one interval from the deadline it was programmed with, which lands on that
+         * same boundary. Writing it here as well would push the cadence one tick further out. */
+        if (elapsed < (soc_tickless_planned - 1U))
+        {
+            riscv_timer_set_mtimecmp(soc_tickless_base +
+                                     ((uint64_t)elapsed * (uint64_t)soc_tick_interval));
+        }
+
+        soc_tickless_planned = 0U;
+    }
+
+    return elapsed;
+}
+
+#endif /* OS_CONFIG_TICKLESS_ENABLE */
+
 /******************************************************************************************************/
 /**
  * @brief Start the periodic tick.

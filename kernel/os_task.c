@@ -1089,6 +1089,11 @@ void os_task_sleep_ticks(uint32_t ticks)
             if (ticks != OS_WAIT_FOREVER)
             {
                 os_list_push_back(&os_task_delay_list, &current->state_node);
+
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+                /* A deadline core 0 may already have committed to sleeping through. */
+                os_tickless_deadline_armed();
+#endif
             }
 
             /* The switch is taken as soon as the critical section is left. */
@@ -1190,6 +1195,12 @@ void os_task_wait_begin(os_list_t *waiters, uint32_t timeout_ticks)
         if (timeout_ticks != OS_WAIT_FOREVER)
         {
             os_list_push_back(&os_task_delay_list, &current->state_node);
+
+            #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+            /* Same reason as os_task_sleep_ticks: a timeout armed here can fall inside a window
+             * core 0 planned before it existed. */
+            os_tickless_deadline_armed();
+            #endif
         }
 
         os_task_switch_request();
@@ -2412,6 +2423,17 @@ static void os_task_idle_entry(void *context)
 
     while (1)
     {
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+        /* One tickless pass, then the ordinary idle. The pass itself decides whether this idle is
+         * long enough to be worth suppressing, and on a secondary core it does nothing at all -
+         * only core 0 owns the time base, so only core 0 may announce a suppressed window.
+         *
+         * The plain idle still follows it in every case: when the pass declined to sleep (too
+         * short, or not core 0) this is the whole of the idle, and when it did sleep, the wake
+         * that ended it may have left nothing runnable, so the core waits again here rather than
+         * spinning back round to plan another window. */
+        os_tickless_idle_process();
+#endif
         os_arch_soc_idle_cb();
     }
 }
