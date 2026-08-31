@@ -260,7 +260,7 @@ OS_WEAK uint32_t os_arch_soc_trustzone_state_cb(void)
  *
  * Compiles to nothing where no package answers, which is every unpackaged part.
  */
-static inline void os_arch_trustzone_state_check(void)
+OS_INLINE void os_arch_trustzone_state_check(void)
 {
     uint32_t actual = os_arch_soc_trustzone_state_cb();
 

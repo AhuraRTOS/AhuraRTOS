@@ -43,8 +43,8 @@
 
 /* The operations below index bits and swap whole words, both of which assume this width, and the
  * port's atomics are declared over a 32-bit word. */
-_Static_assert(sizeof(os_atomic_t) == 4U,
-               "the atomic operations assume a 32-bit word");
+OS_STATIC_ASSERT(sizeof(os_atomic_t) == 4U,
+                 "the atomic operations assume a 32-bit word");
 
 /*
  * ***********************************************************************************************************

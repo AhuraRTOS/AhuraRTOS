@@ -94,7 +94,7 @@
  * Trap nesting depth, per core. RISC-V has no IPSR to ask, so the port keeps the answer; see
  * os_arch_in_isr().
  */
-volatile uint32_t os_arch_isr_nesting[OS_CONFIG_CORE_COUNT];
+__IO uint32_t os_arch_isr_nesting[OS_CONFIG_CORE_COUNT];
 
 /*
  * ***********************************************************************************************************

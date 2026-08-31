@@ -68,7 +68,7 @@ static void soc_core1_entry(void);
  * a printf: the SDK's stdio takes a mutex that core 0 holds almost continuously while producing
  * output, so printing from core 1 would not report progress - it would block the core being
  * diagnosed. 0xFF means it never arrived. */
-static volatile uint8_t soc_core_reached = 0xFFU;
+static __IO uint8_t soc_core_reached = 0xFFU;
 #endif
 
 /*

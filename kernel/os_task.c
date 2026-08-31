@@ -65,8 +65,8 @@
  * cannot catch it being wrong itself. Too low and os_arch_task_stack_initialize writes its initial
  * frame, up to 72 bytes, past the bottom of every task stack at creation time, silently. 128 is a
  * sanity floor, not a recommendation; the template ships 256. */
-_Static_assert((OS_CONFIG_MIN_STACK_SIZE >= 128U) && ((OS_CONFIG_MIN_STACK_SIZE % 8U) == 0U),
-               "OS_CONFIG_MIN_STACK_SIZE must be at least 128 and a multiple of 8");
+OS_STATIC_ASSERT((OS_CONFIG_MIN_STACK_SIZE >= 128U) && ((OS_CONFIG_MIN_STACK_SIZE % 8U) == 0U),
+                 "OS_CONFIG_MIN_STACK_SIZE must be at least 128 and a multiple of 8");
 
 /*
  * ***********************************************************************************************************

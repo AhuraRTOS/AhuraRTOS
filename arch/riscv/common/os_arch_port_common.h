@@ -197,6 +197,18 @@ extern "C"
 #error "OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY must be 0 on RISC-V: mstatus.MIE masks all interrupts or none, so there is no priority threshold to raise. See OS_ARCH_HAS_BASEPRI above."
 #endif
 
+/* This port banks the integer registers and nothing else, which is correct for every -mabi=ilp32
+ * build and silently wrong for any other. With the F or D extension enabled the compiler is free
+ * to keep live values in f0-f31, and a context switch that does not save them lets one task read
+ * back another's - arithmetic that is quietly wrong rather than a crash to trace.
+ *
+ * __riscv_flen is defined by the compiler exactly when those registers exist, so the mismatch is
+ * caught where it is made rather than in whatever the numbers eventually feed. Adding FP banking
+ * is the fix if a target needs it; refusing to build is what stops a wrong one shipping. */
+#if defined(__riscv_flen)
+#error "This RISC-V port saves no floating-point context, so a build with the F or D extension would let tasks corrupt each other's f0-f31. Build with -mabi=ilp32 and an integer-only -march, or extend the context switch in os_arch_port_rv32.c to bank the FP registers."
+#endif
+
 /* Stack alignment. The RISC-V calling convention (ilp32) requires the stack pointer to be 16-byte
  * aligned at every procedure call boundary - stricter than ARM's 8, and it applies to the frame the
  * port lays down for a new task as well. */
@@ -595,7 +607,7 @@ OS_INLINE uint32_t os_arch_core_id_get(void)
 */
 
 /* Set while a non-external trap that wants kernel APIs is running; see os_arch_isr_enter(). */
-extern volatile uint32_t os_arch_isr_nesting[OS_CONFIG_CORE_COUNT];
+extern __IO uint32_t os_arch_isr_nesting[OS_CONFIG_CORE_COUNT];
 
 #ifndef OS_ARCH_HAS_XH3IRQ
 #define OS_ARCH_HAS_XH3IRQ    0

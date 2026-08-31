@@ -102,6 +102,20 @@
 #error "OS_CONFIG_MIN_STACK_SIZE must be a multiple of 8 (AAPCS stack alignment)."
 #endif
 
+/* The 128 above is the floor for a task that never touches the FPU. With one enabled, a saved
+ * context is 204 bytes: 104 for the extended hardware frame (r0-r3, r12, lr, pc, xpsr, s0-s15,
+ * FPSCR), 36 for r4-r11 and EXC_RETURN, and 64 for s16-s31, which the port saves itself.
+ *
+ * Worth a separate check because the failure is late and misleading. A stack sized at 128 builds,
+ * boots and runs until the task's FIRST floating-point operation sets FPCA; the switch after that
+ * writes an extended frame straight past the bottom of the stack. The idle task never gets there,
+ * so the board looks healthy right up to the moment one application task does arithmetic. */
+#if defined(__ARM_FP)
+#if (OS_CONFIG_MIN_STACK_SIZE < 256U)
+#error "OS_CONFIG_MIN_STACK_SIZE must be at least 256 bytes on a build with an FPU: a saved context is 204 bytes there (104 hardware frame + 36 software frame + 64 for s16-s31), so 128 overflows on the first context switch after a task touches the FPU."
+#endif
+#endif
+
 /*
  * ***********************************************************************************************************
  * OPTIONAL configuration (the only options os_config.h may leave out)

@@ -1189,19 +1189,17 @@ typedef struct
 
 /******************************************************************************************************/
 /**
- * @brief A pool of deferred calls - see OS_TIMER_DEFINE_SUBMIT and os_timer_submit.
- */
-typedef struct os_timer_pool_s os_timer_pool_t;
-
-/******************************************************************************************************/
-/**
  * @brief One slot in a pool: a timer, plus the pool to hand it back to. The back-pointer lives
  *        here rather than in os_timer_t so ordinary timers do not pay for it.
+ *
+ * The pool is named by its struct tag because the two types point at each other, and one of them
+ * has to be reachable before it is complete. A pointer to an incomplete type is all this needs,
+ * which is the same arrangement os_list_node uses for its own back-reference.
  */
 typedef struct
 {
-    os_timer_t      timer;
-    os_timer_pool_t *pool;
+    os_timer_t             timer;
+    struct os_timer_pool_s *pool;
 
 } os_timer_entry_t;
 
@@ -1214,7 +1212,7 @@ typedef struct
  * the kernel fills in the first time the pool is used - so a pool needs no init call and the
  * kernel keeps no list of pools.
  */
-struct os_timer_pool_s
+typedef struct os_timer_pool_s
 {
     void                *self;       /**< Points at this pool; the same validity check timers use.   */
     os_timer_entry_t    *entries;    /**< The slots, from OS_TIMER_DEFINE_SUBMIT.                    */
@@ -1223,7 +1221,8 @@ struct os_timer_pool_s
     os_timer_callback_t callback;    /**< What every submission to this pool runs.                   */
     os_list_t           free_list;   /**< Slots nobody is using; they link through timer.ready_node. */
     bool                ready;       /**< Set on first use, when the slots are threaded onto free_list. */
-};
+
+} os_timer_pool_t;
 
 /*
  * A timer's life cycle, and what each call does to the countdown:

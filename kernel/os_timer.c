@@ -30,9 +30,9 @@
  * enum constant is not a macro - the preprocessor would read it as 0 and reject a valid setting.
  * OS_TASK_PRIO_IDLE belongs to the idle task, which the timer task must outrank to be dispatched
  * at all. */
-_Static_assert((OS_CONFIG_TIMER_PRIORITY >= OS_TASK_PRIO_1_LOWEST) &&
-               (OS_CONFIG_TIMER_PRIORITY <= OS_TASK_PRIO_MAX),
-               "OS_CONFIG_TIMER_PRIORITY must be OS_TASK_PRIO_1_LOWEST..OS_TASK_PRIO_MAX");
+OS_STATIC_ASSERT((OS_CONFIG_TIMER_PRIORITY >= OS_TASK_PRIO_1_LOWEST) &&
+                 (OS_CONFIG_TIMER_PRIORITY <= OS_TASK_PRIO_MAX),
+                 "OS_CONFIG_TIMER_PRIORITY must be OS_TASK_PRIO_1_LOWEST..OS_TASK_PRIO_MAX");
 
 /*
  * ***********************************************************************************************************
