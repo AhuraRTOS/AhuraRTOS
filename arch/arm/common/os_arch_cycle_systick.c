@@ -91,6 +91,87 @@ static uint32_t os_arch_cycle_fallback[OS_CONFIG_CORE_COUNT];
 /* Last value handed out on each core, so the counter can be held rather than go backwards. */
 static uint32_t os_arch_cycle_last[OS_CONFIG_CORE_COUNT];
 
+/** Raw counter value when a tickless window opened, per core. */
+static uint32_t os_arch_cycle_window_mark[OS_CONFIG_CORE_COUNT];
+
+/******************************************************************************************************/
+/**
+ * @brief The counter's true position, without the monotonic clamp.
+ *
+ * The clamp exists to protect CALLERS, who subtract two reads. Bracketing a window has to see where
+ * the counter really is, held value or not, or the correction below would cancel the wrong amount.
+ *
+ * Interrupts must already be masked by the caller: this is a read-modify-free sample of two
+ * registers plus an accumulator, and a tick landing between them pairs a position with the wrong
+ * period count.
+ *
+ * @return uint32_t  Unclamped counter value.
+ */
+static uint32_t os_arch_cycle_raw_get(void)
+{
+    uint32_t core   = os_arch_core_id_get();
+    uint32_t reload = OS_ARCH_REG_SYST_RVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
+    uint32_t cvr    = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
+
+    return os_arch_cycle_fallback[core] + (os_arch_cycle_periods[core] * (reload + 1U)) +
+           (reload - cvr);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Mark the counter's position as a tickless window opens.
+ *
+ * @return None.
+ */
+void os_arch_cycle_window_open(void)
+{
+    uint32_t primask = os_arch_primask_get();
+
+    OS_ARCH_IRQ_DISABLE();
+
+    os_arch_cycle_window_mark[os_arch_core_id_get()] = os_arch_cycle_raw_get();
+
+    if (primask == 0U)
+    {
+        OS_ARCH_IRQ_ENABLE();
+    }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Close the window, having the counter advance by exactly `elapsed` tick periods.
+ *
+ * Not "credit elapsed wraps": the wrap count inside a window cannot be known here, and guessing it
+ * from a tick count measured by another clock is what drifted. This measures whatever the
+ * free-running position actually did, cancels it, and puts the intended advance in its place - so
+ * the counter and the kernel clock come out of every window agreeing exactly.
+ *
+ * @param[in] elapsed  Whole tick periods the kernel is about to announce for this window.
+ * @return None.
+ */
+void os_arch_cycle_window_close(uint32_t elapsed)
+{
+    uint32_t primask = os_arch_primask_get();
+
+    OS_ARCH_IRQ_DISABLE();
+
+    {
+        uint32_t core    = os_arch_core_id_get();
+        uint32_t reload  = OS_ARCH_REG_SYST_RVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
+        uint32_t drifted = os_arch_cycle_raw_get() - os_arch_cycle_window_mark[core];
+        uint32_t wanted  = elapsed * (reload + 1U);
+
+        /* Unsigned throughout and deliberately so: both terms wrap at 2^32 exactly as the counter
+         * does, so the correction stays right across the counter's own wrap. */
+        os_arch_cycle_fallback[core] += (wanted - drifted);
+    }
+
+    if (primask == 0U)
+    {
+        OS_ARCH_IRQ_ENABLE();
+    }
+}
+
 /*
  * ***********************************************************************************************************
  * Function implementations

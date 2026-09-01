@@ -17,6 +17,15 @@
 
 /* OS_WEAK comes from the port layer (os_arch_port_common.h). */
 
+/** The application's floor in ticks, from the milliseconds it states.
+ *
+ * Ceiling division, and never below 2. Rounding down could reach 0, and a floor of 0 means
+ * "always suppress" - the opposite of what the option is for. Two tick periods is the hardware
+ * floor underneath any policy: one is what the tick would have done anyway. */
+#define OS_TICKLESS_MIN_IDLE_TICKS                                                                \
+    ((((OS_CONFIG_TICKLESS_MIN_IDLE_MS * OS_CONFIG_TICK_HZ) + 999UL) / 1000UL) < 2UL ?             \
+     2UL : (((OS_CONFIG_TICKLESS_MIN_IDLE_MS * OS_CONFIG_TICK_HZ) + 999UL) / 1000UL))
+
 /*
  * ***********************************************************************************************************
  * Global variables
@@ -110,6 +119,18 @@ void os_tick_handler(void)
      * call is the one moment each core knows its own timer just wrapped. Compiles to nothing on
      * ports with a real cycle counter in hardware. */
     os_arch_cycle_tick();
+
+    /* Below os_arch_cycle_tick(), never above it. A port that synthesizes its cycle counter from
+     * SysTick is a whole period short between the exception clearing PENDSTSET and that call
+     * crediting the wrap, so a sample taken earlier reads low and pins the counter's own
+     * backwards-step guard. Here the counter is exactly what a caller outside this interrupt sees.
+     *
+     * Core 0 only, unlike the call above it: every core's timer wraps, but the measurement counts
+     * kernel tick periods and only core 0's ticks are those. */
+    if (owns_time_base)
+    {
+        os_delay_calibrate_sample();
+    }
 
     /* Pend PendSV only when it would actually do something: a wake this tick
      * (timer/delay expiry) or an equal-priority peer whose turn has come
@@ -236,7 +257,7 @@ static __IO bool os_tickless_window_open = false;
  * @brief Get expected idle ticks for tickless decision.
  *
  * The minimum of the next software-timer expiry, the next finite-delay task sleeper, and
- * OS_CONFIG_MAX_SUPPRESSED_TICKS - the suppressed window must not overrun any of them.
+ * the suppressed window must not overrun any of them.
  * Also public (ahura.h) for diagnostics and tests.
  *
  * @return uint32_t  Expected idle duration in ticks.
@@ -245,8 +266,12 @@ uint32_t os_tickless_expected_idle_ticks_get(void)
 {
     /* The suppressed-tick window must not overrun ANY kernel time source:
      * the earliest software timer expiry and the earliest finite-delay task
-     * sleeper both bound it. */
-    uint32_t idle_ticks = OS_CONFIG_MAX_SUPPRESSED_TICKS;
+     * sleeper both bound it.
+     *
+     * Starts unbounded. This answers how long the KERNEL has no work, which is a fact about the
+     * workload and nothing to do with what the timer hardware can count to - that ceiling is the
+     * port's, and os_tickless_idle_process applies it to the window it actually arms. */
+    uint32_t idle_ticks = UINT32_MAX;
     uint32_t candidate;
 
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
@@ -298,6 +323,7 @@ void os_tickless_idle_process(void)
 {
     uint32_t mask_state;
     uint32_t planned_idle_ticks;
+    uint32_t suppress_ceiling;
     uint32_t elapsed_ticks = 0U;
 
     /* Core 0 owns the kernel time base, the same rule os_tick_handler enforces. Announcing a
@@ -358,9 +384,20 @@ void os_tickless_idle_process(void)
 
         planned_idle_ticks = os_tickless_expected_idle_ticks_get();
 
+        /* The port's own ceiling, applied here rather than inside the expected-idle calculation.
+         * Only when it is non-zero: a port that answers 0 cannot suppress anything, but it still
+         * gets the whole pass below - deadlines honoured, the application's sleep hooks called,
+         * and a plain WFI for the sleep. Clamping to 0 would skip all of that. */
+        suppress_ceiling = os_arch_max_suppressed_ticks_get();
+
+        if ((suppress_ceiling != 0U) && (planned_idle_ticks > suppress_ceiling))
+        {
+            planned_idle_ticks = suppress_ceiling;
+        }
+
         /* Too short to be worth suppressing: the mask is handed straight back and this
          * idle pass behaves like a plain WFI. */
-        if (planned_idle_ticks >= OS_CONFIG_TICKLESS_MIN_IDLE)
+        if (planned_idle_ticks >= OS_TICKLESS_MIN_IDLE_TICKS)
         {
             os_tickless_pre_sleep_cb();
 

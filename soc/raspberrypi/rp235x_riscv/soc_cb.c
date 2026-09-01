@@ -314,8 +314,14 @@ static uint32_t soc_tickless_planned;
  */
 uint32_t os_arch_tick_suppress_max_cb(void)
 {
-    /* An unprogrammed tick has no grid to suppress against. */
-    return (soc_tick_interval != 0U) ? (uint32_t)OS_CONFIG_MAX_SUPPRESSED_TICKS : 0U;
+    /* An unprogrammed tick has no grid to suppress against.
+     *
+     * Otherwise no ceiling of this timer's own: mtime and mtimecmp are 64 bits, the deadline is
+     * absolute, and ticks * soc_tick_interval cannot approach that width for any interval a
+     * kernel tick could have. What bounds a window here is the kernel's own 32-bit tick count,
+     * which is what this reports. The 24-bit answer this used to give came from the config, and
+     * was SysTick's limit on a part that has no SysTick. */
+    return (soc_tick_interval != 0U) ? UINT32_MAX : 0U;
 }
 
 /******************************************************************************************************/
@@ -325,7 +331,8 @@ uint32_t os_arch_tick_suppress_max_cb(void)
  * The interrupt is programmed for tick `ticks`, which sits at base + (ticks - 1) * interval: the
  * deadline already in mtimecmp IS the first of them, so only the remaining ones are added.
  *
- * @param[in] ticks  Tick periods to skip; the kernel guarantees at least OS_CONFIG_TICKLESS_MIN_IDLE.
+ * @param[in] ticks  Tick periods to skip; the kernel guarantees at least the floor
+ *                   OS_CONFIG_TICKLESS_MIN_IDLE_MS sets.
  * @return None.
  */
 void os_arch_tick_suppress_cb(uint32_t ticks)

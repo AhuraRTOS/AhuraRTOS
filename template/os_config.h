@@ -414,21 +414,23 @@
  * ***********************************************************************************************************
  *
  * Instead of waking the CPU OS_CONFIG_TICK_HZ times a second with nothing to do, the idle path
- * reprograms the tick timer for the whole planned sleep. Not wired in yet: at 1 today, only the
- * hooks the ports report through exist. See doc/porting.md "Tickless idle".
+ * reprograms the tick timer for the whole planned sleep. How long one window may last is the
+ * PORT's answer, not a setting here: it is a fact about the tick timer's hardware, and
+ * os_arch_max_suppressed_ticks_get() reports it. To wake sooner than the hardware would, arm a
+ * periodic timer - the kernel already stops the window at the nearest deadline.
+ * See doc/porting.md "Tickless idle".
 */
 
 /* Values: 1 = allow suppression, 0 = plain WFI. */
 #define OS_CONFIG_TICKLESS_ENABLE           0U
 
-/* Shortest planned idle worth suppressing for; below it the wake-up costs more
- * than the sleep saves.
- * Values: ticks. */
-#define OS_CONFIG_TICKLESS_MIN_IDLE         2U
-
-/* Ceiling on a single suppressed window. The real limit is usually the tick
- * timer's register width - SysTick is 24 bits, which the default reflects.
- * Values: ticks. */
-#define OS_CONFIG_MAX_SUPPRESSED_TICKS      0x00FFFFFFUL
+/* Shortest planned idle worth suppressing for; below it the wake-up costs more than the sleep
+ * saves. Milliseconds, because what it pays off is a duration - arming the wake source and
+ * entering and leaving the sleep - and that does not change when the tick rate does.
+ *
+ * Rounded UP to whole ticks internally and never taken below two tick periods, so a value
+ * finer than the tick means "the smallest window there is" rather than "no floor".
+ * Values: milliseconds. */
+#define OS_CONFIG_TICKLESS_MIN_IDLE_MS      2U
 
 #endif /* OS_CONFIG_H */

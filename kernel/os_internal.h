@@ -225,12 +225,24 @@ uint32_t* os_task_stack_select_next(void);
  */
 uint32_t os_task_next_delay_ticks_get(void);
 
+/******************************************************************************************************/
+/**
+ * @brief Accumulate the cycle-counter measurement; call once per tick from the tick interrupt.
+ *
+ * Outside every feature guard on purpose: os_delay_us exists in every build, so the measurement it
+ * depends on has to be declared in every build too.
+ *
+ * @return None.
+ */
+void os_delay_calibrate_sample(void);
+
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 /******************************************************************************************************/
 /**
  * @brief Tell core 0 a deadline nearer than its suppressed tickless window has just been armed.
  */
 void os_tickless_deadline_armed(void);
+
 #endif
 
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)

@@ -584,6 +584,17 @@ uint32_t os_arch_cycle_count_get(void)
 
 /******************************************************************************************************/
 /**
+ * @brief Only with DWT. Without it this port falls back to the counter synthesized from SysTick.
+ *
+ * @return bool  True when DWT CYCCNT is present and running.
+ */
+bool os_arch_cycle_is_independent(void)
+{
+    return os_arch_dwt_available;
+}
+
+/******************************************************************************************************/
+/**
  * @brief Return elapsed ticks while in low-power mode, restoring SysTick's normal cadence.
  *
  * Detects whether the suppressed (planned-1)-tick window fully elapsed (a real SysTick
@@ -597,7 +608,6 @@ uint32_t os_arch_elapsed_ticks_get(void)
 {
     uint32_t csr;
     uint32_t cvr;
-    uint32_t clock_hz;
     uint32_t elapsed_cycles;
     uint32_t elapsed_ticks = 0U;   /* no window was armed */
 

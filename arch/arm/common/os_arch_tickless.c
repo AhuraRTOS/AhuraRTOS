@@ -142,6 +142,11 @@ void os_arch_sleep_prepare(uint32_t planned_ticks)
          * signal it looks like. */
         OS_ARCH_REG_SYST_CSR = os_arch_tickless_saved_csr & ~OS_ARCH_SYST_CSR_TICKINT_MSK;
 
+        /* From here the tick interrupt is silent, so nothing feeds the cycle counter this port
+         * synthesizes from it. Mark where it stands; the close puts back exactly what the window
+         * costs. */
+        os_arch_cycle_window_open();
+
         os_arch_tick_suppress_cb(planned_ticks);
     }
 }
@@ -163,8 +168,6 @@ uint32_t os_arch_elapsed_ticks_get(void)
 
     if (os_arch_tickless_planned != 0U)
     {
-        uint32_t period;
-
         elapsed = os_arch_tick_resume_cb();
 
         if (elapsed > os_arch_tickless_planned)
@@ -174,10 +177,11 @@ uint32_t os_arch_elapsed_ticks_get(void)
 
         OS_ARCH_REG_SYST_CSR = os_arch_tickless_saved_csr;
 
-        for (period = 0U; period < elapsed; period++)
-        {
-            os_arch_cycle_tick();
-        }
+        /* Exactly the elapsed the kernel is about to announce, not a wrap count guessed from it.
+         * Calling os_arch_cycle_tick() once per tick was the near miss: it credits whole periods
+         * of THIS timer against a count measured by the SoC's, and the leftover accumulated until
+         * the counter's monotonic guard held it still. */
+        os_arch_cycle_window_close(elapsed);
 
         os_arch_tickless_planned = 0U;
     }

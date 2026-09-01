@@ -69,8 +69,7 @@
     !defined(OS_CONFIG_TEST_STACK_SIZE) || !defined(OS_CONFIG_TEST_PRIORITY) ||                       \
     !defined(OS_CONFIG_TRUSTZONE) || !defined(OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY) ||                  \
     !defined(OS_CONFIG_CORE_COUNT) ||                     \
-    !defined(OS_CONFIG_TICKLESS_MIN_IDLE) ||                    \
-    !defined(OS_CONFIG_MAX_SUPPRESSED_TICKS)
+    !defined(OS_CONFIG_TICKLESS_MIN_IDLE_MS)
 #error "os_config.h is incomplete: it must define every option listed in template/os_config.h."
 #endif
 
@@ -793,6 +792,35 @@ uint32_t os_arch_cycle_count_get(void);
 
 /******************************************************************************************************/
 /**
+ * @brief Whether the cycle counter is hardware of its own, rather than synthesized from the tick.
+ *
+ * True means the counter runs on a clock the tick does not drive - DWT CYCCNT, mcycle - so its rate
+ * is worth measuring and need not equal the core clock. False means it is built FROM the tick, in
+ * which case its rate is already exactly reload x OS_CONFIG_TICK_HZ and the kernel must not try to
+ * measure it: doing so reads the counter from inside the tick interrupt, where the synthesized
+ * value is momentarily inconsistent.
+ *
+ * @return bool  True when the counter is independent hardware.
+ */
+bool os_arch_cycle_is_independent(void);
+
+/******************************************************************************************************/
+/**
+ * @brief Bracket a tickless window for a cycle counter synthesized from the tick.
+ *
+ * Only ports that build their counter FROM the tick need these, and only they define them: a
+ * window masks the very interrupt that feeds such a counter, so the wraps inside it are invisible
+ * and have to be put back deliberately. A port with independent counter hardware neither calls
+ * nor provides them.
+ *
+ * @param[in] elapsed  (close only) Whole tick periods the kernel will announce for the window.
+ * @return None.
+ */
+void os_arch_cycle_window_open(void);
+void os_arch_cycle_window_close(uint32_t elapsed);
+
+/******************************************************************************************************/
+/**
  * @brief Told by the kernel that this core's tick just fired, so a counter synthesized from the
  *        tick timer can close the period. Nothing to do where the counter is real hardware.
  */
@@ -984,7 +1012,7 @@ uint32_t os_arch_tick_suppress_max_cb(void);
  * wake has to be an interrupt, not a poll: the core is about to WFI, and a pending interrupt is
  * what ends that even behind the mask.
  *
- * @param[in] ticks  Tick periods to sleep; always at least OS_CONFIG_TICKLESS_MIN_IDLE.
+ * @param[in] ticks  Tick periods to sleep; always at least the floor OS_CONFIG_TICKLESS_MIN_IDLE_MS sets.
  * @return None.
  */
 void os_arch_tick_suppress_cb(uint32_t ticks);

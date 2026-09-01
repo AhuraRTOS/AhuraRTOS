@@ -379,6 +379,17 @@ uint32_t os_arch_cycle_count_get(void)
     return os_arch_cycle_systick_get();
 }
 
+/******************************************************************************************************/
+/**
+ * @brief Never: ARMv6-M has no DWT at all, so the counter is always the synthesized one.
+ *
+ * @return bool  False.
+ */
+bool os_arch_cycle_is_independent(void)
+{
+    return false;
+}
+
 
 /*
  * ***********************************************************************************************************
