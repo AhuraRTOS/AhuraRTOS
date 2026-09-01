@@ -35,6 +35,7 @@
  * is why ARMv8-M baseline lands on the critical-section one here. Textual
  * include as well. */
 #include "os_arch_atomic.c"
+#include "os_arch_tickless.c"
 
 /*
  * ***********************************************************************************************************
@@ -378,76 +379,6 @@ uint32_t os_arch_cycle_count_get(void)
     return os_arch_cycle_systick_get();
 }
 
-/******************************************************************************************************/
-/**
- * @brief Return elapsed ticks while in low-power mode.
- *
- * @return uint32_t  Elapsed ticks since sleep entry.
- */
-uint32_t os_arch_elapsed_ticks_get(void)
-{
-    /* Always 0 on this port, and deliberately so.
-     *
-     * os_arch_max_suppressed_ticks_get() returns 0 here: ticking is never suppressed, so the WFI
-     * runs with SysTick still counting and its interrupt still enabled, and the interrupt that
-     * ends the sleep is normally the very next tick. Every tick that passed was therefore already
-     * counted, one at a time, by os_tick_handler().
-     *
-     * Returning a measured duration as well would have os_tick.c announce time the ISR had just
-     * accounted for, advancing os_tick_count at roughly twice real time for the whole idle period
-     * - delays and timers would then fire early in proportion to how long the system sat idle. A
-     * suppression-capable port (v8m) returns a real figure precisely because there the ISR did not
-     * run. Measuring the sleep only becomes meaningful here once this port learns to reprogram
-     * SysTick, at which point os_arch_sleep_prepare's recorded entry cycle count is what it needs.
-     */
-    os_arch_planned_idle_ticks = 0U;
-
-    return 0U;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Close the tickless window. Nothing to release on this port.
- *
- * @return None.
- */
-void os_arch_sleep_finish(void)
-{
-    /* os_arch_sleep_prepare takes no interrupt mask here: a plain WFI needs interrupts left
-     * enabled in order to wake at all, so there is nothing to hand back. */
-}
-
-
-/******************************************************************************************************/
-/**
- * @brief Record low-power entry context for elapsed tick accounting.
- *
- * @param[in] planned_ticks  Planned idle duration in kernel ticks.
- * @return None.
- */
-void os_arch_sleep_prepare(uint32_t planned_ticks)
-{
-    os_arch_planned_idle_ticks = planned_ticks;
-    os_arch_sleep_entry_cycles = os_arch_cycle_count_get();
-}
-
-/******************************************************************************************************/
-/**
- * @brief Maximum ticks this port can suppress in a single tickless window (see
- *        os_arch_port_common.h for the full contract).
- *
- * This port does not yet reprogram SysTick's reload for real suppression (see os_arch_port_v8m.c,
- * which does) - os_arch_sleep_prepare/os_arch_elapsed_ticks_get above still measure via a
- * SysTick-derived software cycle counter around a plain WFI, so there is no register-width-limited
- * window to report here. 0 tells callers (os_tick.c, tests) not to expect a real suppressed sleep
- * on this port yet.
- *
- * @return uint32_t  Always 0 until this port gets the same fix as os_arch_port_v8m.c.
- */
-uint32_t os_arch_max_suppressed_ticks_get(void)
-{
-    return 0U;
-}
 
 /*
  * ***********************************************************************************************************

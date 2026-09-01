@@ -142,36 +142,3 @@ OS_WEAK void os_log_output_cb(const uint8_t *data, size_t length)
     /* Example: HAL_UART_Transmit(&huart, (uint8_t *)data, length, HAL_MAX_DELAY); */
 }
 #endif /* OS_CONFIG_LOG_ENABLE && !OS_CONFIG_TEST_ENABLE */
-
-#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
-/******************************************************************************************************/
-/**
- * @brief Called with interrupts masked, immediately before a suppressed idle window.
- *
- * Where a board selects its sleep mode and quiesces whatever must not run through it: set
- * SLEEPDEEP, gate clocks, flush a UART that would otherwise lose the bytes still in its FIFO.
- *
- * Nothing is needed on this part. The tick here comes from the SoC's mtimecmp, which keeps
- * counting through a WFI, and no HAL runs a second tick source that would cut the window short.
- * A part that stops its tick timer in the sleep mode it selects has to arm an always-on timer
- * here instead, and report the real elapsed time from the post-sleep hook.
- *
- * @return None.
- */
-void os_tickless_pre_sleep_cb(void)
-{
-}
-
-/******************************************************************************************************/
-/**
- * @brief Called with interrupts still masked, after the sleep and BEFORE it has been announced.
- *
- * os_tick_get() is still short by the whole sleep while this runs, so nothing here may block,
- * delay, or wait on a tick-driven timeout. Its whole duration is added to interrupt latency.
- *
- * @return None.
- */
-void os_tickless_post_sleep_cb(void)
-{
-}
-#endif /* OS_CONFIG_TICKLESS_ENABLE */

@@ -422,13 +422,16 @@ void os_tickless_deadline_armed(void)
 /* os_tickless_pre_sleep_cb() and os_tickless_post_sleep_cb() are deliberately NOT defined here.
  *
  * They describe the board, not the kernel: which sleep mode to enter, which clocks to gate, which
- * peripherals must be flushed or quiesced first. A weak empty default in the kernel would let a
- * project enable OS_CONFIG_TICKLESS_ENABLE and link cleanly while silently doing none of that -
- * and on a part whose HAL runs its own tick source, an unwritten pre-sleep hook cuts every
- * suppressed sleep short at that source's period, which looks like tickless idle simply not
- * working. Requiring real definitions turns that into a link error naming the missing function.
+ * peripherals must be flushed or quiesced first. None of that is anything the kernel could guess,
+ * and a weak empty default HERE would make every part look alike.
  *
- * Write them in the application's callback file (see template/os_cb.c) whenever tickless idle is
- * enabled. */
+ * The SoC package answers instead, weakly, because it is the layer that knows what its chip can do
+ * and what the sensible default costs - see os_tickless_pre_sleep_cb in
+ * soc/raspberrypi/common/soc_common.c, which documents its empty body as selecting a plain SLEEP
+ * rather than a deeper mode the kernel could not measure a sleep against.
+ *
+ * An application that needs more - a UART flushed before the clock stops, a sensor parked - defines
+ * either one strongly and displaces the package's default for that hook alone. It does NOT need to
+ * define them just to enable tickless idle. */
 
 #endif /* OS_CONFIG_TICKLESS_ENABLE */

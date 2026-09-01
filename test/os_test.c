@@ -5851,8 +5851,8 @@ static void test_tickless_hooks(void)
 
     test_print_section("Tickless Sleep Hooks (called directly, not via the idle task)");
 
-    printf("  [INFO] os_tickless_idle_process() is not invoked by the idle task yet (see\r\n"
-           "         doc/porting.md \"Tickless idle\") - this only tests the two hooks in isolation.\r\n");
+    printf("  [INFO] the idle task drives os_tickless_idle_process() itself; the two hooks are\r\n"
+           "         called directly here so the timing measured is this test's own.\r\n");
 
     /* Call right after a print still in flight: the realistic scenario the pre-sleep hook exists
      * for on this project (flush COM1 before the CPU would idle - see os_cb.c). */
@@ -8027,60 +8027,75 @@ static void test_smp_deferred_submit(void)
  */
 static __IO uint32_t test_smp_soak_guarded = 0U;
 static os_atomic_t  test_smp_soak_atomic   = OS_ATOMIC_INIT(0);
-static os_sem_t test_smp_soak_sem;
-OS_QUEUE_DEFINE_ATTR(test_smp_soak_queue, sizeof(uint32_t), 4, );
+/* One per worker, not one shared between them. A shared max-count-1 semaphore returns FULL to the
+ * second of four concurrent givers, and a shared queue cannot promise a sender its own item back -
+ * both were the test racing itself rather than anything the kernel got wrong. */
+static os_sem_t test_smp_soak_sem[4];
+
+OS_QUEUE_DEFINE_ATTR(test_smp_soak_q0, sizeof(uint32_t), 1, );
+OS_QUEUE_DEFINE_ATTR(test_smp_soak_q1, sizeof(uint32_t), 1, );
+OS_QUEUE_DEFINE_ATTR(test_smp_soak_q2, sizeof(uint32_t), 1, );
+OS_QUEUE_DEFINE_ATTR(test_smp_soak_q3, sizeof(uint32_t), 1, );
+
+static os_queue_t *const test_smp_soak_queue[4] =
+{
+    &test_smp_soak_q0, &test_smp_soak_q1, &test_smp_soak_q2, &test_smp_soak_q3
+};
 static __IO uint32_t test_smp_soak_done[4] = { 0U, 0U, 0U, 0U };
 static __IO uint32_t test_smp_soak_seen[4] = { 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU };
 static __IO bool     test_smp_soak_ok      = true;
 
 static void test_smp_soak_entry(void *context)
 {
-    uint32_t slot = (uint32_t)(uintptr_t)context;
-    uint32_t item = slot + 1U;
+    uint32_t slot    = (uint32_t)(uintptr_t)context;
+    uint32_t item     = slot + 1U;
     uint32_t i;
+    bool     running  = true;
 
     test_smp_soak_seen[slot] = os_arch_core_id_get();
 
-    for (i = 0U; i < TEST_SMP_SOAK_ITERATIONS; i++)
+    for (i = 0U; running && (i < TEST_SMP_SOAK_ITERATIONS); i++)
     {
         uint32_t received = 0U;
+        os_err_t status;
 
+        /* The two genuinely shared objects, and the reason this soak exists: a counter guarded by a
+         * critical section and an atomic, both written from four tasks across two cores. */
         os_critical_enter();
         test_smp_soak_guarded = test_smp_soak_guarded + 1U;
         os_critical_exit();
 
         (void)os_atomic_inc(&test_smp_soak_atomic);
 
-        if (os_sem_give(&test_smp_soak_sem) != OS_ERR_NONE)
+        /* Everything below is this worker's own, so a failure here is the kernel's and not another
+         * worker's. */
+        status = os_sem_give(&test_smp_soak_sem[slot]);
+
+        if (status == OS_ERR_NONE)
         {
-            test_smp_soak_ok = false;
-            return;
+            status = os_sem_take(&test_smp_soak_sem[slot], OS_WAIT_FOREVER);
         }
 
-        if (os_sem_take(&test_smp_soak_sem, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        if (status == OS_ERR_NONE)
         {
-            test_smp_soak_ok = false;
-            return;
+            status = os_queue_send(test_smp_soak_queue[slot], &item, OS_WAIT_FOREVER);
         }
 
-        if (os_queue_send(&test_smp_soak_queue, &item, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        if (status == OS_ERR_NONE)
         {
-            test_smp_soak_ok = false;
-            return;
+            status = os_queue_receive(test_smp_soak_queue[slot], &received, OS_WAIT_FOREVER);
         }
 
-        if (os_queue_receive(&test_smp_soak_queue, &received, OS_WAIT_FOREVER) != OS_ERR_NONE)
+        if ((status != OS_ERR_NONE) || (received != item))
         {
             test_smp_soak_ok = false;
-            return;
-        }
-
-        if (received != item)
-        {
-            test_smp_soak_ok = false;
+            running          = false;
         }
     }
 
+    /* Set on the error path too. Leaving it clear made a worker that failed on its first call read
+     * as "never finished", so a plain error looked like a hang and cost the suite its whole timeout
+     * to report. done now means "did not hang"; test_smp_soak_ok means "no call failed". */
     test_smp_soak_done[slot] = 1U;
 }
 
@@ -8259,6 +8274,7 @@ static void test_smp_soak_mixed(void)
     uint32_t waited;
     uint32_t expected = TEST_SMP_SOAK_ITERATIONS * 4U;
     uint32_t ignored  = 0U;
+    uint32_t bad      = 0U;
 
     test_print_section("Multi-core (SMP): mixed workload soak, four tasks across both cores");
 
@@ -8271,7 +8287,15 @@ static void test_smp_soak_mixed(void)
         test_smp_soak_seen[waited] = 0xFFFFFFFFU;
     }
 
-    AHURA_TEST_CHECK(os_sem_init(&test_smp_soak_sem, 0U, 1U) == OS_ERR_NONE, "soak semaphore initialized");
+    for (waited = 0U; waited < 4U; waited++)
+    {
+        if (os_sem_init(&test_smp_soak_sem[waited], 0U, 1U) != OS_ERR_NONE)
+        {
+            bad++;
+        }
+    }
+
+    AHURA_TEST_CHECK(bad == 0U, "one semaphore per worker initialized, so no give can collide");
 
     AHURA_TEST_CHECK(os_task_create(&test_smp_a,
                      OS_TASK_CONFIG(test_smp_soak_entry, (void *)0U, TEST_PRIO_HIGH,
@@ -8304,7 +8328,7 @@ static void test_smp_soak_mixed(void)
 
     AHURA_TEST_CHECK((test_smp_soak_done[0] == 1U) && (test_smp_soak_done[1] == 1U) &&
                      (test_smp_soak_done[2] == 1U) && (test_smp_soak_done[3] == 1U),
-                     "all four workers finished %u iterations each", (unsigned)TEST_SMP_SOAK_ITERATIONS);
+                     "all four workers reached the end of their run without hanging");
     AHURA_TEST_CHECK((test_smp_soak_seen[0] == 0U) && (test_smp_soak_seen[1] == 0U) &&
                      (test_smp_soak_seen[2] == 1U) && (test_smp_soak_seen[3] == 1U),
                      "each worker ran on the core it was pinned to");
@@ -8314,10 +8338,29 @@ static void test_smp_soak_mixed(void)
     AHURA_TEST_CHECK(os_atomic_get(&test_smp_soak_atomic) == (int32_t)expected,
                      "atomic counter is exact too (%ld of %lu)",
                      (long)os_atomic_get(&test_smp_soak_atomic), (unsigned long)expected);
-    AHURA_TEST_CHECK(os_sem_take(&test_smp_soak_sem, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
-                     "the semaphore ended empty");
-    AHURA_TEST_CHECK(os_queue_receive(&test_smp_soak_queue, &ignored, OS_WAIT_NOTHING) == OS_ERR_EMPTY,
-                     "the queue ended empty");
+    bad = 0U;
+
+    for (waited = 0U; waited < 4U; waited++)
+    {
+        if (os_sem_take(&test_smp_soak_sem[waited], OS_WAIT_NOTHING) != OS_ERR_EMPTY)
+        {
+            bad++;
+        }
+    }
+
+    AHURA_TEST_CHECK(bad == 0U, "every worker's semaphore ended empty");
+
+    bad = 0U;
+
+    for (waited = 0U; waited < 4U; waited++)
+    {
+        if (os_queue_receive(test_smp_soak_queue[waited], &ignored, OS_WAIT_NOTHING) != OS_ERR_EMPTY)
+        {
+            bad++;
+        }
+    }
+
+    AHURA_TEST_CHECK(bad == 0U, "every worker's queue ended empty");
     AHURA_TEST_CHECK(test_smp_soak_ok,
                      "every queue round-trip returned its own item and every call succeeded");
 }
@@ -8344,7 +8387,7 @@ static void test_unsupported_features(void)
 #endif
 
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
-    printf("  [INFO] tickless idle enabled - not functionally wired in yet (doc/porting.md)\r\n");
+    printf("  [INFO] tickless idle enabled and driven by the idle task - exercised above\r\n");
 #else
     printf("  [SKIP] tickless idle disabled (OS_CONFIG_TICKLESS_ENABLE=0)\r\n");
 #endif

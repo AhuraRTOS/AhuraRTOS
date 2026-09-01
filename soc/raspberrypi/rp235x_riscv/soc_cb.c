@@ -547,3 +547,37 @@ static void soc_core1_entry(void)
     os_core_start();
 }
 #endif
+
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+
+/******************************************************************************************************/
+/**
+ * @brief Called right before a suppressed idle window, with interrupts masked.
+ *
+ * Left empty, which selects a plain WFI: the core stalls and every clock keeps running, so nothing
+ * needs saving here and the post-sleep hook has nothing to restore. That is also what makes the
+ * window measurable, since mtimecmp keeps counting through it.
+ *
+ * The deeper modes on this chip stop the timers the kernel measures against, which is a different
+ * feature and not one this package claims - see the tickless section of doc/porting.md.
+ *
+ * Weak, so an application that must quiesce something of its own - a UART with bytes still in its
+ * FIFO, a sensor mid-conversion - replaces this one hook and leaves the rest alone.
+ *
+ * @return None.
+ */
+OS_WEAK void os_tickless_pre_sleep_cb(void)
+{
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Called right after the window closes, still masked and before the sleep is announced.
+ *
+ * @return None.
+ */
+OS_WEAK void os_tickless_post_sleep_cb(void)
+{
+}
+
+#endif /* OS_CONFIG_TICKLESS_ENABLE */

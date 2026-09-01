@@ -959,6 +959,47 @@ uint32_t os_arch_max_suppressed_ticks_get(void);
  * a tick ISR above the threshold is trapped by os_arch_isr_priority_check the moment it calls in.
  */
 void os_arch_tick_init_cb(void);
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: how many ticks this chip can skip in one tickless window, 0 if it cannot.
+ *
+ * These three exist for ports whose own tick timer cannot safely be suppressed - see
+ * os_arch_tickless.c for which those are and why. The package answers with an independent timer of
+ * its own: an alarm on an always-on counter, an LPTIM, an RTC. Nothing above this line names one,
+ * which is what lets the same port code serve a part nobody has written a package for yet.
+ *
+ * Each has a weak default that suppresses nothing, so a package without them still links and idles
+ * in a plain WFI.
+ *
+ * @return uint32_t  Ceiling on one suppressed window, in ticks.
+ */
+uint32_t os_arch_tick_suppress_max_cb(void);
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: wake this core in `ticks` tick periods from now.
+ *
+ * Called with the kernel's interrupts already masked and the tick interrupt already silenced. The
+ * wake has to be an interrupt, not a poll: the core is about to WFI, and a pending interrupt is
+ * what ends that even behind the mask.
+ *
+ * @param[in] ticks  Tick periods to sleep; always at least OS_CONFIG_TICKLESS_MIN_IDLE.
+ * @return None.
+ */
+void os_arch_tick_suppress_cb(uint32_t ticks);
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: how many whole tick periods the window actually lasted.
+ *
+ * Whole periods only. A window cut short by an unrelated interrupt is the normal case, not an
+ * error, and reporting the partial remainder would make the kernel announce time that has not
+ * happened.
+ *
+ * @return uint32_t  Whole tick periods elapsed since os_arch_tick_suppress_cb.
+ */
+uint32_t os_arch_tick_resume_cb(void);
 #endif /* OS_CONFIG_TICK_SOURCE_EXTERNAL */
 
 /*

@@ -790,9 +790,27 @@ void os_arch_sleep_prepare(uint32_t planned_ticks)
  */
 uint32_t os_arch_max_suppressed_ticks_get(void)
 {
-    uint64_t max_window_ticks = os_arch_max_window_ticks_get();
+    /* No suppression without a cycle counter of its own.
+     *
+     * Where DWT CYCCNT is missing or gated, os_arch_cycle_count_get falls back to a counter
+     * SYNTHESIZED FROM SysTick: it accumulates whole periods in the tick interrupt and multiplies
+     * them by the reload it reads live. Suppressing the tick changes that reload, so periods
+     * counted against the old one get scaled by the new one and the value jumps - and that counter
+     * is what os_delay_us and the busy-wait half of os_delay_ms run on.
+     *
+     * DWT is independent of SysTick, so with it there is nothing to disturb. Without it, this port
+     * reports 0 and tickless degrades to a plain WFI, which is correct rather than merely safe:
+     * the alternative is a suppressed window that quietly breaks every microsecond delay. */
+    uint32_t suppressible = 0U;
 
-    return (max_window_ticks == 0U) ? 0U : ((uint32_t)max_window_ticks + 1U);
+    if (os_arch_dwt_available)
+    {
+        uint64_t max_window_ticks = os_arch_max_window_ticks_get();
+
+        suppressible = (max_window_ticks == 0U) ? 0U : ((uint32_t)max_window_ticks + 1U);
+    }
+
+    return suppressible;
 }
 
 /*
