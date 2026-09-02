@@ -256,6 +256,11 @@ class Project:
         if body is None:
             raise Fatal("no SysTick_Handler in {} - cannot route the tick"
                         .format(relative(self.it_c, self.root)))
+        refuse_duplicate_call(
+            body, "os_tick_handler", "SysTick_Handler in {}".format(relative(self.it_c, self.root)),
+            "Delete that line and run this again. The block it writes back does the same job\n"
+            "  and stays up to date on every later run.")
+
         if re.search(r"\bHAL_IncTick\s*\(", strip_comments(body)):
             raise Fatal(
                 "SysTick still drives the HAL timebase (HAL_IncTick() is in\n"

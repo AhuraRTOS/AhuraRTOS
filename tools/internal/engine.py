@@ -265,6 +265,35 @@ def find_managed(text: str, start: int = 0, stop: int = None):
     return start + b.start(), start + b.start() + e.end()
 
 
+def without_managed(text: str) -> str:
+    """The text with every managed region cut out, so a search sees only what somebody wrote."""
+    out = text
+    while True:
+        span = find_managed(out)
+        if span is None:
+            return out
+        out = out[:span[0]] + out[span[1]:]
+
+
+def refuse_duplicate_call(body: str, call: str, where: str, fix: str):
+    """Stop if `call` already appears outside any managed block.
+
+    The installer owns only what it marked, so a hand-written call is invisible to the rebuild and
+    the managed block lands BESIDE it. Two calls to a tick handler is not a broken build - it is a
+    kernel clock at double rate, which every test measuring time in ticks agrees with.
+    """
+    if re.search(r"\b" + re.escape(call) + r"\s*\(", strip_comments(without_managed(body))):
+        raise Fatal(
+            "{where} already calls {call}() outside any AhuraRTOS block.\n"
+            "  \n"
+            "  This installer only owns what it marked, so it cannot replace that call - it would\n"
+            "  add its own beside it, and {call}() twice in one handler means a kernel clock\n"
+            "  running at DOUBLE rate. Nothing reports it: every test measures time in ticks, so\n"
+            "  they all stay consistent with each other and pass.\n"
+            "  \n"
+            "  {fix}".format(where=where, call=call, fix=fix))
+
+
 def drop_managed(src: SourceFile) -> int:
     """Remove every managed region from the file. Returns how many went.
 
