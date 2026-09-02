@@ -6297,9 +6297,6 @@ static void test_benchmarks(void)
     uint32_t          overhead;
     uint32_t          overhead_worst;
     uint32_t          clock_hz = os_arch_clock_hz_get();
-    /* Every row below is a CYCLE count, so the ns column and the check against the tick both
-     * belong to the counter's own rate - which is not the core clock everywhere. */
-    uint32_t          cycle_hz = os_cycle_hz_get();
 
     printf("\r\n========================================\r\n");
     printf(" BENCHMARKS\r\n");
@@ -6455,12 +6452,12 @@ static void test_benchmarks(void)
         {
             uint64_t measured = ((uint64_t)elapsed_cycles * (uint64_t)OS_CONFIG_TICK_HZ)
                                 / (uint64_t)elapsed_ticks;
-            uint32_t error_pct = (measured > (uint64_t)cycle_hz)
-                                 ? (uint32_t)(((measured - (uint64_t)cycle_hz) * 100ULL) / (uint64_t)cycle_hz)
-                                 : (uint32_t)((((uint64_t)cycle_hz - measured) * 100ULL) / (uint64_t)cycle_hz);
+            uint32_t error_pct = (measured > (uint64_t)clock_hz)
+                                 ? (uint32_t)(((measured - (uint64_t)clock_hz) * 100ULL) / (uint64_t)clock_hz)
+                                 : (uint32_t)((((uint64_t)clock_hz - measured) * 100ULL) / (uint64_t)clock_hz);
 
-            printf("  counter   : %lu Hz measured against the tick, %lu Hz calibrated (%lu%% apart)%s\r\n",
-                   (unsigned long)measured, (unsigned long)cycle_hz, (unsigned long)error_pct,
+            printf("  counter   : %lu Hz measured against the tick, %lu Hz configured (%lu%% apart)%s\r\n",
+                   (unsigned long)measured, (unsigned long)clock_hz, (unsigned long)error_pct,
                    (error_pct <= 2U) ? " - agree" : "  *** DISAGREE, the ns column is wrong ***");
         }
     }
@@ -6472,15 +6469,15 @@ static void test_benchmarks(void)
     /* Cost of the measurement itself: two counter reads with nothing between them. Subtracted
      * from every row, so a row shows the operation's own cycles and nothing else. */
     TEST_BENCH_CYCLES(overhead, overhead_worst, TEST_BENCH_SAMPLES, (void)0);
-    test_bench_row("(measurement overhead, subtracted)", overhead, overhead_worst, cycle_hz);
+    test_bench_row("(measurement overhead, subtracted)", overhead, overhead_worst, clock_hz);
 
     TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES, sink += os_tick_get());
     test_bench_row("os_tick_get", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
     TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES, os_critical_enter(); os_critical_exit());
     test_bench_row("os_critical_enter + exit", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
 #if (OS_CONFIG_ATOMIC_ENABLE == 1U)
     /* Placed directly under the critical section above, because that is the comparison that
@@ -6499,27 +6496,27 @@ static void test_benchmarks(void)
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES,
                               sink += (uint32_t)os_atomic_get(&os_test_bench_atomic));
         test_bench_row("os_atomic_get (load)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES, (void)os_atomic_add(&os_test_bench_atomic, 1));
         test_bench_row("os_atomic_add (read-modify-write)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES,
                               (void)os_arch_atomic_add((__IO int32_t *)&os_test_bench_atomic, 1));
         test_bench_row("  ^ same, os_atomic_* layer skipped", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES, os_atomic_set_bit(&os_test_bench_atomic, 0U));
         test_bench_row("os_atomic_set_bit", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
         /* expected == desired == what the word already holds, so the swap is always taken and
          * leaves the word where it started: this measures the successful path, not a retry. */
         (void)os_atomic_set(&os_test_bench_atomic, 0);
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES, (void)os_atomic_cas(&os_test_bench_atomic, 0, 0));
         test_bench_row("os_atomic_cas (swap taken)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
     }
 #endif
 
@@ -6530,13 +6527,13 @@ static void test_benchmarks(void)
                               (void)os_mutex_lock(&os_test_bench_mutex, OS_WAIT_FOREVER);
                               (void)os_mutex_unlock(&os_test_bench_mutex));
         test_bench_row("os_mutex_lock + unlock", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES,
                               (void)os_mutex_lock(&os_test_bench_mutex, OS_WAIT_NOTHING);
                               (void)os_mutex_unlock(&os_test_bench_mutex));
         test_bench_row("os_mutex_lock(NOTHING) + unlock", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
     }
 #endif
 
@@ -6547,7 +6544,7 @@ static void test_benchmarks(void)
                               (void)os_sem_give(&os_test_bench_sem);
                               (void)os_sem_take(&os_test_bench_sem, OS_WAIT_NOTHING));
         test_bench_row("os_sem_give + take", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
     }
 #endif
 
@@ -6561,7 +6558,7 @@ static void test_benchmarks(void)
                               (void)os_queue_send(&os_test_bench_queue, &item, OS_WAIT_NOTHING);
                               (void)os_queue_receive(&os_test_bench_queue, &out, OS_WAIT_NOTHING));
         test_bench_row("os_queue_send + receive (4-byte item)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
     }
 #endif
 
@@ -6581,14 +6578,14 @@ static void test_benchmarks(void)
                               (void)os_msg_receive(&os_test_bench_msg, out, sizeof(out), &out_len,
                                                    OS_WAIT_NOTHING));
         test_bench_row("os_msg_send + receive (4-byte message)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES,
                               (void)os_msg_send(&os_test_bench_msg, payload, 64U, OS_WAIT_NOTHING);
                               (void)os_msg_receive(&os_test_bench_msg, out, sizeof(out), &out_len,
                                                    OS_WAIT_NOTHING));
         test_bench_row("  ^ same, 64-byte message", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
     }
 #endif
 
@@ -6602,7 +6599,7 @@ static void test_benchmarks(void)
                               (void)os_event_wait_bits(&os_test_bench_event, 0x01U, false, true,
                                                               &matched, OS_WAIT_NOTHING));
         test_bench_row("os_event_set + wait (immediate)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
     }
 #endif
 
@@ -6613,7 +6610,7 @@ static void test_benchmarks(void)
     {
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES, (void)os_notify_give(&helper, 1U));
         test_bench_row("os_notify_give (latch, no wake)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
         (void)os_task_delete(&helper);
     }
@@ -6628,7 +6625,7 @@ static void test_benchmarks(void)
                           (void)os_timer_start(&os_test_bench_timer, NULL, 0U);
                           (void)os_timer_stop(&os_test_bench_timer));
     test_bench_row("os_timer_start + stop (list empty)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
     /* The same pair with the running list already holding TEST_BENCH_TIMER_FILL timers. Both calls
      * search that list to PROVE membership rather than trusting the timer's own link pointers, so
@@ -6646,7 +6643,7 @@ static void test_benchmarks(void)
                               (void)os_timer_start(&os_test_bench_timer, NULL, 0U);
                               (void)os_timer_stop(&os_test_bench_timer));
         test_bench_row("  ^ same, with 8 other timers running", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
         for (fill = 0U; fill < TEST_BENCH_TIMER_FILL; fill++)
         {
@@ -6662,7 +6659,7 @@ static void test_benchmarks(void)
 
         TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES, p = os_mem_alloc(64U); os_mem_free(p));
         test_bench_row("os_mem_alloc + os_mem_free (64 B)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
     }
 #endif
 
@@ -6672,7 +6669,7 @@ static void test_benchmarks(void)
      * no second task's cache/branch-predictor effects mixed in. */
     TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES, os_task_yield());
     test_bench_row("os_task_yield (switch, re-selects self)", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
     /* Is the pick really O(1)? The same yield, with the ready lists loaded.
      *
@@ -6710,7 +6707,7 @@ static void test_benchmarks(void)
         {
             TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES, os_task_yield());
             test_bench_row("  ^ same, with 4 more tasks ready", TEST_BENCH_SUB(best, overhead),
-                           TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                           TEST_BENCH_SUB(worst, overhead), clock_hz);
         }
 
         for (fill = 0U; fill < TEST_BENCH_TASK_FILL; fill++)
@@ -6753,8 +6750,8 @@ static void test_benchmarks(void)
             best  = TEST_BENCH_SUB(best, overhead);
             worst = TEST_BENCH_SUB(worst, overhead);
 
-            test_bench_row("os_task_yield (round trip, 2 switches)", best, worst, cycle_hz);
-            test_bench_row("  ^ ONE context switch, task to task", best / 2U, worst / 2U, cycle_hz);
+            test_bench_row("os_task_yield (round trip, 2 switches)", best, worst, clock_hz);
+            test_bench_row("  ^ ONE context switch, task to task", best / 2U, worst / 2U, clock_hz);
         }
 
         os_test_bench_partner_run = false;
@@ -6773,7 +6770,7 @@ static void test_benchmarks(void)
                               (void)os_task_delete(&helper);
                           });
     test_bench_row("os_task_create + os_task_delete", TEST_BENCH_SUB(best, overhead),
-                   TEST_BENCH_SUB(worst, overhead), cycle_hz);
+                   TEST_BENCH_SUB(worst, overhead), clock_hz);
 
     printf("  ----------------------------------------------------------------------------\r\n");
     (void)sink;

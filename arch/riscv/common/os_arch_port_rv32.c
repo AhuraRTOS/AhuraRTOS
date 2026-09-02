@@ -544,17 +544,6 @@ uint32_t os_arch_cycle_count_get(void)
     return OS_ARCH_CSR_READ(mcycle);
 }
 
-/******************************************************************************************************/
-/**
- * @brief Always: mcycle is architectural and counts the core's own clock, not the timer's.
- *
- * @return bool  True.
- */
-bool os_arch_cycle_is_independent(void)
-{
-    return true;
-}
-
 /*
  * ***********************************************************************************************************
  * Atomics

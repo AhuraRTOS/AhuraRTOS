@@ -519,21 +519,6 @@ uint32_t os_tick_get(void);
 
 /******************************************************************************************************/
 /**
- * @brief Rate the CPU cycle counter advances at, in Hz.
- *
- * Measured against the tick once during os_start(), because it is NOT always the core clock: a part
- * whose counter is clocked separately (the STM32H503 runs its DWT counter at half the core) would
- * otherwise make every cycles-to-time conversion wrong by exactly that ratio.
- *
- * Use this rather than the platform clock for anything converting between cycles and time. It is
- * what os_delay_us() waits on.
- *
- * @return uint32_t  Measured rate in Hz; the platform clock if no measurement was possible.
- */
-uint32_t os_cycle_hz_get(void);
-
-/******************************************************************************************************/
-/**
  * @brief Advance the kernel clock by one tick. Call this, and nothing else, from the tick
  *        interrupt, OS_CONFIG_TICK_HZ times per second.
  *

@@ -120,18 +120,6 @@ void os_tick_handler(void)
      * ports with a real cycle counter in hardware. */
     os_arch_cycle_tick();
 
-    /* Below os_arch_cycle_tick(), never above it. A port that synthesizes its cycle counter from
-     * SysTick is a whole period short between the exception clearing PENDSTSET and that call
-     * crediting the wrap, so a sample taken earlier reads low and pins the counter's own
-     * backwards-step guard. Here the counter is exactly what a caller outside this interrupt sees.
-     *
-     * Core 0 only, unlike the call above it: every core's timer wraps, but the measurement counts
-     * kernel tick periods and only core 0's ticks are those. */
-    if (owns_time_base)
-    {
-        os_delay_calibrate_sample();
-    }
-
     /* Pend PendSV only when it would actually do something: a wake this tick
      * (timer/delay expiry) or an equal-priority peer whose turn has come
      * both show up in os_task_reschedule_possible, which also answers false

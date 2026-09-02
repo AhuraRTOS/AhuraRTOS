@@ -93,99 +93,9 @@ void os_delay_ms(uint32_t milliseconds)
  * @param[in] microseconds  Delay duration in microseconds.
  * @return None.
  */
-/** Tick periods the measurement spans. Both ends are interrupts at the tick rate, so the window is
- *  exact by construction and this only has to be long enough that the counter read inside the ISR
- *  is noise against it. Nothing waits for these ticks; they pass anyway. */
-#define OS_DELAY_CALIBRATE_TICKS    8U
-
-/** Measured rate of the cycle counter, or 0 while it has not been measured. Deliberately NOT
- *  initialised from the platform clock: 0 is what lets os_cycle_hz_get() tell "not measured" from
- *  "measured and happens to equal the core clock", which is every part but one so far.
- *
- *  Written by the tick interrupt, read by tasks, so volatile. A 32-bit aligned word cannot tear,
- *  and it goes from 0 to its final value exactly once, so no lock is needed on either side. */
-static __IO uint32_t os_delay_cycle_hz  = 0U;
-
-/** Cycle counter as it read on the opening tick of the measurement. */
-static uint32_t      os_delay_cal_cycles = 0U;
-
-/** Ticks seen so far, 0 before the opening one. Tick interrupt only. */
-static uint32_t      os_delay_cal_ticks  = 0U;
-
-/******************************************************************************************************/
-/**
- * @brief Accumulate the cycle-counter measurement. Called from the tick interrupt, once per tick.
- *
- * The tick interrupt is used rather than a busy-wait because it is the one place that runs at the
- * tick rate BY DEFINITION. A loop that waits for the tick instead depends on the tick already
- * advancing, which depends in turn on the application's startup order and interrupt state - and
- * when that assumption is wrong the measurement is simply never made, silently, which is how a
- * counter running at half the core clock went on being reported as agreeing with it.
- *
- * Costs one comparison per tick once the measurement is complete.
- *
- * @return None.
- */
-void os_delay_calibrate_sample(void)
-{
-    if (os_delay_cycle_hz == 0U)
-    {
-        uint32_t now;
-
-        /* A counter built FROM the tick already has an exactly known rate, so measuring it gains
-         * nothing - and costs something real, because the read below lands inside the tick
-         * interrupt where such a counter is momentarily inconsistent. Settle it from the platform
-         * clock, which for that kind IS the rate, and never sample again. */
-        if (!os_arch_cycle_is_independent())
-        {
-            os_delay_cycle_hz = os_arch_clock_hz_get();
-        }
-        else
-        {
-            now = os_arch_cycle_count_get();
-
-            if (os_delay_cal_ticks == 0U)
-            {
-                /* First tick seen: this is the opening edge, and it is a real one - an interrupt, not
-                 * a polled guess at where the boundary was. */
-                os_delay_cal_cycles = now;
-                os_delay_cal_ticks  = 1U;
-            }
-            else
-            {
-                os_delay_cal_ticks++;
-
-                /* The opening sample was tick 1, so tick N+1 closes exactly N whole periods. */
-                if (os_delay_cal_ticks > OS_DELAY_CALIBRATE_TICKS)
-                {
-                    uint32_t elapsed = now - os_delay_cal_cycles;
-
-                    os_delay_cycle_hz = (uint32_t)(((uint64_t)elapsed * (uint64_t)OS_CONFIG_TICK_HZ) /
-                                                   (uint64_t)OS_DELAY_CALIBRATE_TICKS);
-                }
-            }
-        }
-    }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Rate the cycle counter advances at, which is not always the core clock.
- *
- * Use this, not os_arch_clock_hz_get(), for anything converting between cycles and time: the two
- * differ wherever the counter is clocked separately from the core, and on such a part the core
- * clock produces an answer that is wrong by exactly that ratio.
- *
- * @return uint32_t  Measured rate in Hz; the platform clock while no measurement was possible.
- */
-uint32_t os_cycle_hz_get(void)
-{
-    return (os_delay_cycle_hz != 0U) ? os_delay_cycle_hz : os_arch_clock_hz_get();
-}
-
 void os_delay_us(uint32_t microseconds)
 {
-    uint32_t clock_hz = os_cycle_hz_get();
+    uint32_t clock_hz = os_arch_clock_hz_get();
 
     /* No clock reading means no way to measure a microsecond, so this cannot wait at all. The
      * platform's clock callback is not answering - see doc/porting.md "Platform clock". */
@@ -273,9 +183,8 @@ static void os_delay_ticks(uint32_t ticks)
         }
         else
         {
-            /* Pre-scheduler or interrupt context: precise busy-wait. Cycles again, so the
-             * counter's own rate rather than the core's. */
-            uint32_t clock_hz = os_cycle_hz_get();
+            /* Pre-scheduler or interrupt context: precise busy-wait. */
+            uint32_t clock_hz = os_arch_clock_hz_get();
 
             /* Same as os_delay_us: without a clock reading there is no way to time the wait, so
              * this delays not at all. The platform's clock callback is not answering. */
