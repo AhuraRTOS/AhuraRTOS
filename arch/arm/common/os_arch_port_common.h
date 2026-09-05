@@ -30,6 +30,18 @@
 #define OS_CONFIG_TICK_SOURCE_SYSTICK   0U
 #define OS_CONFIG_TICK_SOURCE_EXTERNAL  1U
 
+/* How deep the core sleeps inside a suppressed tickless window, for SOC_CONFIG_SLEEP_MODE.
+ * Kernel-owned encoding; which of them a board can actually use is its SoC package's answer,
+ * because it depends entirely on whether the chosen wake source keeps running that deep.
+ *
+ *   LIGHT  The core stops, clocks and peripherals keep running. Every wake source works, so this
+ *          is the only mode a part can offer unconditionally. Saves the tick interrupts.
+ *   DEEP   Clocks are gated - STM32 Stop, RP2350 dormant. Saves far more, and only a source that
+ *          survives it can end the window: an LPTIM or RTC on an STM32, POWMAN on an RP2350.
+ *          SysTick is NOT one of them, which is why the pair is checked rather than assumed. */
+#define OS_CONFIG_SLEEP_MODE_LIGHT      0U
+#define OS_CONFIG_SLEEP_MODE_DEEP       1U
+
 /*
  * The application provides the kernel configuration: copy
  * template/os_config.h into the project as os_config.h
@@ -450,7 +462,12 @@ extern "C"
 #define OS_ARCH_IRQ_DISABLE()             do { __asm volatile("cpsid i" ::: "memory"); } while (0)
 #define OS_ARCH_IRQ_ENABLE()              do { __asm volatile("cpsie i" ::: "memory"); } while (0)
 #define OS_ARCH_IDLE()                    do { __asm volatile("wfi"); } while (0)
-#define OS_ARCH_SLEEP(ticks)              do { os_arch_sleep_prepare((ticks)); OS_ARCH_DSB(); __asm volatile("wfi"); OS_ARCH_ISB(); } while (0)
+/* The sleep is a callback rather than the raw WFI it defaults to. By the time it runs the window
+ * is already armed - os_arch_sleep_prepare() has silenced the tick and the SoC's own timer is
+ * counting the wake out - so the core may go as deep as THAT timer survives, which is Stop mode
+ * on an STM32 and dormant on an RP2350. Only the package knows how deep that is; the weak
+ * default in os_kernel.c is exactly the WFI this line used to hold. */
+#define OS_ARCH_SLEEP(ticks)              do { os_arch_sleep_prepare((ticks)); OS_ARCH_DSB(); os_arch_soc_sleep_cb(); OS_ARCH_ISB(); } while (0)
 
 /* WFE and the event it waits for. WFE's event register LATCHES, so an SEV that
  * arrives before the WFE still wakes it - unlike WFI, where the wake can be
@@ -949,6 +966,17 @@ void os_arch_sleep_finish(void);
  */
 uint32_t os_arch_max_suppressed_ticks_get(void);
 
+/******************************************************************************************************/
+/**
+ * @brief Shortest window this port will open, in ticks: what the wake source costs to arm and to
+ *        leave.
+ *
+ * The other half of OS_CONFIG_TICKLESS_MIN_IDLE_MS. That one is what the application prefers; this
+ * is what the hardware needs, so the kernel takes whichever is larger and an application cannot
+ * configure its way below the floor. 0 means the port has nothing to add.
+ */
+uint32_t os_arch_min_suppressed_ticks_get(void);
+
 /*
  * ***********************************************************************************************************
  * CONFIGURABLE - External tick source (OS_CONFIG_TICK_SOURCE_EXTERNAL only)
@@ -989,6 +1017,27 @@ void os_arch_tick_init_cb(void);
  * @return uint32_t  Ceiling on one suppressed window, in ticks.
  */
 uint32_t os_arch_tick_suppress_max_cb(void);
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: the shortest window worth entering the configured sleep for, in ticks.
+ *
+ * The other half of OS_CONFIG_TICKLESS_MIN_IDLE_MS. That one is the application's preference; this
+ * one is the wake source and the sleep mode stating what a window costs to arm and to leave, which
+ * is a property of the chip rather than of the program running on it. The kernel takes whichever
+ * floor is larger, so a package can raise the bar but an application cannot lower it below what the
+ * hardware needs.
+ *
+ * Answer in ticks rather than microseconds, even though the underlying cost is a duration: the
+ * package knows OS_CONFIG_TICK_HZ at compile time and can fold the conversion away, where the
+ * kernel would have to divide on every idle pass.
+ *
+ * Weak default 0, meaning "nothing to add" - the application's figure then stands alone, which is
+ * what every package that does not define this gets.
+ *
+ * @return uint32_t  Floor on one suppressed window, in ticks; 0 for no opinion.
+ */
+uint32_t os_arch_tick_suppress_min_cb(void);
 
 /******************************************************************************************************/
 /**

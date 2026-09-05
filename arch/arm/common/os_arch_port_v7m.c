@@ -495,6 +495,21 @@ uint32_t os_arch_max_suppressed_ticks_get(void)
     return 0U;
 }
 
+/******************************************************************************************************/
+/**
+ * @brief Shortest window worth opening on this port.
+ *
+ * 0, and for the same reason the ceiling above is 0: this port opens no windows at all yet. Present
+ * so the pair stays a pair - a port that answered one and not the other would read as an oversight
+ * in whichever direction the next person guessed.
+ *
+ * @return uint32_t  Always 0 until this port gets the same fix as os_arch_port_v8m.c.
+ */
+uint32_t os_arch_min_suppressed_ticks_get(void)
+{
+    return 0U;
+}
+
 /*
  * ***********************************************************************************************************
  * Private function implementations

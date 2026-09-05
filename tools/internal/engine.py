@@ -60,6 +60,67 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
+# Error output
+# ---------------------------------------------------------------------------
+
+#: ENABLE_VIRTUAL_TERMINAL_PROCESSING, and the handle to ask for it on. A Windows console renders
+#: ANSI only once that bit is set; without it the escapes print as literal junk, which is worse
+#: than no colour at all.
+_WIN_VT_MODE = 0x0004
+_WIN_STDERR = -12
+
+
+def colour_supported() -> bool:
+    """Whether an escape written to stderr will come out as colour rather than as text.
+
+    Three ways it will not, and all three are ordinary rather than exceptional: the output is
+    redirected to a file or a pipe, NO_COLOR is set (https://no-color.org, the convention every
+    tool that colours anything should honour), or this is a Windows console that has not had
+    virtual-terminal processing switched on. The last one is asked for here rather than assumed,
+    and a refusal means no colour, never a traceback - a tool that cannot colour its error still
+    has to be able to print it.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+
+    stream = getattr(sys, "stderr", None)
+
+    if stream is None or not hasattr(stream, "isatty") or not stream.isatty():
+        return False
+
+    if os.name != "nt":
+        return True
+
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(_WIN_STDERR)
+        mode = ctypes.c_uint32()
+
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)) == 0:
+            return False
+
+        return kernel32.SetConsoleMode(handle, mode.value | _WIN_VT_MODE) != 0
+    except Exception:            # noqa: BLE001 - any failure here means "no colour", nothing more
+        return False
+
+
+def print_error(message: str):
+    """Write `message` to stderr as the failure the run ended on, in red where that will show.
+
+    Red for the whole block, not just the label. These messages are several lines - what is wrong,
+    then what to do about it - and the part a user most needs to read is the fix at the bottom,
+    which is exactly the part a coloured prefix leaves looking like ordinary output.
+    """
+    print("\n" + (RED + message + RESET if colour_supported() else message), file=sys.stderr)
+
+
+RED = "\033[31m"
+RESET = "\033[0m"
+
+
+# ---------------------------------------------------------------------------
 # Shared machinery
 # ---------------------------------------------------------------------------
 
@@ -275,25 +336,6 @@ def without_managed(text: str) -> str:
         out = out[:span[0]] + out[span[1]:]
 
 
-def refuse_duplicate_call(body: str, call: str, where: str, fix: str):
-    """Stop if `call` already appears outside any managed block.
-
-    The installer owns only what it marked, so a hand-written call is invisible to the rebuild and
-    the managed block lands BESIDE it. Two calls to a tick handler is not a broken build - it is a
-    kernel clock at double rate, which every test measuring time in ticks agrees with.
-    """
-    if re.search(r"\b" + re.escape(call) + r"\s*\(", strip_comments(without_managed(body))):
-        raise Fatal(
-            "{where} already calls {call}() outside any AhuraRTOS block.\n"
-            "  \n"
-            "  This installer only owns what it marked, so it cannot replace that call - it would\n"
-            "  add its own beside it, and {call}() twice in one handler means a kernel clock\n"
-            "  running at DOUBLE rate. Nothing reports it: every test measures time in ticks, so\n"
-            "  they all stay consistent with each other and pass.\n"
-            "  \n"
-            "  {fix}".format(where=where, call=call, fix=fix))
-
-
 def drop_managed(src: SourceFile) -> int:
     """Remove every managed region from the file. Returns how many went.
 
@@ -490,7 +532,7 @@ def apply(edits, copies, root: Path):
             print("  patched -> {}".format(relative(src.path, root)))
 
     except Exception:
-        print("\n! failed - rolling back", file=sys.stderr)
+        print_error("! failed - rolling back")
         for src in written:
             src.path.write_bytes(
                 src.original.replace("\n", src.newline).encode(src.encoding))
@@ -611,7 +653,7 @@ def run(platform, repo_dir, argv=None, title="AhuraRTOS installer", show_kernel=
         return finish(args, project, root, edits, copies, notes)
 
     except Fatal as exc:
-        print("\nerror: {}".format(exc), file=sys.stderr)
+        print_error("error: {}".format(exc))
         return 1
     except KeyboardInterrupt:
         print("\ncancelled", file=sys.stderr)

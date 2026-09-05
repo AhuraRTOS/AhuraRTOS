@@ -14,15 +14,23 @@ matters: **whether the code generator emits an interrupt file that also defines
 
 ## STM32 (STM32CubeMX / CubeIDE)
 
-CubeMX generates a non-weak `PendSV_Handler` into `Core/Src/stm32<family>_it.c`,
-which collides with the kernel's. Deleting it by hand works until the next code
-generation overwrites the file, so turn it off at the source instead:
+CubeMX generates non-weak `PendSV_Handler` and `SysTick_Handler` stubs into
+`Core/Src/stm32<family>_it.c`, and the kernel defines both itself - the port owns
+PendSV, and the `st/stm32` SoC package owns the tick vector. Two definitions of one
+symbol is a link error. Deleting them by hand works until the next code generation
+puts them back, so turn them off at the source instead:
 
 > **CubeMX → System Core → NVIC → Code generation tab → clear "Generate IRQ
-> handler" for *Pendable request for system service*.**
+> handler" for *Pendable request for system service* and for *System tick timer*.**
 
-That setting is stored in the `.ioc`, so regeneration keeps honouring it. Leave
-*System tick timer* generating, since that is where `os_tick_handler()` goes.
+That setting is stored in the `.ioc`, so regeneration keeps honouring it. The
+installer checks both and refuses to write anything until they are cleared, naming
+the checkbox rather than leaving you to read a linker error.
+
+Nothing is lost by clearing them: both are CubeMX's own empty stubs. An application
+that genuinely needs work on the tick sets `SOC_CONFIG_SYSTICK_VECTOR` to `0` in
+`soc_config.h` and writes `SysTick_Handler` itself, calling `os_tick_handler()`
+from it.
 
 Clear *System service call via SWI instruction* (`SVC_Handler`) as well if you
 intend to run the [self-test suite](self-test.md). The kernel never uses `SVC`,
@@ -37,7 +45,8 @@ Then move the HAL off SysTick, or the HAL and the kernel will fight over it:
 
 CubeMX adds `stm32<family>_hal_timebase_tim.c` to the project, and from then on
 `HAL_Delay()` and `HAL_GetTick()` run off that timer while SysTick belongs to
-the kernel. Do **not** call `HAL_IncTick()` from `SysTick_Handler` afterwards.
+the kernel. The package's `SysTick_Handler` deliberately does not call
+`HAL_IncTick()`, so the two time bases never share the interrupt.
 
 Note that `HAL_Delay()` still busy-waits - it does not yield. Use
 `os_delay_ms()` in task code and keep `HAL_Delay()` for driver init paths that

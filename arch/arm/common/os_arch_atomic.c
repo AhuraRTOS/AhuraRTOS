@@ -269,15 +269,30 @@ bool os_arch_atomic_cas(__IO int32_t *target, int32_t expected, int32_t desired)
     int32_t  current;
     uint32_t store_failed;
 
+    /* The retry is the whole point, and it was missing here while every other operation in this
+     * file had it. STREX does not only fail when another core won the line - it fails SPURIOUSLY,
+     * because anything that clears the exclusive monitor between the LDREX and the STREX makes it
+     * fail, and an interrupt landing in that four-instruction window is enough. Returning that as
+     * "false" told the caller the word did not match when it did: a compare-and-swap that reports
+     * a swap it simply failed to perform.
+     *
+     * It cost about one run in six of the self-test on an RP2350 at a 1 kHz tick, which is exactly
+     * what a four-instruction window against a 1 ms interrupt looks like - rare enough to read as
+     * noise, frequent enough to break lock-free code built on it.
+     *
+     * So a failed store now loops back to re-read; only a genuine mismatch leaves through label 2,
+     * where store_failed is set by hand because no STREX ran to set it. */
     __asm volatile(
-        "    mov     %1, #1        \n"
-        "    ldrex   %0, [%2]      \n"
+        "1:  ldrex   %0, [%2]      \n"
         "    cmp     %0, %3        \n"
-        "    bne     1f            \n"
+        "    bne     2f            \n"
         "    strex   %1, %4, [%2]  \n"
-        "    b       2f            \n"
-        "1:  clrex                 \n"
-        "2:                        \n"
+        "    cmp     %1, #0        \n"
+        "    bne     1b            \n"
+        "    b       3f            \n"
+        "2:  clrex                 \n"
+        "    mov     %1, #1        \n"
+        "3:                        \n"
         : "=&r"(current), "=&r"(store_failed)
         : "r"(target), "r"(expected), "r"(desired)
         : "cc", "memory");

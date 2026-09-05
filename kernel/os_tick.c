@@ -312,6 +312,7 @@ void os_tickless_idle_process(void)
     uint32_t mask_state;
     uint32_t planned_idle_ticks;
     uint32_t suppress_ceiling;
+    uint32_t suppress_floor;
     uint32_t elapsed_ticks = 0U;
 
     /* Core 0 owns the kernel time base, the same rule os_tick_handler enforces. Announcing a
@@ -383,9 +384,22 @@ void os_tickless_idle_process(void)
             planned_idle_ticks = suppress_ceiling;
         }
 
-        /* Too short to be worth suppressing: the mask is handed straight back and this
-         * idle pass behaves like a plain WFI. */
-        if (planned_idle_ticks >= OS_TICKLESS_MIN_IDLE_TICKS)
+        /* Two floors, and the higher one wins. OS_TICKLESS_MIN_IDLE_TICKS is what the
+         * application asked for; os_arch_min_suppressed_ticks_get() is the wake source and the
+         * sleep mode saying what a window costs to arm and to leave. The second is a fact about the
+         * chip,
+         * so it can raise the bar but the application cannot configure its way under it.
+         *
+         * Too short to be worth suppressing: the mask is handed straight back and this idle pass
+         * behaves like a plain WFI. */
+        suppress_floor = os_arch_min_suppressed_ticks_get();
+
+        if (suppress_floor < OS_TICKLESS_MIN_IDLE_TICKS)
+        {
+            suppress_floor = OS_TICKLESS_MIN_IDLE_TICKS;
+        }
+
+        if (planned_idle_ticks >= suppress_floor)
         {
             os_tickless_pre_sleep_cb();
 

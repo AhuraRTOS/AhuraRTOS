@@ -466,6 +466,17 @@ OS_WEAK uint32_t os_arch_tick_suppress_max_cb(void)
 
 /******************************************************************************************************/
 /**
+ * @brief Weak default: this package has nothing to say about how short a window may be.
+ *
+ * @return uint32_t  0.
+ */
+OS_WEAK uint32_t os_arch_tick_suppress_min_cb(void)
+{
+    return 0U;
+}
+
+/******************************************************************************************************/
+/**
  * @brief Weak default: nothing to suppress.
  *
  * @param[in] ticks  Ignored.
@@ -521,6 +532,20 @@ void os_arch_sleep_finish(void)
 uint32_t os_arch_max_suppressed_ticks_get(void)
 {
     return os_arch_tick_suppress_max_cb();
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Shortest window worth opening on this port (see os_arch_port_common.h for the contract).
+ *
+ * Nothing to add above what the package says: entering and leaving the sleep is a WFI, which costs
+ * the same everywhere and is already well inside the two ticks the kernel insists on regardless.
+ *
+ * @return uint32_t  Floor on one window, in ticks; 0 when the package has no opinion.
+ */
+uint32_t os_arch_min_suppressed_ticks_get(void)
+{
+    return os_arch_tick_suppress_min_cb();
 }
 
 #endif /* OS_CONFIG_TICKLESS_ENABLE */

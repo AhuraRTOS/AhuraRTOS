@@ -129,7 +129,48 @@ static void soc_ipi_handler(void)
 
 #endif /* OS_CONFIG_CORE_COUNT > 1U */
 
+/** Referenced by nothing, and that is its entire job.
+ *
+ *  Every other symbol in this file sits behind a #if - the tickless callbacks, the multicore glue -
+ *  and each of those the kernel gives a weak default. Turn tickless off, or build single-core, and
+ *  nothing in the link names anything here: the linker never extracts this object from the archive,
+ *  and every callback it holds loses silently to a weak default. It was found on the rp235x_arm
+ *  package, where a single-core build lost its wake source and fell back to SysTick with nothing
+ *  reported.
+ *
+ *  soc.cmake names this in a -u link option, which is what forces the extraction. Unconditional on
+ *  purpose: a symbol behind the same #if as the things it rescues would disappear with them. */
+const uint32_t soc_rp2040_anchor = 0U;
+
+
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+
+/*
+ * ***********************************************************************************************************
+ * Configuration rules
+ * ***********************************************************************************************************
+ *
+ * Build failures rather than run-time zeros. Every way this can be set wrong fails SILENTLY on the
+ * board - a window that never suppresses, a core that never wakes - and a silent fault here is
+ * expensive to find. A refused build naming the settings that disagree costs nothing to read.
+*/
+
+#if (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
+    (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_DEEP)
+#error "SOC_CONFIG_SLEEP_MODE must be OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP."
+#endif
+
+/* No wake source to choose: the depth decides it. LIGHT keeps the clocks running, so the microsecond TIMER is
+ * still counting and takes the window; DEEP gates them, and only the RTC would survive that.
+ *
+ * It used to be five flags plus the mode, with an arithmetic rule saying exactly one flag had to
+ * be 1, another naming the sources this chip does not physically have, and a third refusing deep
+ * sleep against a source that stops with the clocks. None of those states can be expressed any
+ * more, so none of those rules exists. */
+#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+#error "OS_CONFIG_SLEEP_MODE_DEEP is not implemented in this package yet: the microsecond TIMER is gated with clk_sys and cannot wake the core from it, and the RTC that could is not written yet. \
+Use OS_CONFIG_SLEEP_MODE_LIGHT."
+#endif
 
 /*
  * ***********************************************************************************************************

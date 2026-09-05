@@ -289,6 +289,33 @@ static void soc_tick_isr(void)
 
 /*
  * ***********************************************************************************************************
+ * Configuration rules
+ * ***********************************************************************************************************
+ *
+ * Build failures rather than run-time zeros. Every way this can be set wrong fails SILENTLY on the
+ * board - a window that never suppresses, a core that never wakes - and a silent fault here is
+ * expensive to find. A refused build naming the settings that disagree costs nothing to read.
+*/
+
+#if (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
+    (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_DEEP)
+#error "SOC_CONFIG_SLEEP_MODE must be OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP."
+#endif
+
+/* No wake source to choose: the depth decides it. LIGHT keeps the clocks running, so mtime is
+ * still counting and takes the window; DEEP gates them, and only POWMAN would survive that.
+ *
+ * It used to be five flags plus the mode, with an arithmetic rule saying exactly one flag had to
+ * be 1, another naming the sources this chip does not physically have, and a third refusing deep
+ * sleep against a source that stops with the clocks. None of those states can be expressed any
+ * more, so none of those rules exists. */
+#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+#error "OS_CONFIG_SLEEP_MODE_DEEP is not implemented in this package yet: mtime and the TIMER blocks both stop when the clocks are gated, so only POWMAN could end such a window - and it is not written yet. \
+Use OS_CONFIG_SLEEP_MODE_LIGHT."
+#endif
+
+/*
+ * ***********************************************************************************************************
  * Tickless idle
  * ***********************************************************************************************************
  *

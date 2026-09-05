@@ -104,6 +104,23 @@ OS_WEAK void os_arch_soc_idle_cb(void)
     OS_ARCH_IDLE();
 }
 
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief Weak default for the sleep inside a suppressed window: the same plain WFI, which is
+ *        correct wherever the package's wake source keeps counting through it.
+ *
+ * A SoC package replaces it to go deeper - STM32 Stop, RP2350 dormant - and only it can know
+ * whether the timer it armed survives that far. Kept here beside the idle wait rather than in
+ * os_tick.c because the two are the same question asked at two different moments; see the
+ * declaration in ahura.h for which is which.
+ */
+OS_WEAK void os_arch_soc_sleep_cb(void)
+{
+    OS_ARCH_IDLE();
+}
+#endif /* OS_CONFIG_TICKLESS_ENABLE */
+
 /******************************************************************************************************/
 void os_init(void)
 {

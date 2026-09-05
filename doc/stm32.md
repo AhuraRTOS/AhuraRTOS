@@ -61,7 +61,7 @@ Exactly the manual steps below, in the same order:
 | 3 | Checks the HAL time base is off SysTick, and stops if it is not |
 | 4 | Copies `os_config.h`, `os_cb.c` and `os_main.c` into `Core/` |
 | 5 | Appends the kernel block to the top-level `CMakeLists.txt` |
-| 6 | Calls `os_tick_handler()` from `SysTick_Handler` |
+| 6 | Adds `#include "ahura.h"` to the interrupt file (the tick vector is the SoC package's) |
 | 7 | Calls `os_init()` / `os_start()` at the end of `main()` |
 | 8 | Leaves the build to you |
 
@@ -256,13 +256,15 @@ below uses. See [Installation → Step 1](installation.md#step-1---get-the-sourc
 for the details and [Keeping the kernel up to
 date](installation.md#keeping-the-kernel-up-to-date) for later.
 
-### 2. CubeMX: stop generating `PendSV_Handler`
+### 2. CubeMX: stop generating `PendSV_Handler` and `SysTick_Handler`
 
 > **System Core → NVIC → Code generation tab → clear "Generate IRQ handler" for
-> *Pendable request for system service*.**
+> *Pendable request for system service* and for *System tick timer*.**
 
-CubeMX otherwise writes a non-weak empty `PendSV_Handler` into
-`Core/Src/stm32h5xx_it.c`, which collides with the kernel's at link time:
+CubeMX otherwise writes non-weak empty stubs for both into
+`Core/Src/stm32h5xx_it.c`, and the kernel defines both itself - the port owns
+PendSV, the `st/stm32` SoC package owns the tick vector. Either one collides at
+link time:
 
 ```text
 multiple definition of `PendSV_Handler'
@@ -280,21 +282,22 @@ generated one collides exactly the same way. Turning it off costs an application
 that does not use `SVC` nothing.
 
 This is what the *Code generation* tab should look like when you are done -
-everything at its default except the two cleared rows:
+everything at its default except the three cleared rows:
 
 | Row | Generate IRQ handler |
 |---|---|
 | Non maskable interrupt, Hard fault, Memory management fault, Pre-fetch fault, Undefined instruction, Debug monitor | ✔ default |
 | **System service call via SWI instruction** (`SVC_Handler`) | ☐ **clear it** - see above |
 | **Pendable request for system service** (`PendSV_Handler`) | ☐ **clear it** - the kernel owns this vector |
-| **System tick timer** (`SysTick_Handler`) | ✔ **keep it** - `os_tick_handler()` goes in it, step 6 |
+| **System tick timer** (`SysTick_Handler`) | ☐ **clear it** - the SoC package owns this vector |
 | Time base: *<your timer>* global interrupt | ✔ appears once step 3 is done - CubeMX ticks it for you |
 
 The *Select for init sequence ordering* and *Call HAL handler* columns are not
 involved; leave them as they are.
 
-> **On the installer route?** It disables a generated `PendSV_Handler` for you
-> by wrapping it in `#if 0`, but it cannot touch `SVC_Handler` - nothing in the
+> **On the installer route?** It refuses to write anything while either handler is
+> still generated, and names the checkbox that turns it off - it cannot clear the
+> `.ioc` for you. `SVC_Handler` it cannot check at all, because nothing in the
 > generated sources says whether you intend to run the self-test. If you enable
 > the suite later and the link fails on `SVC_Handler`, this checkbox is the fix.
 
@@ -453,26 +456,35 @@ That is the whole build change. The middle two stanzas are explained in
 and the block still works, at the cost of switching the test suite on in two
 places by hand.
 
-### 6. Route the tick in `Core/Src/stm32h5xx_it.c`
+### 6. Add the include to `Core/Src/stm32h5xx_it.c`
 
-Put both edits **inside the `USER CODE` markers**, so CubeMX preserves them the
-next time it regenerates that file:
+One edit, and it goes **inside the `USER CODE` markers** so CubeMX preserves it
+the next time it regenerates the file:
 
 ```c
 /* USER CODE BEGIN Includes */
 #include "ahura.h"
 /* USER CODE END Includes */
+```
 
+There is no `SysTick_Handler` here to route the tick through - step 2 stopped
+CubeMX generating one, and the `st/stm32` SoC package defines it instead:
+
+```c
 void SysTick_Handler(void)
 {
-  /* USER CODE BEGIN SysTick_IRQn 0 */
-  os_tick_handler();
-  /* USER CODE END SysTick_IRQn 0 */
-  ...
+    os_tick_handler();
 }
 ```
 
-There is no `HAL_IncTick()` in this handler - step 3 moved the HAL to TIM7.
+No `HAL_IncTick()` in it - step 3 moved the HAL to TIM7, so the two time bases
+never share the interrupt.
+
+Need work of your own on the tick? Set `SOC_CONFIG_SYSTICK_VECTOR` to `0` in
+`soc_config.h` and write `SysTick_Handler` yourself, calling `os_tick_handler()`
+from it. Driving the kernel from a different timer entirely is
+`OS_CONFIG_TICK_SOURCE_EXTERNAL`, which removes the package's vector and the
+port's SysTick programming together.
 
 ### 7. Boot the kernel in `Core/Src/main.c`
 

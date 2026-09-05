@@ -241,11 +241,25 @@ static uint32_t os_arch_cycle_systick_get(void)
          * backwards step does not read as a small error - it reads as roughly 2^32. Holding the
          * previous value turns any residual corner into a slightly UNDERCOUNTED interval, which is
          * wrong in a way that can be noticed and reasoned about rather than one that produces
-         * nonsense. The comparison is signed on the difference, so the counter's own wrap at 2^32
-         * passes through untouched. */
-        if ((int32_t)(value - os_arch_cycle_last[core]) < 0)
+         * nonsense.
+         *
+         * BOUNDED, and the bound is the whole point. A signed test alone reads any step larger than
+         * 2^31 as backwards - and that is not a glitch, it is an ordinary FORWARD step taken over a
+         * long gap: 2^31 cycles is 17 seconds at 125 MHz, and this suite spends far longer than
+         * that inside one section without reading the counter. The clamp then pinned itself to a
+         * stale value, every interval measured 0, and the one read that finally escaped measured
+         * two billion cycles. Both appeared in the self-test's own benchmark table.
+         *
+         * A real backwards step cannot exceed what this function can mis-sample, which is a period
+         * or so - the pending/CVR pair above is what bounds it. Two periods of slack, and anything
+         * beyond that is taken at face value. */
         {
-            value = os_arch_cycle_last[core];
+            int32_t step = (int32_t)(value - os_arch_cycle_last[core]);
+
+            if ((step < 0) && (step > -(int32_t)(2U * (reload + 1U))))
+            {
+                value = os_arch_cycle_last[core];
+            }
         }
 
         os_arch_cycle_last[core] = value;

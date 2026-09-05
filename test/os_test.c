@@ -6003,8 +6003,9 @@ static void test_tickless_bounds(void)
  */
 static void test_tickless_drift(void)
 {
-    const uint32_t rounds  = 20U;
-    const uint32_t horizon = 8U;
+    const uint32_t rounds    = 20U;
+    const uint32_t horizon   = 8U;
+    const uint32_t requested = rounds * horizon;
 
     uint32_t max_suppressed;
     uint32_t clock_hz;
@@ -6063,15 +6064,52 @@ static void test_tickless_drift(void)
                       "%lu windows of %lu ticks advanced the kernel clock (%lu ticks)",
                       (unsigned long)rounds, (unsigned long)horizon, (unsigned long)measured);
 
-    /* A quarter of a tick lost per window would land at 5 here, so the budget is jitter only. */
-    AHURA_TEST_CHECK(drift <= ((rounds / 4U) + 2U),
-                      "and stayed with the free-running counter: %lu ticks measured, %lu expected, "
-                      "drift %lu",
-                      (unsigned long)measured, (unsigned long)expected, (unsigned long)drift);
+    /* Whether there was a witness at all, measured rather than configured - the test has no
+     * business reading a SoC's sleep-mode setting, and this is the fact that setting implies.
+     *
+     * The core cycle counter is clocked from the core. A light sleep leaves that clock running
+     * and the counter is the independent reference this test was built on; a DEEP sleep gates it
+     * - which is what a deep sleep IS - and the counter accounts for the awake slivers only. The
+     * two cases are not close: half the wall time cannot be a rounding error, and no kernel clock
+     * runs twice as fast as the counter it is being checked against.
+     *
+     * On the parts that can sleep that deep there is then NO second reference to check against.
+     * The one timer still running is the LPTIM or RTC the kernel clock is itself built from, so
+     * comparing with it would be the kernel marking its own paper. Said out loud instead of
+     * quietly asserting a comparison that cannot mean anything. */
+    if ((expected * 2U) < measured)
+    {
+        printf("  [INFO] the cycle counter stops in this port's sleep (%lu cycles over %lu "
+               "windows, against %lu ticks of kernel clock), so it is not a reference here\r\n",
+               (unsigned long)(cycles1 - cycles0), (unsigned long)rounds,
+               (unsigned long)measured);
+        printf("         and nothing else on this part runs through that sleep to be one. The "
+               "coarser check below is what is left.\r\n");
 
-    printf("  [INFO] %lu cycles over %lu windows, %s\r\n",
-           (unsigned long)(cycles1 - cycles0), (unsigned long)rounds,
-           (measured >= expected) ? "clock ran fast or exact" : "clock ran slow");
+        /* What can still be said without a witness: the kernel clock came out of 20 windows
+         * near where 20 windows of that length should put it. A window truncates its own
+         * remainder - the wake source counts faster than the tick, and the leftover under one
+         * whole tick is dropped - so a tick per window is the honest budget on the short side.
+         * Long is different: nothing in a window can ADD time, so more than a couple over is a
+         * clock inventing ticks and is not tolerated. */
+        AHURA_TEST_CHECK((measured <= (requested + 2U)) && ((measured + rounds) >= requested),
+                          "the kernel clock landed within a tick per window of the %lu it asked "
+                          "for (%lu ticks)",
+                          (unsigned long)requested, (unsigned long)measured);
+    }
+    else
+    {
+        /* A quarter of a tick lost per window would land at 5 here, so the budget is jitter
+         * only. */
+        AHURA_TEST_CHECK(drift <= ((rounds / 4U) + 2U),
+                          "and stayed with the free-running counter: %lu ticks measured, %lu "
+                          "expected, drift %lu",
+                          (unsigned long)measured, (unsigned long)expected, (unsigned long)drift);
+
+        printf("  [INFO] %lu cycles over %lu windows, %s\r\n",
+               (unsigned long)(cycles1 - cycles0), (unsigned long)rounds,
+               (measured >= expected) ? "clock ran fast or exact" : "clock ran slow");
+    }
 }
 
 /******************************************************************************************************/

@@ -65,8 +65,15 @@ set(AHURA_SOC_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/../common")
 
 # Only what the sources actually include. pico_stdlib is deliberately not here: it drags in stdio
 # and its transports, which are the application's choice, not the kernel's.
+# Forces soc_cb.c into the link. On a single-core build every symbol the kernel names by hand is
+# compiled out of that file, so nothing pulls it from the archive and all of its callbacks quietly
+# lose to the kernel's weak defaults - measured: the POWMAN wake source vanished and the port fell
+# back to SysTick, with the self-test reporting a 112-tick ceiling instead of a 32-bit one.
+set(AHURA_SOC_LINK_OPTIONS -u soc_rp235x_arm_anchor)
+
 set(AHURA_SOC_LINK_LIBRARIES
 	hardware_clocks
+	hardware_powman
 	hardware_sync
 	hardware_watchdog
 	pico_multicore

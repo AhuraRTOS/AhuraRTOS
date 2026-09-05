@@ -410,14 +410,21 @@
 
 /*
  * ***********************************************************************************************************
- * Tickless idle (experimental scaffold, not functional yet)
+ * Tickless idle
  * ***********************************************************************************************************
  *
  * Instead of waking the CPU OS_CONFIG_TICK_HZ times a second with nothing to do, the idle path
- * reprograms the tick timer for the whole planned sleep. How long one window may last is the
- * PORT's answer, not a setting here: it is a fact about the tick timer's hardware, and
- * os_arch_max_suppressed_ticks_get() reports it. To wake sooner than the hardware would, arm a
- * periodic timer - the kernel already stops the window at the nearest deadline.
+ * suppresses the tick for the whole planned sleep and puts the clock right afterwards from what
+ * actually elapsed.
+ *
+ * How LONG one window may last is the PORT's answer, not a setting here: a fact about the wake
+ * source's hardware, reported by os_arch_max_suppressed_ticks_get(). How SHORT one may be is set
+ * from both ends - the line below is what this application prefers, and
+ * os_arch_min_suppressed_ticks_get() is what the hardware costs to arm and to leave. The larger
+ * wins, so this can raise the floor but not lower it under what the chip needs.
+ *
+ * To wake sooner than the hardware would, arm a periodic timer - the kernel already stops the
+ * window at the nearest deadline.
  * See doc/porting.md "Tickless idle".
 */
 

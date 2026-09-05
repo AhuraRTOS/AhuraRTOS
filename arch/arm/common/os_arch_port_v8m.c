@@ -582,6 +582,71 @@ uint32_t os_arch_cycle_count_get(void)
     return os_arch_dwt_available ? OS_ARCH_REG_DWT_CYCCNT : os_arch_cycle_systick_get();
 }
 
+/*
+ * ***********************************************************************************************************
+ * SoC wake source
+ * ***********************************************************************************************************
+ *
+ * A package may own a timer that keeps running when the core clock does not - an LPTIM, an RTC, an
+ * always-on alarm. When it does, that timer takes the window: it is the only kind that can end one
+ * in a sleep deep enough to gate SysTick, which is the whole reason a package would offer one.
+ *
+ * Weak defaults answer "no source", so a package that offers none is not obliged to say so and the
+ * port keeps suppressing SysTick itself, exactly as before.
+*/
+
+/******************************************************************************************************/
+/**
+ * @brief Weak default: this package has no wake source of its own.
+ *
+ * @return uint32_t  0.
+ */
+OS_WEAK uint32_t os_arch_tick_suppress_max_cb(void)
+{
+    return 0U;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Weak default: this package has nothing to say about how short a window may be.
+ *
+ * @return uint32_t  0.
+ */
+OS_WEAK uint32_t os_arch_tick_suppress_min_cb(void)
+{
+    return 0U;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Weak default: nothing to arm.
+ *
+ * @param[in] ticks  Ignored.
+ * @return None.
+ */
+OS_WEAK void os_arch_tick_suppress_cb(uint32_t ticks)
+{
+    (void)ticks;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Weak default: no window was opened, so none elapsed.
+ *
+ * @return uint32_t  0.
+ */
+OS_WEAK uint32_t os_arch_tick_resume_cb(void)
+{
+    return 0U;
+}
+
+/** Raised for a window the SoC's timer is ending, so the close path knows which of the two
+ *  mechanisms opened it. */
+static bool     os_arch_soc_window = false;
+
+/** SysTick CSR as it stood before a SoC window masked the tick interrupt. */
+static uint32_t os_arch_soc_saved_csr = 0U;
+
 /******************************************************************************************************/
 /**
  * @brief Return elapsed ticks while in low-power mode, restoring SysTick's normal cadence.
@@ -596,11 +661,30 @@ uint32_t os_arch_cycle_count_get(void)
 uint32_t os_arch_elapsed_ticks_get(void)
 {
     uint32_t csr;
+    uint32_t soc_elapsed;
     uint32_t cvr;
     uint32_t elapsed_cycles;
     uint32_t elapsed_ticks = 0U;   /* no window was armed */
 
-    if (os_arch_planned_idle_ticks != 0U)
+    if (os_arch_soc_window)
+    {
+        /* The SoC's timer measured this window, so it is the one that says how long it was. */
+        soc_elapsed = os_arch_tick_resume_cb();
+
+        if (soc_elapsed > os_arch_planned_idle_ticks)
+        {
+            soc_elapsed = os_arch_planned_idle_ticks;
+        }
+
+        OS_ARCH_REG_SYST_CSR = os_arch_soc_saved_csr;
+
+        os_arch_cycle_window_close(soc_elapsed);
+
+        elapsed_ticks              = soc_elapsed;
+        os_arch_planned_idle_ticks = 0U;
+        os_arch_soc_window         = false;
+    }
+    else if (os_arch_planned_idle_ticks != 0U)
     {
     /* Single CSR read: it clears COUNTFLAG as a side effect, so it must be sampled once. */
     csr = OS_ARCH_REG_SYST_CSR;
@@ -711,6 +795,7 @@ static uint64_t os_arch_max_window_ticks_get(void)
  * @param[in] planned_ticks  Planned idle duration in kernel ticks.
  * @return None.
  */
+
 void os_arch_sleep_prepare(uint32_t planned_ticks)
 {
     uint32_t clock_hz;
@@ -719,11 +804,29 @@ void os_arch_sleep_prepare(uint32_t planned_ticks)
     uint64_t suppressed_cycles64;
 
     os_arch_planned_idle_ticks = 0U; /* not armed until proven below */
+    os_arch_soc_window         = false;
 
+    /* A package with a wake source of its own wins, and the SysTick path below is skipped entirely.
+     * Only SysTick's INTERRUPT is masked here - never its reload - because the reload is what the
+     * cycle counter synthesized in os_arch_cycle_systick.c measures its periods against, and moving
+     * it would strand os_delay_us on any part whose DWT is missing. The periods the silenced
+     * interrupt misses are put back when the window closes. */
+    if ((planned_ticks >= 2U) && (os_arch_tick_suppress_max_cb() != 0U))
+    {
+        os_arch_soc_saved_csr = OS_ARCH_REG_SYST_CSR;
+
+        OS_ARCH_REG_SYST_CSR = os_arch_soc_saved_csr & ~OS_ARCH_SYST_CSR_TICKINT_MSK;
+
+        os_arch_cycle_window_open();
+        os_arch_tick_suppress_cb(planned_ticks);
+
+        os_arch_planned_idle_ticks = planned_ticks;
+        os_arch_soc_window         = true;
+    }
     /* Below 2 ticks there is nothing meaningful to suppress (planned_ticks - 1
      * would be 0); os_arch_elapsed_ticks_get() then reports 0 and this idle
      * pass behaves like a plain WFI. */
-    if (planned_ticks >= 2U)
+    else if (planned_ticks >= 2U)
     {
     clock_hz = os_arch_clock_hz_get();
 
@@ -800,9 +903,16 @@ uint32_t os_arch_max_suppressed_ticks_get(void)
      * DWT is independent of SysTick, so with it there is nothing to disturb. Without it, this port
      * reports 0 and tickless degrades to a plain WFI, which is correct rather than merely safe:
      * the alternative is a suppressed window that quietly breaks every microsecond delay. */
-    uint32_t suppressible = 0U;
+    uint32_t suppressible = os_arch_tick_suppress_max_cb();
 
-    if (os_arch_dwt_available)
+    /* A package's own source answers first: it is not bounded by SysTick's 24 bits, and it is the
+     * only one that could survive a deep sleep. Zero means there is none, and the SysTick window
+     * below is what is left. */
+    if (suppressible != 0U)
+    {
+        /* Nothing more to work out. */
+    }
+    else if (os_arch_dwt_available)
     {
         uint64_t max_window_ticks = os_arch_max_window_ticks_get();
 
@@ -810,6 +920,20 @@ uint32_t os_arch_max_suppressed_ticks_get(void)
     }
 
     return suppressible;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Shortest window worth opening on this port (see os_arch_port_common.h for the contract).
+ *
+ * Nothing to add above what the package says: entering and leaving the sleep is a WFI, which costs
+ * the same everywhere and is already well inside the two ticks the kernel insists on regardless.
+ *
+ * @return uint32_t  Floor on one window, in ticks; 0 when the package has no opinion.
+ */
+uint32_t os_arch_min_suppressed_ticks_get(void)
+{
+    return os_arch_tick_suppress_min_cb();
 }
 
 /*

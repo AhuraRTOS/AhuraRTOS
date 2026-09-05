@@ -59,6 +59,11 @@ set(AHURA_SOC_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/../common")
 
 # Only what the sources actually include. pico_stdlib is deliberately not here: it drags in stdio
 # and its transports, which are the application's choice, not the kernel's.
+# Forces soc_cb.c into the link. Every symbol it defines sits behind a #if and has a weak default
+# in the kernel, so a build that turns those options off pulls the object from the archive not at
+# all and loses the whole package to those defaults, silently. See the anchor in soc_cb.c.
+set(AHURA_SOC_LINK_OPTIONS -u soc_rp2040_anchor)
+
 set(AHURA_SOC_LINK_LIBRARIES
 	hardware_clocks
 	hardware_sync

@@ -522,8 +522,10 @@ uint32_t os_tick_get(void);
  * @brief Advance the kernel clock by one tick. Call this, and nothing else, from the tick
  *        interrupt, OS_CONFIG_TICK_HZ times per second.
  *
- * The one kernel call an application must make from an ISR. With the default SYSTICK source the
- * port programs SysTick and the application routes the vector:
+ * The one kernel call the tick interrupt must make, and on a supported SoC the package has
+ * already made it: st/stm32 defines SysTick_Handler and raspberrypi defines isr_systick, each
+ * behind SOC_CONFIG_SYSTICK_VECTOR, so those projects route nothing by hand. What the vector
+ * looks like where a package does not supply one:
  *
  *     void SysTick_Handler(void) { os_tick_handler(); }
  *
@@ -1889,9 +1891,10 @@ void os_arch_soc_idle_cb(void);
  * Tickless idle      - OS_CONFIG_TICKLESS_ENABLE
  * ***********************************************************************************************************
  *
- * Three kernel-provided control functions and two application-provided hooks,
- * all behind the one guard. Calling any of them with tickless idle disabled is
- * a compile error naming the function, not a call that silently does nothing.
+ * Three kernel-provided control functions, two application-provided hooks and
+ * one SoC-provided sleep, all behind the one guard. Calling any of them with
+ * tickless idle disabled is a compile error naming the function, not a call
+ * that silently does nothing.
 */
 
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
@@ -1931,6 +1934,28 @@ void os_tickless_pre_sleep_cb(void);
  *        the sleep. The application must define it; the kernel provides no default.
  */
 void os_tickless_post_sleep_cb(void);
+
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: the sleep instruction itself, inside a suppressed window. Optional; the weak
+ *        default is a plain WFI, which is the right answer wherever the wake source keeps running
+ *        through it.
+ *
+ * Distinct from os_arch_soc_idle_cb() and the difference is the whole point: that one waits with
+ * NOTHING armed, so only the tick can end it and it may never go deeper than the tick survives.
+ * This one is called with the window already open - os_arch_sleep_prepare() has silenced the tick
+ * and the package's own timer is counting the wake out - so it may go as deep as THAT timer
+ * survives. On an STM32 that is the difference between a WFI and Stop mode.
+ *
+ * Called with the kernel's interrupt mask held, between os_tickless_pre_sleep_cb() and the elapsed
+ * measurement. A WFI - and every HAL Stop entry built on one - still leaves on a pending interrupt
+ * while masked, which is exactly how the armed wake ends the window.
+ *
+ * Whatever the mode costs to leave belongs in os_arch_tick_suppress_min_cb(), so the kernel can
+ * refuse a window too short to pay for it. May return spuriously; the idle loop measures what
+ * really elapsed and comes back.
+ */
+void os_arch_soc_sleep_cb(void);
 
 #endif /* OS_CONFIG_TICKLESS_ENABLE */
 

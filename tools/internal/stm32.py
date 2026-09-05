@@ -98,46 +98,6 @@ def put_in_user_code(src: SourceFile, tag: str, payload: str, where: str = "end"
     return True
 
 
-PENDSV_NOTE = """\
-/* CubeMX generated a PendSV_Handler here, and the kernel's port defines
-   PendSV_Handler too - two definitions of one symbol is a link error.
-   Disabled rather than deleted, so nothing of yours is lost: --uninstall
-   restores it exactly as it was.
-
-   This is the one edit outside a USER CODE section, because CubeMX owns this
-   function and gives no section inside it. Regenerating from the .ioc brings
-   the stub back; re-run this installer afterwards and it is disabled again.
-   To stop it being generated at all: Pinout & Configuration -> System Core ->
-   NVIC -> Code generation -> uncheck 'Generate IRQ handler' for 'Pendable
-   request for system service'. */"""
-
-
-def disable_pendsv(src: SourceFile) -> bool:
-    """Wrap a generated PendSV_Handler in #if 0, keeping it recoverable.
-
-    #if 0 rather than /* */ because the function contains USER CODE comments,
-    and C has no nested block comments. The original text is copied in verbatim
-    - not through managed_block(), whose per-line rstrip would quietly drop
-    trailing whitespace and break the byte-exact --uninstall.
-    """
-    span = function_span(src.text, "PendSV_Handler")
-    if span is None:
-        return False
-
-    start, end = span
-    original = src.text[start:end]
-    if not original.endswith("\n"):
-        original += "\n"
-
-    block = ("/* " + BEGIN_TEXT + " */\n"
-             + PENDSV_NOTE + "\n"
-             "#if 0\n" + original + "#endif\n"
-             "/* " + END_TEXT + " */\n")
-
-    src.text = src.text[:start] + block + src.text[end:]
-    return True
-
-
 class Project:
     """Everything the installer needs to know, all of it read from generated
     sources - never from the .ioc."""
@@ -168,10 +128,14 @@ class Project:
              and re.search(r"\bint\s+main\s*\(", p.read_text(errors="replace"))],
             "main.c")
 
+        # Found by HardFault_Handler, not by SysTick_Handler. The tick vector is exactly what a
+        # correctly configured project no longer has here - the package defines it - so looking
+        # for it would fail on every project this installer is now meant to accept. HardFault is
+        # generated into this file on every CubeMX project and claimed by nothing else.
         self.it_c = self._pick(
             [p for p in sources if p.suffix == ".c"
-             and "void SysTick_Handler" in p.read_text(errors="replace")],
-            "the interrupt file defining SysTick_Handler")
+             and "void HardFault_Handler" in p.read_text(errors="replace")],
+            "the interrupt file defining HardFault_Handler")
 
         self.src_dir = self.main_c.parent
         main_h = next((p for p in sources if p.name == "main.h"), None)
@@ -249,19 +213,12 @@ class Project:
         if tick == "external":
             return  # the user drives os_tick_handler() from their own timer
 
-        # The tick. When the HAL timebase is still SysTick, CubeMX emits
-        # HAL_IncTick() into the handler - two time bases on one interrupt drift
-        # against each other, so this is a stop rather than something to patch.
+        # The HAL timebase first, because it is the one case where the fix is NOT the checkbox
+        # below. When the HAL is still on SysTick, CubeMX puts HAL_IncTick() in the handler - two
+        # time bases on one interrupt, drifting against each other - and unchecking the handler
+        # would leave the HAL with no timebase at all. Move the HAL, then come back.
         body = function_body(it_text, "SysTick_Handler")
-        if body is None:
-            raise Fatal("no SysTick_Handler in {} - cannot route the tick"
-                        .format(relative(self.it_c, self.root)))
-        refuse_duplicate_call(
-            body, "os_tick_handler", "SysTick_Handler in {}".format(relative(self.it_c, self.root)),
-            "Delete that line and run this again. The block it writes back does the same job\n"
-            "  and stays up to date on every later run.")
-
-        if re.search(r"\bHAL_IncTick\s*\(", strip_comments(body)):
+        if body is not None and re.search(r"\bHAL_IncTick\s*\(", strip_comments(body)):
             raise Fatal(
                 "SysTick still drives the HAL timebase (HAL_IncTick() is in\n"
                 "  SysTick_Handler), so the kernel cannot have it. Move the HAL onto a\n"
@@ -271,6 +228,33 @@ class Project:
                 "  Regenerate, then run this script again.\n"
                 "  Driving the kernel from your own timer instead? Re-run with\n"
                 "  --tick external and see doc/installation.md step 4.")
+
+        # The two vectors the kernel already defines. CubeMX generating either is a duplicate
+        # symbol, which the linker would report perfectly well - but it would report it as a name,
+        # after a full build, with nothing about which checkbox produced it. Caught here instead,
+        # where there is room to say exactly where to turn it off.
+        for name, row in (("SysTick_Handler", "System tick timer"),
+                          ("PendSV_Handler", "Pendable request for system service")):
+            if function_span(it_text, name) is None:
+                continue
+            raise Fatal(
+                "{file} defines {name}, and so does AhuraRTOS - two definitions of\n"
+                "  one symbol is a link error.\n"
+                "  \n"
+                "  The kernel's port owns PendSV, and the st/stm32 package owns the tick vector\n"
+                "  (soc/st/stm32/soc_cb.c, behind SOC_CONFIG_SYSTICK_VECTOR). So CubeMX has to\n"
+                "  stop generating them:\n"
+                "  \n"
+                "      Pinout & Configuration -> System Core -> NVIC -> Code generation\n"
+                "      -> uncheck 'Generate IRQ handler' for '{row}'\n"
+                "  \n"
+                "  Do it for both rows while you are in there - 'System tick timer' and\n"
+                "  'Pendable request for system service' - then regenerate and run this again.\n"
+                "  \n"
+                "  Nothing of yours is lost: both are CubeMX's own empty stubs. If you do need\n"
+                "  work on the tick, set SOC_CONFIG_SYSTICK_VECTOR to 0 in soc_config.h and\n"
+                "  write SysTick_Handler yourself, calling os_tick_handler() from it."
+                .format(file=relative(self.it_c, self.root), name=name, row=row))
 
 
     def banner(self):
@@ -335,13 +319,6 @@ target_link_libraries({target}
 )"""
 
 
-TICK_PAYLOAD = """\
-/* The kernel's tick, and the only thing the application owes it besides PendSV. HAL_IncTick()
-   is deliberately NOT called here: the HAL runs off its own timer (CubeMX -> SYS -> Timebase
-   Source), so the two time bases never share this interrupt. */
-os_tick_handler();"""
-
-
 BOOT_PAYLOAD = """\
 /* Both calls come after the clock tree and the peripherals are configured: os_init() programs
    the tick from the live SystemCoreClock, so a still-default clock would give the wrong tick
@@ -352,20 +329,13 @@ os_init();
 os_start();"""
 
 
-def verify_placement(it: SourceFile, mc: SourceFile, tick: str):
+def verify_placement(it: SourceFile, mc: SourceFile):
     """Prove the calls ended up where they have to be, before anything is written.
 
     Cheap insurance against a project laid out in some way not seen before: a
     USER CODE section that turns up somewhere unexpected would otherwise put
     os_init() outside main() and produce a board that does nothing.
     """
-    if tick == "systick":
-        body = function_body(it.text, "SysTick_Handler")
-        if body is None or "os_tick_handler" not in strip_comments(body):
-            raise Fatal("os_tick_handler() did not land inside SysTick_Handler in {} - "
-                        "refusing to write a build that would never tick"
-                        .format(it.path.name))
-
     body = function_body(mc.text, "main")
     if body is None:
         raise Fatal("could not find main() in {}".format(mc.path.name))
@@ -438,22 +408,20 @@ def plan(project, repo_dir: Path, args, copy_tree: bool):
     it = SourceFile(project.it_c)
     drop_managed(it)
     put_in_user_code(it, "Includes", '#include "ahura.h"')
-    if tick == "systick":
-        put_in_user_code(it, "SysTick_IRQn 0", TICK_PAYLOAD)
-    else:
+    # Nothing to write for the tick: the st/stm32 package defines SysTick_Handler itself, the
+    # same way the port defines PendSV_Handler. Project.check() has already refused a CubeMX
+    # stub for either, so by here both vectors are the kernel's and this file needs only the
+    # include above.
+    if tick == "external":
         notes.append("--tick external: wire os_tick_handler() to your own timer yourself, "
                      "and set OS_CONFIG_TICK_SOURCE_EXTERNAL in os_config.h")
-    if disable_pendsv(it):
-        notes.append("{} has a CubeMX-generated PendSV_Handler - it will be wrapped in "
-                     "#if 0 (the kernel's port defines that symbol)"
-                     .format(relative(project.it_c, project.root)))
 
     mc = SourceFile(project.main_c)
     drop_managed(mc)
     put_in_user_code(mc, "Includes", '#include "ahura.h"')
     put_in_user_code(mc, "WHILE", BOOT_PAYLOAD, where="start")
 
-    verify_placement(it, mc, tick)
+    verify_placement(it, mc)
 
     for src in (it, mc):
         if src.changed:

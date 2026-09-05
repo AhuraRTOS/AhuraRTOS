@@ -92,4 +92,31 @@
  */
 #define SOC_CONFIG_FAULT_REPORT             1U
 
+/*
+ * ***********************************************************************************************************
+ * Tickless wake source (OS_CONFIG_TICKLESS_ENABLE only)
+ * ***********************************************************************************************************
+ *
+ * There is nothing to pick: what ends a suppressed window follows from how deep the core sleeps,
+ * which is SOC_CONFIG_SLEEP_MODE below.
+ *
+ *   LIGHT   the clocks keep running, so the window is ended by
+ *           SysTick, the tick the kernel already owns, suppressed by the port - nothing to
+ *           configure and no peripheral spent.
+ *   DEEP    the clocks are gated and everything derived from them stops, so it would take
+ *           the always-on POWMAN alarm - which this package does not
+ *           implement yet, and says so rather than sleeping shallowly and reporting nothing.
+ *
+ * It used to be five flags plus the mode, with an arithmetic rule saying exactly one flag had to
+ * be 1, another naming the sources this part does not physically have, and a third refusing deep
+ * sleep against a source that stops with the clocks. None of those states can be expressed any
+ * more, so none of those rules exists.
+*/
+
+/* How deep the core sleeps inside a window.
+ *   OS_CONFIG_SLEEP_MODE_LIGHT   core stops, clocks keep running. Works with every source.
+ *   OS_CONFIG_SLEEP_MODE_DEEP    clocks gated. Needs an always-on alarm to end the window.
+ * Values: one of the two above. */
+#define SOC_CONFIG_SLEEP_MODE               OS_CONFIG_SLEEP_MODE_LIGHT
+
 #endif /* SOC_CONFIG_H */

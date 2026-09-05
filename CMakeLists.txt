@@ -233,6 +233,15 @@ if(NOT AHURA_SOC STREQUAL "")
 
 	# PUBLIC for the same reason as OS_CONFIG_DIR below: a vendor SDK target carries include paths
 	# and defines that the kernel and the application must agree on.
+	# Some SoC packages have no symbol the kernel references by name - every entry point they have
+	# is a callback with a weak default in the kernel itself. The linker then never extracts the
+	# package object from the archive at all, and every one of those callbacks silently falls back
+	# to the weak default: no SoC init, no wake source, no diagnostics, and nothing reported. A
+	# package that can be in that position names a symbol here and the -u forces the extraction.
+	if(DEFINED AHURA_SOC_LINK_OPTIONS)
+		target_link_options(ahura_kernel PUBLIC ${AHURA_SOC_LINK_OPTIONS})
+	endif()
+
 	if(DEFINED AHURA_SOC_LINK_LIBRARIES)
 		target_link_libraries(ahura_kernel PUBLIC ${AHURA_SOC_LINK_LIBRARIES})
 	endif()
