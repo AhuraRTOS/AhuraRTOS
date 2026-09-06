@@ -216,6 +216,7 @@ add_library(ahura_kernel STATIC
 	kernel/os_queue.c
 	kernel/os_sem.c
 	kernel/os_task.c
+	kernel/os_task_mutex.c
 	kernel/os_tick.c
 	kernel/os_timer.c
 )

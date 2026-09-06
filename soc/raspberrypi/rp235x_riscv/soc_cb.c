@@ -2,40 +2,17 @@
  * @file soc_cb.c
  * @brief SoC-owned callbacks for the RP2350 / RP2354 running their Hazard3 RISC-V cores.
  *
- * The RISC-V sibling of ../rp235x_arm. Same silicon, different core, and almost everything the
- * kernel asks of a chip is answered differently here - which is why this is a separate package
- * rather than an #if inside that one. See doc/soc.md.
+ * The RISC-V sibling of ../rp235x_arm: same silicon, different core, almost every answer
+ * different - which is why it is a separate package rather than an #if inside that one.
  *
- * WHAT REPLACES PENDSV
+ * PendSV's replacement is SIO_RISCV_SOFTIRQ, which drives mip.MSIP and carries a set and a clear
+ * bit PER CORE. So "reschedule me" and "reschedule the other core" are the same write with a
+ * different bit, and both callbacks are one line. The datasheet settles the race too: set beats
+ * clear on the same cycle, so a request arriving while the handler acknowledges is never lost.
  *
- * SIO_RISCV_SOFTIRQ, at SIO offset 0x1a0. It drives mip.MSIP - the machine software interrupt,
- * trap cause 3 - and the RP2350 gives it one set bit and one clear bit PER CORE:
- *
- *     bit 0  CORE0_SET     bit 8  CORE0_CLR
- *     bit 1  CORE1_SET     bit 9  CORE1_CLR
- *
- * That per-core addressing is why this one register answers two of the kernel's questions at once.
- * Asking THIS core to reschedule and asking the OTHER core to reschedule are the same write with a
- * different bit, so os_arch_swi_request_cb() and os_arch_core_ipi_request_cb() are one line each.
- * The Arm package needs two separate mechanisms for the same job: PendSV for itself, a doorbell for
- * its sibling.
- *
- * The datasheet also settles the race for us: "It is safe for both cores to write to this register
- * on the same cycle. The set/clear effect is accumulated across both cores, and then applied. If a
- * flag is both set and cleared on the same cycle, only the set takes effect." Set winning over
- * clear is exactly the safe direction - a request that arrives while the handler is acknowledging
- * survives, so no wakeup is lost.
- *
- * WHY THE TICK IS AN EXTERNAL IRQ
- *
- * mtime/mtimecmp can reach the core two ways: straight in on mip.MTIP (trap cause 7), or as
- * SIO_IRQ_MTIMECMP, ordinary system IRQ 29. This package takes IRQ 29, for two reasons.
- *
- * The SDK recommends it - crt0_riscv.S says of MTIP that "this may be a better option, because it
- * plays nicely with interrupt preemption". And it is what makes os_arch_in_isr() correct: that
- * function reads Hazard3's meicontext, which accounts for external IRQs and knows nothing about
- * MTIP. A tick on cause 7 would run with the kernel believing it was in task context. See the "Trap
- * context" section of the RISC-V port header.
+ * The tick comes in as external IRQ 29, not mip.MTIP, and that is not a preference: os_arch_in_isr()
+ * reads Hazard3's meicontext, which knows about external IRQs and nothing about MTIP. A tick on
+ * cause 7 would run with the kernel believing it was in task context.
  *
  * @copyright (c) 2026 Ahura Project Contributors
  *            SPDX-License-Identifier: GPL-3.0-or-later

@@ -35,19 +35,10 @@
  * Ordering
  * ***********************************************************************************************************
  *
- * Atomicity and ORDER are two different guarantees, and this file used to give only the first.
- *
- * Every operation below is indivisible - the LDREX/STREX pair in os_arch_atomic.c sees to that,
- * and the self-test proves it across cores: 80000 of 80000 increments survive two cores
- * contending. What was missing is the other half. The asm carries a "memory" clobber, which is a
- * COMPILER barrier: it stops the compiler moving accesses across the operation. It says nothing
- * to the hardware, and on a multi-core part the hardware is free to make the other core see
- * these accesses in a different order from the one written.
- *
- * That does not bother the kernel, which never uses these to publish data - its own cross-core
- * ordering comes from the spinlock, and that has always carried a full DSB on both edges. It
- * bothers an APPLICATION, which is what this layer is for, and in the most natural way anyone
- * would use it:
+ * Atomicity and ORDER are different guarantees, and this file used to give only the first. The
+ * asm's "memory" clobber is a COMPILER barrier; the hardware stays free to let another core see
+ * these accesses out of order. That never bothered the kernel - its cross-core ordering comes from
+ * the spinlock - but it breaks the most natural application use there is:
  *
  *     shared.payload = value;              on core 0
  *     os_atomic_set(&ready, 1);
@@ -57,16 +48,8 @@
  *         use(shared.payload);             <- may be the OLD payload
  *     }
  *
- * The flag is set atomically and the payload write is not reordered by the compiler, and the
- * reader can still see the flag before the payload. That is the classic publish/consume bug, and
- * "the atomics are atomic" is exactly the reasoning that walks into it.
- *
- * So each operation is now bracketed by a barrier: release before it, acquire after. A DMB
- * rather than the spinlock's DSB, because the requirement here is order and not completion.
- *
- * Single-core builds pay nothing: with one observer there is no order for anyone to disagree
- * about, and both macros compile away. That matters - the measured cost of os_atomic_add on an
- * RP2350 is 25 cycles against 15 for the raw arch call, and this layer is thin on purpose.
+ * So every operation is bracketed by a DMB - order, not completion, so not the spinlock's DSB.
+ * Single-core builds pay nothing: both macros compile away, which matters in a layer this thin.
  */
 #if (OS_CONFIG_CORE_COUNT > 1U)
 #define OS_ATOMIC_ORDER_BEFORE()   OS_ARCH_DMB()

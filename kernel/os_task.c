@@ -60,26 +60,7 @@
  * features cost nothing together. */
 #define OS_TASK_STACK_CANARY         0xA5A5A5A5UL
 
-/* TCB back-references from the embedded intrusive list nodes. */
-#define OS_TASK_TCB_FROM_NODE(node)      ((os_task_tcb_t *)(void *)((uint8_t *)(node) - offsetof(os_task_tcb_t, state_node)))
-#define OS_TASK_TCB_FROM_WAIT_NODE(node) ((os_task_tcb_t *)(void *)((uint8_t *)(node) - offsetof(os_task_tcb_t, wait_node)))
-
-/* A TCB's name, or NULL in a build that does not carry them (OS_CONFIG_TASK_NAME_ENABLE).
- *
- * Every reader of a name here is a diagnostic - the stack-overflow callback, the deadlock report,
- * os_task_name_get - and each one already has to cope with an unnamed task, because a handle can
- * be unresolvable. So the option needs no second code path anywhere: it makes "no name" the answer
- * for every task instead of for some of them. Not NULL-safe on purpose; the callers below check
- * their pointer where one can be NULL, exactly as they did before. */
-#if (OS_CONFIG_TASK_NAME_ENABLE == 1U)
-#define OS_TASK_NAME_OF(tcb)             ((tcb)->name)
-#else
-#define OS_TASK_NAME_OF(tcb)             ((const char *)NULL)
-#endif
-#if (OS_CONFIG_MUTEX_ENABLE == 1U)
-/* Mutex back-reference from its embedded owner_node (priority inheritance). */
-#define OS_MUTEX_FROM_OWNER_NODE(node)   ((const os_mutex_t *)(const void *)((const uint8_t *)(node) - offsetof(os_mutex_t, owner_node)))
-#endif
+#include "os_task_internal.h"
 
 /* OS_TASK_DEADLOCK_MAX_DEPTH (os_internal.h) bounds how far a wait chain is followed: a cycle
  * that already formed among other tasks would otherwise be walked forever. Eight is far past any
@@ -99,69 +80,6 @@ OS_STATIC_ASSERT((OS_CONFIG_MIN_STACK_SIZE >= 128U) && ((OS_CONFIG_MIN_STACK_SIZ
  * ***********************************************************************************************************
 */
 
-typedef struct
-{
-#if (OS_CONFIG_TASK_NAME_ENABLE == 1U)
-    const char      *name;         /* not read by the kernel: kept for debugger/trace visibility */
-#endif
-    uint8_t         *stack_base;
-    uint32_t        *stack_ptr;
-    size_t          stack_bytes;
-    uint32_t        priority;
-    uint32_t        id;
-    uint32_t        delay_ticks;
-    uint32_t        core_affinity; /* bitmask of cores the task may run on, 0 = any */
-    os_task_state_t state;
-    uint32_t        running_core;  /* which core dispatched this task and has not
-                                     * yet saved its context; OS_CONFIG_CORE_COUNT
-                                     * when the context is safely saved/not running */
-    os_list_node_t  state_node;    /* links into one ready list or the delay list  */
-    os_list_node_t  wait_node;     /* links into one object's waiter list          */
-    os_list_t       *wait_list;    /* joined waiter list, NULL when waiting on none */
-    bool            wait_signaled; /* wakeup reason: object signal vs timeout      */
-    /* Kernel service task (timer/log): not the application's to pause or delete. Placed
-     * against the bool above so both share one alignment hole - it costs no RAM at all. */
-    bool            system_task;
-    uint32_t        wait_data[2];  /* per-wait condition data read by match wakers */
-    uint32_t        wait_result;   /* delivery stored by a match waker, else 0     */
-    os_list_t       *woken_from;   /* waiter list a pending wake came from, until consumed */
-#if (OS_CONFIG_MUTEX_ENABLE == 1U)
-    uint32_t        base_priority; /* configured priority, restored once no held mutex needs a boost */
-    os_list_t       owned_mutexes; /* mutexes currently locked by this task (priority inheritance) */
-    /* Owner of the mutex this task is queued on, 0 when it is queued on none. The boost handed to
-     * that owner by os_task_mutex_priority_inherit has to come back off when this task leaves the
-     * queue by ANY route - timeout, pause or delete - and not only when the owner finally unlocks.
-     * Recorded as an id rather than a pointer for the same reason os_mutex_unlock captures one: the
-     * owner may be gone by the time it is read, and an id resolves to NULL where a pointer would
-     * dangle. */
-    uint32_t        pi_owner_id;
-
-    /* Mutex this task is blocked on, NULL otherwise: the forward edge "this owner is itself waiting
-     * for...". TWO walks follow it, and they want different subsets of it:
-     *
-     *   priority inheritance   every blocked waiter, timed or not. A task that will give up in
-     *                          200 ms still blocks the owner for those 200 ms, and the inversion it
-     *                          causes meanwhile is just as real.
-     *   deadlock detection     infinite waiters only, which is what blocked_forever below says. A
-     *                          timed waiter breaks any cycle it is part of by timing out, so
-     *                          reporting it as a deadlock would be a false alarm.
-     *
-     * The edge used to be published only for the infinite case, because the deadlock walk was its
-     * only reader and it lived in debug builds alone. Priority inheritance needs it in every build
-     * and for every waiter, so it is unconditional now and the narrower question moved into its own
-     * flag. */
-    const os_mutex_t *blocked_on_mutex;
-
-    /* Whether the wait recorded above is an OS_WAIT_FOREVER one. Placed against the other bools so
-     * it shares their alignment hole and costs no RAM. */
-    bool            blocked_forever;
-#endif
-#if (OS_CONFIG_NOTIFY_ENABLE == 1U)
-    /* One-word mailbox owned by os_notify.c; stored here because it belongs to the task. */
-    os_notify_slot_t notify;
-#endif
-
-} os_task_tcb_t;
 
 /*
  * ***********************************************************************************************************
@@ -199,7 +117,7 @@ static uint32_t                os_task_next_generation[OS_TASK_TABLE_SIZE];
 /* Written by PendSV and read from task/ISR context: the pointer itself is the
  * shared object (it changes on every context switch), not what it points to -
  * __IO placed after the '*' qualifies the pointer, not the pointed-to TCB. */
-static os_task_tcb_t* __IO     os_task_current[OS_CONFIG_CORE_COUNT];
+os_task_tcb_t* __IO            os_task_current[OS_CONFIG_CORE_COUNT];
 
 /* Scheduler structures: one FIFO ready list per priority plus a bitmap of
  * non-empty priorities (bit n = priority n has ready tasks), and one list of
@@ -242,7 +160,6 @@ static void           os_task_stack_guard_check(const os_task_tcb_t *tcb, const 
 #endif
 static void           os_task_idle_entry(void *context);
 static void           os_task_tcb_clear(os_task_tcb_t *tcb);
-static os_task_tcb_t* os_task_find_by_id(uint32_t id);
 static os_task_tcb_t* os_task_self_tcb(void);
 static void           os_task_delay_insert(os_task_tcb_t *tcb, uint32_t ticks);
 static void           os_task_delay_remove(os_task_tcb_t *tcb);
@@ -256,11 +173,6 @@ static void           os_task_wake_compensate(os_task_tcb_t *tcb);
 static os_err_t       os_task_delete_resolve(os_task_t *task, uint32_t core,
                                              os_task_tcb_t **tcb_out, bool *is_self_out);
 static void           os_task_wake_locked(os_task_tcb_t *tcb);
-static void           os_task_effective_priority_set(os_task_tcb_t *tcb, uint32_t new_priority);
-#if (OS_CONFIG_MUTEX_ENABLE == 1U)
-static void           os_task_mutex_effective_recompute(os_task_tcb_t *owner);
-static void           os_task_mutex_waiter_depart_tcb(os_task_tcb_t *tcb);
-#endif
 
 /*
  * ***********************************************************************************************************
@@ -1553,333 +1465,6 @@ uint32_t os_task_current_id_get(void)
     return (tcb == NULL) ? 0U : tcb->id;
 }
 
-#if (OS_CONFIG_MUTEX_ENABLE == 1U)
-/******************************************************************************************************/
-/**
- * @brief Link a just-acquired mutex into the calling task's owned-mutex list.
- *
- * Only an identifiable task gets an entry. A mutex stores nothing but its owner's id, so an owner
- * that cannot be found by id at unlock time could never have its entry removed either. Id 0 - the
- * idle task, or code before the scheduler starts - is already outside priority inheritance and
- * simply holds the mutex without a list entry.
- *
- * @param[in,out] owner_node  The mutex's own owner_node link.
- * @return None.
- */
-void os_task_mutex_owner_link(os_list_node_t *owner_node)
-{
-    os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
-
-    if ((current != NULL) && (current->id != 0U))
-    {
-        os_list_push_back(&current->owned_mutexes, owner_node);
-    }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Recompute a task's inherited priority and then everyone it is transitively waiting behind.
- *
- * A boost is only worth what it lets the boosted task DO, and a blocked task can do nothing with
- * one - so raising the immediate owner and stopping there leaves a three-deep inversion untouched.
- * The walk follows blocked_on_mutex until it reaches a task that is actually runnable.
- *
- * Each step is the same max() every other path uses, which makes it correct in BOTH directions: a
- * boost arriving raises each link, a boost released lowers it by the same rule, and nothing here
- * knows which is happening.
- *
- * OS_TASK_DEADLOCK_MAX_DEPTH is load-bearing, not decorative: a cycle among already-deadlocked
- * tasks would otherwise be walked forever inside a critical section. See doc/api.md, "Mutexes and
- * priority inheritance".
- *
- * Caller holds a critical section.
- *
- * @param[in,out] task  Where to start; NULL is a no-op.
- * @return None.
- */
-static void os_task_mutex_chain_recompute(os_task_tcb_t *task)
-{
-    uint32_t depth = 0U;
-
-    while ((task != NULL) && (depth < OS_TASK_DEADLOCK_MAX_DEPTH))
-    {
-        const os_mutex_t *waiting_on;
-
-        os_task_mutex_effective_recompute(task);
-
-        /* Runnable, or waiting on something that is not a mutex: the chain ends here. */
-        waiting_on = task->blocked_on_mutex;
-        if (waiting_on == NULL)
-        {
-            break;
-        }
-
-        /* One link further out. An owner that cannot be resolved - it was deleted while holding the
-         * mutex - ends the walk, exactly as it ends the deadlock walk, and for the same reason:
-         * there is nobody left to boost. */
-        task = os_task_find_by_id(waiting_on->owner_id);
-        depth++;
-    }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Boost owner_task_id's effective priority to the calling (waiting) task's, and carry that
- *        along the chain of owners the boost has to reach to be worth anything.
- *
- * @param[in] owner_task_id  Id of the mutex's current owner.
- * @return None.
- */
-void os_task_mutex_priority_inherit(uint32_t owner_task_id)
-{
-    os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
-    os_task_tcb_t *owner    = os_task_find_by_id(owner_task_id);
-
-    if ((current != NULL) && (owner != NULL))
-    {
-        /* Record whose boost this is BEFORE deciding whether to apply one, and record it even when
-         * no boost is applied here. The owner's effective priority can be raised by a LATER, higher
-         * waiter on the same mutex, and that boost still has to be recomputed when THIS task
-         * departs - the recompute is a max() over everyone still queued, so every departure has to
-         * trigger it, not only the departures that raised it. */
-        current->pi_owner_id = owner_task_id;
-
-        if (current->priority > owner->priority)
-        {
-            /* The immediate owner is raised directly rather than recomputed, because the caller is
-             * not in the mutex's waiter list yet - os_task_wait_begin runs after this - so a max()
-             * over that list would not see the very waiter asking for the boost. */
-            os_task_effective_priority_set(owner, current->priority);
-
-            /* From the next link outward every waiter IS queued, so the ordinary recompute is both
-             * correct and the same rule the release paths use. */
-            if (owner->blocked_on_mutex != NULL)
-            {
-                os_task_mutex_chain_recompute(os_task_find_by_id(owner->blocked_on_mutex->owner_id));
-            }
-        }
-    }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Recompute owner's effective priority as max(base_priority, highest waiter still queued on
- *        any mutex it still holds). Caller must hold a critical section.
- *
- * The single definition of what a task's inherited priority IS, so that every event which can change
- * the answer - an unlock, a waiter timing out, a waiter being paused or deleted - arrives at it the
- * same way instead of each path carrying its own idea.
- *
- * @param[in,out] owner  Task whose effective priority is recomputed.
- * @return None.
- */
-static void os_task_mutex_effective_recompute(os_task_tcb_t *owner)
-{
-    os_list_node_t *node;
-    uint32_t        new_priority = owner->base_priority;
-
-    for (node = owner->owned_mutexes.head; node != NULL; node = node->next)
-    {
-        const os_mutex_t *held       = OS_MUTEX_FROM_OWNER_NODE(node);
-        os_list_node_t   *top_waiter = held->waiters.head;
-
-        if (top_waiter != NULL)
-        {
-            uint32_t waiter_priority = OS_TASK_TCB_FROM_WAIT_NODE(top_waiter)->priority;
-
-            if (waiter_priority > new_priority)
-            {
-                new_priority = waiter_priority;
-            }
-        }
-    }
-
-    os_task_effective_priority_set(owner, new_priority);
-}
-
-/******************************************************************************************************/
-/**
- * @brief Release the priority boost tcb handed a mutex owner, now that it has left the waiter queue.
- *
- * Call AFTER the task has been unlinked from the waiter list: the recompute is a max() over the
- * tasks still queued, so running it while this one is still linked would just re-derive the boost
- * being dropped. Caller must hold a critical section.
- *
- * @param[in,out] tcb  Departing waiter.
- * @return None.
- */
-static void os_task_mutex_waiter_depart_tcb(os_task_tcb_t *tcb)
-{
-    uint32_t owner_id = tcb->pi_owner_id;
-
-    if (owner_id != 0U)
-    {
-        /* Cleared first: this task owes the owner nothing from here on, and clearing before the
-         * lookup means an owner that has since been deleted still ends the debt. */
-        tcb->pi_owner_id = 0U;
-
-        /* Chain, not a single step: this task may have been the reason a whole line of owners was
-         * lifted, and dropping only the first of them leaves the rest boosted for nothing - which
-         * inverts the priorities the other way and is just as wrong. */
-        os_task_mutex_chain_recompute(os_task_find_by_id(owner_id));
-    }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Release the boost the CALLING task handed a mutex owner (os_mutex.c, on every path that
- *        leaves the wait without acquiring). Caller must hold a critical section.
- *
- * @return None.
- */
-void os_task_mutex_waiter_depart(void)
-{
-    os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
-
-    if (current != NULL)
-    {
-        os_task_mutex_waiter_depart_tcb(current);
-    }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Unlink a released mutex from its owner's list and recompute the owner's effective
- *        priority as max(base_priority, highest waiter still queued on any mutex it still holds).
- *        Correct even when the task holds several mutexes at once.
- *
- * The owner comes from the id passed in, never from the running task: os_mutex_unlock reaches here
- * for a non-owner too, and working on the caller would splice this node out of the REAL owner's
- * list while updating the CALLER's head and tail. An unresolvable owner has nothing to undo.
- *
- * @param[in]     owner_id    Id the mutex recorded for its owner, captured before unlock cleared it.
- * @param[in,out] owner_node  The mutex's own owner_node link, already unlocked by the caller.
- * @return None.
- */
-void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node_t *owner_node)
-{
-    os_task_tcb_t *owner = os_task_find_by_id(owner_id);
-
-    /* An owner that has already gone owns nothing left to unlink. */
-    if (owner != NULL)
-    {
-        os_list_remove(&owner->owned_mutexes, owner_node);
-
-        /* Chain, for the same reason as in os_task_mutex_waiter_depart_tcb: releasing a mutex can
-         * lower this owner, and anyone waiting behind IT was only boosted on its account. */
-        os_task_mutex_chain_recompute(owner);
-    }
-}
-/******************************************************************************************************/
-/**
- * @brief Record the mutex the calling task is about to block on, and whether that wait ever ends.
- *        Cleared by os_task_wait_end().
- *
- * In every build, not only a debug one: this edge is what os_task_mutex_chain_recompute follows to
- * find the task a boost actually has to reach.
- *
- * @param[in] mutex    Mutex about to be waited on, NULL to clear.
- * @param[in] forever  True for an OS_WAIT_FOREVER wait - the narrower case the deadlock walk wants.
- * @return None.
- */
-void os_task_mutex_blocked_on_set(const os_mutex_t *mutex, bool forever)
-{
-    os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
-
-    if (current != NULL)
-    {
-        current->blocked_on_mutex = mutex;
-        current->blocked_forever  = forever;
-    }
-}
-
-#endif /* OS_CONFIG_MUTEX_ENABLE */
-
-#if (OS_MUTEX_DEADLOCK_CHECK == 1)
-
-/* Post-mortem record for the debugger; see os_internal.h for why an assertion cannot carry this
- * itself. Zero-initialised, so requested == NULL means nothing has been detected. */
-os_task_deadlock_report_t os_task_deadlock_report;
-
-/******************************************************************************************************/
-/**
- * @brief Report whether blocking the calling task on this mutex would close a wait cycle.
- *
- * A deadlock IS a cycle in "task waits for a mutex the next task holds": each member waits for the
- * next, so none of them can ever run again to release anything. This walks that chain forward from
- * the mutex the caller is about to wait on - who owns it, and what is that owner itself blocked on
- * - and stops at whichever comes first:
- *
- *   the caller           the chain came back to us, so waiting here would close the cycle
- *   an owner at rest     running, ready, or waiting on something that is not a mutex: no cycle
- *   an unresolved owner  id 0 or a deleted task, nothing left to follow
- *   the depth cap        see below
- *
- * Deliberately conservative. The cap exists because a cycle that already formed among OTHER tasks
- * would otherwise be walked forever, and reaching it reports NOTHING: a legitimately deep chain
- * must never be accused of a deadlock it does not have. A detector that cries wolf gets disabled,
- * which costs more than the cases it would have caught.
- *
- * Detection only - it cannot recover. Nothing the scheduler does can break a cycle, and priority
- * inheritance in particular does not: inheritance fixes how SOON a waiting task runs, while this
- * is about the ORDER two tasks took two locks in. So the answer is an assertion raised the instant
- * the cycle WOULD form, while the offending task is still running and its call stack still names
- * the code that took the locks in that order. The alternative is finding out later, from a board
- * on which several tasks are blocked forever and nothing records how they got there.
- *
- * @param[in] mutex  Mutex the caller is about to block on.
- * @return bool  true when blocking on it would complete a cycle.
- */
-bool os_task_mutex_deadlock_check(const os_mutex_t *mutex)
-{
-    const os_task_tcb_t *current     = os_task_current[os_arch_core_id_get()];
-    const os_task_tcb_t *first_owner = NULL;
-    const os_mutex_t    *link        = mutex;
-    bool                 cycle       = false;
-    uint32_t             depth;
-
-    for (depth = 0U; (depth < OS_TASK_DEADLOCK_MAX_DEPTH) && (link != NULL) && (current != NULL); depth++)
-    {
-        const os_task_tcb_t *owner = os_task_find_by_id(link->owner_id);
-
-        /* Recorded as the walk goes, so a cycle report already holds the whole chain. Harmless
-         * when no cycle is found: the fields below are what mark the report valid. */
-        os_task_deadlock_report.cycle[depth] = link;
-
-        if (depth == 0U)
-        {
-            first_owner = owner;
-        }
-
-        if (owner == NULL)
-        {
-            break;
-        }
-
-        if (owner == current)
-        {
-            os_task_deadlock_report.requested    = mutex;
-            os_task_deadlock_report.waiter_name  = OS_TASK_NAME_OF(current);
-            os_task_deadlock_report.waiter_id    = current->id;
-            os_task_deadlock_report.owner_name   = (first_owner != NULL) ? OS_TASK_NAME_OF(first_owner) : NULL;
-            os_task_deadlock_report.owner_id     = mutex->owner_id;
-            os_task_deadlock_report.cycle_length = depth + 1U;
-
-            cycle = true;
-            break;
-        }
-
-        /* Only an UNBOUNDED wait continues the walk. A task that will time out gives up and
-         * breaks the chain, so it cannot be part of a real deadlock - and the edge itself is no
-         * longer the place to encode that, now that priority inheritance follows the same edge for
-         * every waiter. blocked_forever is what draws the line. */
-        link = owner->blocked_forever ? owner->blocked_on_mutex : NULL;
-    }
-
-    return cycle;
-}
-#endif /* OS_MUTEX_DEADLOCK_CHECK */
-
 /******************************************************************************************************/
 /**
  * @brief Check whether the calling core's idle task is currently running (ISR-safe).
@@ -2776,7 +2361,7 @@ static os_task_tcb_t* os_task_self_tcb(void)
 }
 
 /******************************************************************************************************/
-static os_task_tcb_t* os_task_find_by_id(uint32_t id)
+os_task_tcb_t* os_task_find_by_id(uint32_t id)
 {
     os_task_tcb_t *found = NULL;
 
@@ -3094,7 +2679,7 @@ static uint32_t os_task_running_core(const os_task_tcb_t *tcb)
  * @param[in]     new_priority  New effective priority.
  * @return None.
  */
-static void os_task_effective_priority_set(os_task_tcb_t *tcb, uint32_t new_priority)
+void os_task_effective_priority_set(os_task_tcb_t *tcb, uint32_t new_priority)
 {
     /* Four mutually exclusive cases over the task's state, so one chain rather than four
      * blocks that each returned for themselves. Order is unchanged. */
