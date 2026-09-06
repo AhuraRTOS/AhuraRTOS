@@ -116,7 +116,17 @@ def print_error(message: str):
     print("\n" + (RED + message + RESET if colour_supported() else message), file=sys.stderr)
 
 
+def warn(message: str) -> None:
+    """Write `message` to stderr as something the run worked around, in yellow where that shows.
+
+    Yellow rather than red because the run continues: the installer has fixed the thing itself and
+    is saying what it did. A user who reads nothing else should still see that their .ioc changed.
+    """
+    print("\n" + (YELLOW + message + RESET if colour_supported() else message), file=sys.stderr)
+
+
 RED = "\033[31m"
+YELLOW = "\033[33m"
 RESET = "\033[0m"
 
 

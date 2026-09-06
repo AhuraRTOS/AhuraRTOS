@@ -65,27 +65,28 @@ It prints the exact diff it wants to apply and waits for a `y` before touching
 anything. Python 3.8+ and nothing else - no `pip install`, and the script runs
 straight out of the pipe, so no installer file is left behind in your project.
 
-> ### First, three settings in CubeMX
+> ### One setting in CubeMX, and two the installer makes for you
 >
-> The installer writes code. It does **not** edit the `.ioc`, because that file is
-> CubeMX's and only CubeMX rewrites it safely. So these are yours to make first,
-> and they are the difference between an install that survives *Generate Code* and
-> one that does not:
+> | Where | Setting | Who |
+> |---|---|---|
+> | **System Core → SYS → Timebase Source** | anything but SysTick - a spare `TIM` | **you**, before running it |
+> | **NVIC → Code generation** | **Pendable request for system service** - clear *Generate IRQ handler* | the installer |
+> | **NVIC → Code generation** | **System tick timer** - clear *Generate IRQ handler* | the installer |
 >
-> | Where | Setting |
-> |---|---|
-> | **System Core → NVIC → Code generation** | **Pendable request for system service** - clear *Generate IRQ handler*. The kernel owns `PendSV_Handler`. |
-> | **System Core → NVIC → Code generation** | **System tick timer** - clear *Generate IRQ handler*. The SoC package owns `SysTick_Handler`. |
-> | **System Core → SYS → Timebase Source** | Anything but SysTick - a spare `TIM`. `HAL_Delay()` must not ride the vector the kernel drives. |
+> The time base is yours because the fix is not a checkbox: `HAL_Delay()` needs
+> *some* timer, and clearing the box without moving it first would leave the HAL
+> with none. The installer stops and says so.
 >
-> A fourth only if you will run the [self-test](self-test.md): clear **System
-> service call via SWI instruction**, or keep it and set
-> `OS_CONFIG_TEST_SVC_VECTOR` to `0`.
+> The other two it does itself, in the `.ioc` as well as in the code, so the next
+> *Generate Code* agrees instead of putting the handler back. It does that only
+> when it can prove three things: the generated stub is empty, there is exactly one
+> `.ioc`, and that file's NVIC layout matches what the generated file shows. **If
+> your `USER CODE` block inside one of those handlers holds anything at all, it
+> touches nothing** and asks you to do it - your code is never deleted to make room.
 >
-> Skip the third and the installer stops and tells you (step 3 below). Skip the
-> first and it wraps the generated `PendSV_Handler` in `#if 0` to get you
-> building - but that is a patch on generated code, and the next *Generate Code*
-> undoes it. **The checkbox is the durable fix; the `#if 0` is a courtesy.**
+> A fourth setting only if you will run the [self-test](self-test.md): clear
+> **System service call via SWI instruction**. The installer leaves that one alone,
+> because it cannot know whether your application uses `SVC` itself.
 >
 > All of it with screenshots: [step 2](#2-cubemx-stop-generating-pendsv_handler-and-systick_handler)
 > and [step 3](#3-cubemx-move-the-hal-time-base-off-systick) of the manual route.
@@ -97,7 +98,7 @@ Exactly the manual steps below, in the same order:
 | Step | |
 |---|---|
 | 1 | Puts the AhuraRTOS repository at `AhuraRTOS/` in your project |
-| 2 | Disables a generated `PendSV_Handler` by wrapping it in `#if 0` |
+| 2 | Removes a generated `PendSV_Handler` or `SysTick_Handler`, and clears the box that produced it in the `.ioc` |
 | 3 | Checks the HAL time base is off SysTick, and stops if it is not |
 | 4 | Copies `os_config.h`, `os_cb.c` and `os_main.c` into `Core/` |
 | 5 | Appends the kernel block to the top-level `CMakeLists.txt` |

@@ -98,9 +98,94 @@ def put_in_user_code(src: SourceFile, tag: str, payload: str, where: str = "end"
     return True
 
 
+
+# ---------------------------------------------------------------------------
+# The CubeMX .ioc
+# ---------------------------------------------------------------------------
+# NVIC rows are stored as one line per exception, nine "\:"-separated fields:
+#
+#     NVIC.PendSV_IRQn=true\:0\:0\:false\:false\:false\:false\:false\:false
+#                      ^^^^                  ^^^^^
+#                      enabled               field 6 - "Generate IRQ handler"
+#
+# ST documents none of that, so the sixth field is PROVED before it is written to, never assumed:
+# ioc_generate_flags() reads every row and checks it against whether that handler is really in
+# _it.c. A CubeMX version that lays the line out differently fails the check and the file is left
+# alone. See doc/stm32.md.
+
+IOC_GENERATE_FIELD = 5
+IOC_FIELD_COUNT = 9
+
+#: Core exceptions are named one way in the .ioc and another in the generated file.
+IOC_CORE_HANDLERS = {
+    "NonMaskableInt_IRQn":   "NMI_Handler",
+    "HardFault_IRQn":        "HardFault_Handler",
+    "MemoryManagement_IRQn": "MemManage_Handler",
+    "BusFault_IRQn":         "BusFault_Handler",
+    "UsageFault_IRQn":       "UsageFault_Handler",
+    "SVCall_IRQn":           "SVC_Handler",
+    "DebugMonitor_IRQn":     "DebugMon_Handler",
+    "PendSV_IRQn":           "PendSV_Handler",
+    "SysTick_IRQn":          "SysTick_Handler",
+}
+
+
+def ioc_handler_of(irq: str):
+    """The function CubeMX generates for an .ioc NVIC row, or None if the name is not one."""
+    if irq in IOC_CORE_HANDLERS:
+        return IOC_CORE_HANDLERS[irq]
+    return irq[:-len("_IRQn")] + "_IRQHandler" if irq.endswith("_IRQn") else None
+
+
+def ioc_rows(text: str):
+    """Every NVIC row as (irq, [fields]), skipping the ones that are not per-exception."""
+    for m in re.finditer(r"(?m)^NVIC\.([A-Za-z0-9_]+_IRQn)=(.+)$", text):
+        fields = m.group(2).split("\\:")
+        if len(fields) == IOC_FIELD_COUNT:
+            yield m.group(1), fields
+
+
+def ioc_layout_agrees(ioc_text: str, it_text: str) -> bool:
+    """Whether field 6 really means "generate", checked against the generated file itself.
+
+    Every row whose handler name is known is compared with what is actually in _it.c. One
+    disagreement is enough to refuse: it means this CubeMX writes the row differently, and
+    guessing which field to edit could silently change an interrupt PRIORITY instead.
+    """
+    checked = 0
+    for irq, fields in ioc_rows(ioc_text):
+        handler = ioc_handler_of(irq)
+        if handler is None or fields[IOC_GENERATE_FIELD] not in ("true", "false"):
+            return False
+        generated = fields[IOC_GENERATE_FIELD] == "true"
+        if generated != (function_span(it_text, handler) is not None):
+            return False
+        checked += 1
+    return checked >= len(IOC_CORE_HANDLERS)
+
+
+def ioc_disable(ioc: "SourceFile", irqs) -> None:
+    """Clear "Generate IRQ handler" for `irqs`. Call only once ioc_layout_agrees() said yes."""
+    for irq in irqs:
+        m = re.search(r"(?m)^NVIC\." + re.escape(irq) + r"=(.+)$", ioc.text)
+        fields = m.group(1).split("\\:")
+        fields[IOC_GENERATE_FIELD] = "false"
+        ioc.text = ioc.text[:m.start(1)] + "\\:".join(fields) + ioc.text[m.end(1):]
+
+
+def stub_is_empty(it_text: str, handler: str) -> bool:
+    """Whether CubeMX's stub holds nothing of the user's - the test that makes deleting it safe."""
+    body = function_body(it_text, handler)
+    if body is None:
+        return False
+    live = strip_comments(body)
+    live = re.sub(r"(?m)^[ \t]*/\*[ \t]*USER CODE (BEGIN|END).*$", "", live)
+    return live.strip() == ""
+
+
 class Project:
-    """Everything the installer needs to know, all of it read from generated
-    sources - never from the .ioc."""
+    """Everything the installer needs to know. Every DECISION is read from generated sources; the
+    .ioc is written to, never trusted, and only after the generated file has confirmed its layout."""
 
     def __init__(self, root: Path, args):
         app_dir = getattr(args, "app_dir", None)
@@ -233,10 +318,24 @@ class Project:
         # symbol, which the linker would report perfectly well - but it would report it as a name,
         # after a full build, with nothing about which checkbox produced it. Caught here instead,
         # where there is room to say exactly where to turn it off.
-        for name, row in (("SysTick_Handler", "System tick timer"),
-                          ("PendSV_Handler", "Pendable request for system service")):
-            if function_span(it_text, name) is None:
-                continue
+        generated = [(name, row) for name, row in
+                     (("SysTick_Handler", "System tick timer"),
+                      ("PendSV_Handler", "Pendable request for system service"))
+                     if function_span(it_text, name) is not None]
+
+        # Fixable in place? Three things have to hold, and each is checked rather than hoped:
+        # the stubs are empty (nothing of the user's is deleted), there is exactly one .ioc, and
+        # its NVIC layout matches what the generated file shows. Anything else falls through to
+        # the message below, which is what this installer did for every case before.
+        iocs = sorted(self.root.glob("*.ioc"))
+        self.ioc_fix = None
+        if generated and len(iocs) == 1 and all(stub_is_empty(it_text, n) for n, _ in generated):
+            ioc = SourceFile(iocs[0])
+            if ioc_layout_agrees(ioc.text, it_text):
+                self.ioc_fix = (ioc, [n for n, _ in generated])
+                return
+
+        for name, row in generated:
             raise Fatal(
                 "{file} defines {name}, and so does AhuraRTOS - two definitions of\n"
                 "  one symbol is a link error.\n"
@@ -408,6 +507,30 @@ def plan(project, repo_dir: Path, args, copy_tree: bool):
     it = SourceFile(project.it_c)
     drop_managed(it)
     put_in_user_code(it, "Includes", '#include "ahura.h"')
+
+    # CubeMX was generating a vector the kernel owns. Project.check() has already established that
+    # the stub is empty and that the .ioc can be edited safely, so both halves happen here: the
+    # function goes out of the generated file, and the checkbox that produced it goes off in the
+    # .ioc, so the next "Generate Code" agrees instead of putting it back.
+    if getattr(project, "ioc_fix", None) is not None:
+        ioc, handlers = project.ioc_fix
+        for handler in handlers:
+            span = function_span(it.text, handler)
+            if span is not None:
+                start, end = span
+                while start > 0 and it.text[start - 1] != "\n":
+                    start -= 1
+                it.text = it.text[:start] + it.text[end:].lstrip("\n")
+        rows = {"SysTick_Handler": "SysTick_IRQn", "PendSV_Handler": "PendSV_IRQn"}
+        ioc_disable(ioc, [rows[h] for h in handlers])
+        if ioc.changed:
+            edits.append(ioc)
+        warn("CubeMX was generating {} - vectors AhuraRTOS defines itself.\n"
+             "  Both were empty stubs, so they have been removed from {} and the\n"
+             "  matching 'Generate IRQ handler' boxes cleared in {}.\n"
+             "  Nothing of yours was in them. Regenerating from CubeMX will now agree."
+             .format(", ".join(handlers), relative(project.it_c, project.root),
+                     relative(ioc.path, project.root)))
     # Nothing to write for the tick: the st/stm32 package defines SysTick_Handler itself, the
     # same way the port defines PendSV_Handler. Project.check() has already refused a CubeMX
     # stub for either, so by here both vectors are the kernel's and this file needs only the
