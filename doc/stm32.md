@@ -84,9 +84,9 @@ straight out of the pipe, so no installer file is left behind in your project.
 > your `USER CODE` block inside one of those handlers holds anything at all, it
 > touches nothing** and asks you to do it - your code is never deleted to make room.
 >
-> A fourth setting only if you will run the [self-test](self-test.md): clear
-> **System service call via SWI instruction**. The installer leaves that one alone,
-> because it cannot know whether your application uses `SVC` itself.
+> **System service call via SWI instruction** is handled the same way, and it is
+> what makes turning the [self-test](self-test.md) on later just work: an empty
+> stub is cleared, a handler you have written code into is left exactly as it is.
 >
 > All of it with screenshots: [step 2](#2-cubemx-stop-generating-pendsv_handler-and-systick_handler)
 > and [step 3](#3-cubemx-move-the-hal-time-base-off-systick) of the manual route.
@@ -329,10 +329,11 @@ rows:
 The *Select for init sequence ordering* and *Call HAL handler* columns are not
 involved; leave them as they are.
 
-> **On the installer route?** It clears the first two boxes for you, in the `.ioc`
-> and in the generated file - unless your `USER CODE` block inside one of those
-> handlers holds something, in which case it stops and asks. `SVC_Handler` it never
-> touches, because it cannot know whether your application uses `SVC` itself.
+> **On the installer route?** It clears all three boxes for you, in the `.ioc` and
+> in the generated file. `PendSV` and `SysTick` it insists on - they are link errors
+> either way - and it stops and asks if your `USER CODE` block inside one of them
+> holds anything. `SVC` it only clears when the stub is empty: write code in there
+> and it stays yours, with a note about `OS_CONFIG_TEST_SVC_VECTOR` for later.
 
 ### 3. CubeMX: move the HAL time base off SysTick
 

@@ -323,6 +323,16 @@ class Project:
                       ("PendSV_Handler", "Pendable request for system service"))
                      if function_span(it_text, name) is not None]
 
+        # SVC is a softer case and must not be refused like those two. Nothing defines
+        # SVC_Handler unless the self-test is switched on, so a stub the application has written
+        # in is simply the application's. An EMPTY one is still worth clearing: it costs nothing
+        # now and it is what turns OS_CONFIG_TEST_ENABLE = 1 into a duplicate-symbol error weeks
+        # later. A written-in one is left alone, with a note rather than a refusal.
+        self.svc_owned = (function_span(it_text, "SVC_Handler") is not None
+                          and not stub_is_empty(it_text, "SVC_Handler"))
+        if function_span(it_text, "SVC_Handler") is not None and not self.svc_owned:
+            generated.append(("SVC_Handler", "System service call via SWI instruction"))
+
         # Fixable in place? Three things have to hold, and each is checked rather than hoped:
         # the stubs are empty (nothing of the user's is deleted), there is exactly one .ioc, and
         # its NVIC layout matches what the generated file shows. Anything else falls through to
@@ -521,20 +531,30 @@ def plan(project, repo_dir: Path, args, copy_tree: bool):
                 while start > 0 and it.text[start - 1] != "\n":
                     start -= 1
                 it.text = it.text[:start] + it.text[end:].lstrip("\n")
-        rows = {"SysTick_Handler": "SysTick_IRQn", "PendSV_Handler": "PendSV_IRQn"}
+        rows = {"SysTick_Handler": "SysTick_IRQn", "PendSV_Handler": "PendSV_IRQn",
+                "SVC_Handler": "SVCall_IRQn"}
         ioc_disable(ioc, [rows[h] for h in handlers])
         if ioc.changed:
             edits.append(ioc)
-        warn("CubeMX was generating {} - vectors AhuraRTOS defines itself.\n"
-             "  Both were empty stubs, so they have been removed from {} and the\n"
-             "  matching 'Generate IRQ handler' boxes cleared in {}.\n"
+        warn("CubeMX was generating {} - {} AhuraRTOS defines itself.\n"
+             "  Empty stubs, so {} been removed from {} and the matching\n"
+             "  'Generate IRQ handler' box{} cleared in {}.\n"
              "  Nothing of yours was in them. Regenerating from CubeMX will now agree."
-             .format(", ".join(handlers), relative(project.it_c, project.root),
+             .format(", ".join(handlers),
+                     "a vector" if len(handlers) == 1 else "vectors",
+                     "it has" if len(handlers) == 1 else "they have",
+                     relative(project.it_c, project.root),
+                     "" if len(handlers) == 1 else "es",
                      relative(ioc.path, project.root)))
     # Nothing to write for the tick: the st/stm32 package defines SysTick_Handler itself, the
     # same way the port defines PendSV_Handler. Project.check() has already refused a CubeMX
     # stub for either, so by here both vectors are the kernel's and this file needs only the
     # include above.
+    if getattr(project, "svc_owned", False):
+        notes.append("your SVC_Handler has code in it, so it was left alone - if you turn the "
+                     "self-test on later, set OS_CONFIG_TEST_SVC_VECTOR to 0 and call "
+                     "os_test_isr_entry() from inside it (doc/self-test.md)")
+
     if tick == "external":
         notes.append("--tick external: wire os_tick_handler() to your own timer yourself, "
                      "and set OS_CONFIG_TICK_SOURCE_EXTERNAL in os_config.h")
