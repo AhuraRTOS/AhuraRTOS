@@ -8,8 +8,10 @@ across all of them.
 
 ### API at a glance
 
-Everything below is declared in the single public header, `ahura.h`. Each group
-compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
+Include `ahura.h` and you have all of it. Each group below is declared in the
+module header beside its `.c` - `os_mutex.h` with `os_mutex.c` - and `ahura.h`
+includes every one of them, so an application never names them itself. Each
+group compiles away entirely when its `OS_CONFIG_<FEATURE>_ENABLE` is 0.
 
 | Group | Functions |
 |---|---|

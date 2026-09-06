@@ -306,33 +306,17 @@ date](installation.md#keeping-the-kernel-up-to-date) for later.
 > **System Core → NVIC → Code generation tab → clear "Generate IRQ handler" for
 > *Pendable request for system service* and for *System tick timer*.**
 
-CubeMX otherwise writes non-weak empty stubs for both into
-`Core/Src/stm32h5xx_it.c`, and the kernel defines both itself - the port owns
-PendSV, the `st/stm32` SoC package owns the tick vector. Either one collides at
-link time:
+The kernel defines both itself, so a generated stub is a
+`multiple definition of 'PendSV_Handler'` at link time. Delete it by hand and the
+next code generation puts it back; the checkbox is in the `.ioc`, so it sticks.
 
-```text
-multiple definition of `PendSV_Handler'
-```
+**Clear *System service call via SWI instruction* too** if you will run the
+[self-test](self-test.md) - the suite defines `SVC_Handler`. (An application that
+needs `SVC` for itself can share it instead: see
+[the self-test](self-test.md#turning-it-on).)
 
-Deleting the function by hand works until the next code generation puts it
-back. The checkbox is stored in the `.ioc`, so regeneration keeps honouring it.
-
-**Clear *System service call via SWI instruction* as well** if you are going to
-run the [self-test suite](self-test.md). The kernel itself never uses `SVC` -
-that is deliberate, and it is what keeps it compatible with SoftDevice, TF-M and
-vendor ROM APIs - but the suite installs its own handler to reach ISR context
-from a task, and on CMSIS-Pack that handler is named `SVC_Handler` too. A
-generated one collides exactly the same way. Turning it off costs an application
-that does not use `SVC` nothing.
-
-An application that genuinely cannot give up `SVC` - a SoftDevice, TF-M, a vendor
-ROM API - can keep the handler and share it instead. That is
-`OS_CONFIG_TEST_SVC_VECTOR`, and it is described where it is configured:
-[the self-test](self-test.md#turning-it-on).
-
-This is what the *Code generation* tab should look like when you are done -
-everything at its default except the three cleared rows:
+The tab when you are done - everything at its default except the three cleared
+rows:
 
 | Row | Generate IRQ handler |
 |---|---|
@@ -345,50 +329,30 @@ everything at its default except the three cleared rows:
 The *Select for init sequence ordering* and *Call HAL handler* columns are not
 involved; leave them as they are.
 
-> **On the installer route?** It refuses to write anything while either handler is
-> still generated, and names the checkbox that turns it off - it cannot clear the
-> `.ioc` for you. `SVC_Handler` it does not check, because nothing in the
-> generated sources says whether you intend to run the self-test. If you enable
-> the suite later and the link fails on `SVC_Handler`, you have two fixes: this
-> checkbox, or `OS_CONFIG_TEST_SVC_VECTOR = 0` and the one line above.
+> **On the installer route?** It clears the first two boxes for you, in the `.ioc`
+> and in the generated file - unless your `USER CODE` block inside one of those
+> handlers holds something, in which case it stops and asks. `SVC_Handler` it never
+> touches, because it cannot know whether your application uses `SVC` itself.
 
 ### 3. CubeMX: move the HAL time base off SysTick
 
 > **System Core → SYS → Timebase Source → any spare timer.**
 
-`HAL_Init()` otherwise claims SysTick for `HAL_GetTick()`, and the kernel needs
-it. Two time bases sharing one interrupt drift against each other, so move one
-rather than sharing the handler.
+Otherwise `HAL_Init()` claims SysTick, and the kernel needs it. Any spare timer
+will do - the kernel never touches it. This page says `TIM7`; substitute yours.
 
-**Which timer does not matter.** The kernel never touches it - it belongs to the
-HAL from here on, and the only requirement is that nothing else in your design
-already wants it. `TIM7` is what the rest of this page names because it is what
-the NUCLEO-H503RB was verified with; `TIM6` and `TIM17` are the other usual
-picks, and on a part that has none of those any spare timer in the dropdown does
-the same job. Substitute your own everywhere `TIM7` appears below.
+CubeMX handles the rest itself: the time-base file, that timer's `IRQHandler`,
+and its NVIC row.
 
-Whichever you pick, CubeMX does three things by itself: it adds
-`Core/Src/stm32h5xx_hal_timebase_tim.c` to the project, it writes that timer's
-`IRQHandler` into `stm32h5xx_it.c`, and it ticks *Time base: <timer> global
-interrupt* in the NVIC table from step 2. From then on `HAL_Delay()` and
-`HAL_GetTick()` run off it while SysTick belongs to the kernel. Do **not** call
-`HAL_IncTick()` from `SysTick_Handler` afterwards.
+Now **Project → Generate Code**, then check `Core/Src/stm32h5xx_it.c`:
 
-You can confirm it landed in the `.ioc` without opening CubeMX again - these two
-lines name whichever timer you chose:
+| Should be gone | Should be there |
+|---|---|
+| `PendSV_Handler` (and `SVC_Handler`, if you cleared it) | `SysTick_Handler`, with no `HAL_IncTick()` in it |
+| | your time-base timer's `IRQHandler` |
 
-```text
-NVIC.TimeBase=TIM7_IRQn
-NVIC.TimeBaseIP=TIM7
-```
-
-Regenerate the code once the checkboxes are set (**Project → Generate Code**),
-then confirm in `Core/Src/stm32h5xx_it.c` that `PendSV_Handler` is gone (and
-`SVC_Handler` with it, if you cleared that too), while `SysTick_Handler` is
-still there and the time-base timer's `IRQHandler` has appeared.
-
-`HAL_Delay()` still busy-waits - it does not yield. Use `os_delay_ms()` in task
-code and keep `HAL_Delay()` for driver init that runs before `os_start()`.
+> `HAL_Delay()` busy-waits; it does not yield. Use `os_delay_ms()` in tasks and
+> keep `HAL_Delay()` for driver init before `os_start()`.
 
 ### 4. Copy the three files
 
@@ -398,13 +362,8 @@ cp AhuraRTOS/template/os_cb.c     Core/Src/os_cb.c
 cp AhuraRTOS/template/os_main.c   Core/Src/os_main.c
 ```
 
-`Core/Inc` and `Core/Src` are only a convention - CubeMX never overwrites files
-it did not generate, so anything of yours in there is safe across
-regenerations.
-
-Then fill in `os_cb.c` for the board. On a Nucleo, `printf` already reaches the
-ST-LINK virtual COM port through the BSP (`USE_COM_LOG` in
-`stm32h5xx_nucleo_conf.h`), so the three callbacks are short:
+Then fill in `os_cb.c`. On a Nucleo, `printf` already reaches the ST-LINK COM
+port through the BSP, so the three callbacks are short:
 
 ```c
 #include "main.h"
@@ -430,10 +389,9 @@ void os_log_output_cb(const uint8_t *data, size_t length)
 #endif
 ```
 
-Delete the template blocks whose feature is off in `os_config.h` - the tick
-callback (SysTick is the tick here), TrustZone, multi-core and the tickless
-hooks. Each is guarded by the same `#if` the kernel uses, so leaving them in
-compiles fine too.
+The template's other blocks - tick, TrustZone, multi-core, tickless - are each
+guarded by the `#if` of the feature they belong to. Delete them or leave them;
+both compile.
 
 `os_main.c` is the application. To blink the user LED:
 
@@ -509,8 +467,7 @@ places by hand.
 
 ### 6. Add the include to `Core/Src/stm32h5xx_it.c`
 
-One edit, and it goes **inside the `USER CODE` markers** so CubeMX preserves it
-the next time it regenerates the file:
+Add this, inside the `USER CODE` markers so CubeMX keeps it:
 
 ```c
 /* USER CODE BEGIN Includes */
@@ -518,24 +475,12 @@ the next time it regenerates the file:
 /* USER CODE END Includes */
 ```
 
-There is no `SysTick_Handler` here to route the tick through - step 2 stopped
-CubeMX generating one, and the `st/stm32` SoC package defines it instead:
+That is the whole step. You write no `SysTick_Handler` - the `st/stm32` package
+already defines one.
 
-```c
-void SysTick_Handler(void)
-{
-    os_tick_handler();
-}
-```
-
-No `HAL_IncTick()` in it - step 3 moved the HAL to TIM7, so the two time bases
-never share the interrupt.
-
-Need work of your own on the tick? Set `SOC_CONFIG_SYSTICK_VECTOR` to `0` in
-`soc_config.h` and write `SysTick_Handler` yourself, calling `os_tick_handler()`
-from it. Driving the kernel from a different timer entirely is
-`OS_CONFIG_TICK_SOURCE_EXTERNAL`, which removes the package's vector and the
-port's SysTick programming together.
+> Want the tick vector yourself? `SOC_CONFIG_SYSTICK_VECTOR = 0` in
+> `soc_config.h`, then write `SysTick_Handler` and call `os_tick_handler()` from
+> it. A different timer entirely is `OS_CONFIG_TICK_SOURCE_EXTERNAL`.
 
 ### 7. Boot the kernel in `Core/Src/main.c`
 
