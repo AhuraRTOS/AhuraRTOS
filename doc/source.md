@@ -8,7 +8,7 @@ changes with the chip.
 ```text
 AhuraRTOS/
 ├── CMakeLists.txt   <- the whole build: SoC dispatch, arch detection, ahura_kernel
-├── ahura.h          <- the single public header; applications include only this
+├── ahura.h          <- the public umbrella header; applications include only this
 ├── kernel/          <- the portable core, mapped below
 ├── arch/            <- the port layer, <family>/<core>: arm/ and riscv/
 ├── soc/             <- optional per-silicon packages, <vendor>/<family>
@@ -37,8 +37,9 @@ kernel/
 ├── os_tick.c        <- the tick counter and tick handler
 ├── os_delay.c       <- blocking ms/s delays and the us busy-wait
 ├── os_critical.c    <- the nesting critical section
+├── os_task_mutex.c  <- priority inheritance: the boost, the chain walk, deadlock check
 ├── os_mutex.c       <- mutexes, with priority inheritance
-├── os_sem.c   <- counting semaphores
+├── os_sem.c         <- counting semaphores
 ├── os_queue.c       <- queues, static or heap-backed
 ├── os_msg.c         <- message buffers: whole messages of varying length
 ├── os_event.c       <- event groups
@@ -48,8 +49,16 @@ kernel/
 ├── os_log.c         <- the buffered log and its drain task
 ├── os_atomic.c      <- the validating wrapper over the port's atomics
 ├── os_list.c        <- the intrusive list the scheduler itself runs on
-└── os_internal.h    <- the internal cross-module contract, not for applications
+├── os_<module>.h    <- one PUBLIC header per module above; ahura.h includes them all
+├── os_types.h       <- the status codes, handles and limits those headers share
+├── os_internal.h    <- the internal cross-module contract, not for applications
+└── os_task_internal.h <- the TCB layout, shared by os_task.c and os_task_mutex.c only
 ```
+
+Each module's public API lives in the header beside its `.c` - `os_mutex.c` with
+`os_mutex.h` - and `ahura.h` is the umbrella that includes every one of them. An
+application still includes only `ahura.h`; the split exists so each API is
+reviewable on its own rather than as a slice of a two-thousand-line header.
 
 `os_internal.h` is deliberately not on any include path. The files here reach
 it because a quoted include searches the including file's own directory first;

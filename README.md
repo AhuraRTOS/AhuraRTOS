@@ -185,7 +185,7 @@ that names all three routes for every packaged chip.
 AhuraRTOS/
 ├── CMakeLists.txt  <- builds the ahura_kernel library; the application calls
 │                      add_subdirectory(AhuraRTOS) and links ahura_kernel
-├── ahura.h         <- the single public header; applications include only this
+├── ahura.h         <- the public umbrella header; applications include only this
 ├── kernel/         <- the portable core: scheduler, sync and IPC, timers, memory,
 │                      log. Plain C11, no CPU knowledge anywhere in it
 ├── arch/           <- the port layer, <family>/<core>: arm/ and riscv/ today.

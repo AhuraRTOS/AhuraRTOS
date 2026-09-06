@@ -182,7 +182,7 @@ generation, so Keil, MPLAB X, SEGGER Embedded Studio or a hand-written Makefile
 all work. Compile:
 
 ```text
-AhuraRTOS/kernel/*.c                          <- all 16 files
+AhuraRTOS/kernel/*.c                          <- all 17 files
 AhuraRTOS/arch/<isa>/<core>/os_arch_port.c    <- exactly ONE, matching the device
 ```
 
@@ -210,7 +210,7 @@ source of configuration.
 
 ## Step 4 - give the kernel its tick
 
-`os_tick_handler()` is declared in `ahura.h`, the kernel's single public header.
+`os_tick_handler()` is declared in `ahura.h`, the umbrella header an application includes.
 On a stock CMSIS device, routing it is one line in your interrupt file:
 
 ```c
