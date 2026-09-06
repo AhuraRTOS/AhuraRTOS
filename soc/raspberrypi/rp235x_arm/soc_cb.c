@@ -36,8 +36,6 @@
 #include "hardware/structs/clocks.h"
 #include "hardware/structs/pll.h"
 #include "hardware/structs/scb.h"
-#include "hardware/structs/clocks.h"
-#include "hardware/structs/scb.h"
 #include "pico/multicore.h"
 
 /** Referenced by nothing, and that is its entire job.

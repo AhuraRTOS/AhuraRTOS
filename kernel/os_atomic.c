@@ -360,11 +360,10 @@ int32_t os_atomic_nand(os_atomic_t *target, int32_t value)
 /**
  * @brief Compare-and-swap: store desired only if the word still holds expected.
  *
- * Unlike everything above, this does NOT retry: a false return is the answer the caller asked for,
- * which is what makes CAS the building block for lock-free algorithms the kernel knows nothing
- * about. The port's primitive may also fail spuriously on losing exclusive access, so a false
- * return does not by itself prove another writer won - loop if only the final state matters,
- * re-read the value to tell the two cases apart.
+ * A false return is the answer the caller asked for: the word no longer held expected. Both
+ * lock-free backends retry a spurious exclusive-access loss internally, so false here never means
+ * "the port could not try" - but loop if only the final state matters, and re-read the value to
+ * tell "someone else won" from the (now-unreachable) spurious case.
  *
  * @param[in,out] target    Word to update.
  * @param[in]     expected  Value the caller believes the word holds.
@@ -406,7 +405,9 @@ bool os_atomic_test_bit(const os_atomic_t *target, uint32_t bit)
         int32_t mask = (int32_t)(1UL << bit);
 
         OS_ATOMIC_ORDER_BEFORE();
+
         is_set = ((os_arch_atomic_load((const __IO int32_t *)target) & mask) != 0);
+
         OS_ATOMIC_ORDER_AFTER();
     }
 
@@ -483,7 +484,9 @@ void os_atomic_set_bit(os_atomic_t *target, uint32_t bit)
     if ((target != NULL) && (bit < OS_ATOMIC_BITS))
     {
         OS_ATOMIC_ORDER_BEFORE();
+
         (void)os_arch_atomic_or((__IO int32_t *)target, (int32_t)(1UL << bit));
+
         OS_ATOMIC_ORDER_AFTER();
     }
 }
@@ -504,7 +507,9 @@ void os_atomic_clear_bit(os_atomic_t *target, uint32_t bit)
     if ((target != NULL) && (bit < OS_ATOMIC_BITS))
     {
         OS_ATOMIC_ORDER_BEFORE();
+
         (void)os_arch_atomic_and((__IO int32_t *)target, (int32_t)(~(1UL << bit)));
+
         OS_ATOMIC_ORDER_AFTER();
     }
 }

@@ -255,7 +255,11 @@ uint32_t os_cpu_usage_get(void)
             idle_ticks = total_ticks;
         }
 
-        usage_percent = ((total_ticks - idle_ticks) * 100U) / total_ticks;
+        /* The busy-tick product runs in 64 bits: a window of more than ~42 million
+         * ticks (about 12 hours at 1 kHz) would otherwise overflow the 32-bit
+         * multiplication and report a wrong percentage. */
+        usage_percent = (uint32_t)((((uint64_t)total_ticks - (uint64_t)idle_ticks) * 100ULL) /
+                                   (uint64_t)total_ticks);
     }
 
     return usage_percent;

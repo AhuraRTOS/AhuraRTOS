@@ -1469,10 +1469,9 @@ uint32_t os_task_waiters_wake_match(os_list_t *waiters, os_task_wait_match_fn ma
 
         if (match(tcb->wait_data[0], tcb->wait_data[1], context, &result))
         {
-            uint32_t remaining = tcb->delay_ticks;
-
+            /* os_task_unlink hands the delay-list delta to the successor itself; the
+             * real remaining budget is recomputed from the wall clock by the caller. */
             os_task_unlink(tcb);              /* leaves the delay list and the waiter list */
-            tcb->delay_ticks   = remaining;   /* keep the timeout budget for the retry     */
             tcb->wait_signaled = true;
             tcb->wait_result   = result;
             tcb->woken_from    = waiters;     /* until consumed: see os_task_wake_compensate */
@@ -1508,11 +1507,9 @@ bool os_task_waiters_wake_one(os_list_t *waiters)
 
     if (node != NULL)
     {
-        os_task_tcb_t *tcb       = OS_TASK_TCB_FROM_WAIT_NODE(node);
-        uint32_t       remaining = tcb->delay_ticks;
+        os_task_tcb_t *tcb = OS_TASK_TCB_FROM_WAIT_NODE(node);
 
         os_task_unlink(tcb);              /* leaves the delay list and the waiter list */
-        tcb->delay_ticks   = remaining;   /* keep the timeout budget for the retry     */
         tcb->wait_signaled = true;
         tcb->woken_from    = waiters;     /* until consumed: see os_task_wake_compensate */
         os_task_make_ready(tcb);

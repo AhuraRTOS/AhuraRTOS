@@ -1036,13 +1036,13 @@ int32_t os_arch_atomic_nand(__IO int32_t *target, int32_t value);
 /**
  * @brief Atomic compare-and-swap: if *target still holds expected, store desired and report true.
  *
- * The only operation here that does not retry internally, which is what makes it the building
- * block for lock-free algorithms the kernel knows nothing about.
+ * On the lock-free backend a spurious reservation loss - an interrupt or another core landing
+ * between the LDREX and the STREX - is retried, so a false return means the value genuinely
+ * differed and never "I could not try". The critical-section backend cannot fail spuriously at
+ * all, since nothing can interfere inside the section.
  *
- * A false return means only that the swap did not happen - either the value had changed, or the
- * exclusives backend lost its reservation to an interrupt or another core. That spurious case is
- * part of the contract, which is why callers needing certainty re-read the word instead of reading
- * false as "someone else won", and callers that only care about the final state loop.
+ * Callers needing certainty about the current value still re-read the word after a false return;
+ * callers that only care about the final state loop.
  */
 bool os_arch_atomic_cas(__IO int32_t *target, int32_t expected, int32_t desired);
 

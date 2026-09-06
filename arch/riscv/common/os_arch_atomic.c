@@ -188,8 +188,9 @@ int32_t os_arch_atomic_nand(volatile int32_t *target, int32_t value)
 /**
  * @brief Compare-and-swap. See os_arch_port_common.h.
  *
- * Fails and returns false on a spurious sc.w failure as well as on a genuine mismatch, which is
- * permitted: this is the weak form, and every caller in the kernel retries.
+ * Retries on a spurious sc.w failure - an interrupt landing between the reservation and the store
+ * is enough to make one fail - so a false return means the value genuinely differed, the same
+ * guarantee the ARM port's LDREX/STREX version makes. A genuine mismatch never loops.
  *
  * @param[in,out] target    Word to update.
  * @param[in]     expected  Value the caller believes is there.
@@ -199,14 +200,17 @@ int32_t os_arch_atomic_nand(volatile int32_t *target, int32_t value)
 bool os_arch_atomic_cas(volatile int32_t *target, int32_t expected, int32_t desired)
 {
     int32_t  current;
-    uint32_t failed = 1U;
+    uint32_t failed;
 
     __asm volatile(
-        "    lr.w.aq   %0, (%2)      \n"
-        "    bne       %0, %3, 1f    \n"   /* not what the caller expected: leave failed set */
+        "1:  lr.w.aq   %0, (%2)      \n"
+        "    bne       %0, %3, 2f    \n"   /* genuinely changed: report failure */
         "    sc.w.rl   %1, %4, (%2)  \n"
-        "1:                          \n"
-        : "=&r"(current), "+r"(failed)
+        "    bnez      %1, 1b        \n"   /* spurious store failure: retry     */
+        "    j         3f            \n"
+        "2:  addi      %1, x0, 1     \n"   /* set the failure flag              */
+        "3:                          \n"
+        : "=&r"(current), "=&r"(failed)
         : "r"(target), "r"(expected), "r"(desired)
         : "memory");
 

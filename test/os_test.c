@@ -143,6 +143,17 @@ static os_sem_t os_test_sched_lock_sem;  /* left empty: a take would have to blo
 #define TEST_BENCH_SAMPLES         2000U
 #define TEST_BENCH_HEAVY_SAMPLES   200U
 
+/* A single sample is discarded when it costs more cycles than this. Every row here measures an
+ * uncontended fast path, so nothing legitimate comes near it - the dearest real sample is tens of
+ * microseconds - while the artifacts it filters are far larger. On cores without DWT the cycle
+ * counter is synthesized from SysTick and can jump by a few tick periods between two reads; a
+ * backwards jump wraps the unsigned difference to ~2^32, and a forward jump reads as several
+ * milliseconds. Either would poison the WORST column with a number that was never a measurement.
+ * A fixed bound rather than one derived from the clock: the operations below cost a number of
+ * INSTRUCTIONS, so their cycle count barely moves with the clock frequency, and 100000 cycles is
+ * an order of magnitude past the dearest real sample on any board this suite runs on. */
+#define TEST_BENCH_MAX_SAMPLE      100000UL
+
 /* Saturating subtract: an operation cheaper than the measurement overhead itself would
  * otherwise wrap to a huge unsigned value. */
 #define TEST_BENCH_SUB(total, over) (((total) > (over)) ? ((total) - (over)) : 0U)
@@ -167,8 +178,11 @@ static os_sem_t os_test_sched_lock_sem;  /* left empty: a take would have to blo
             uint32_t bench_c0 = os_arch_cycle_count_get();                       \
             op_stmt;                                                             \
             uint32_t bench_d = os_arch_cycle_count_get() - bench_c0;             \
-            if (bench_d < bench_best)  { bench_best  = bench_d; }                \
-            if (bench_d > bench_worst) { bench_worst = bench_d; }                \
+            if (bench_d <= TEST_BENCH_MAX_SAMPLE)                                \
+            {                                                                    \
+                if (bench_d < bench_best)  { bench_best  = bench_d; }            \
+                if (bench_d > bench_worst) { bench_worst = bench_d; }            \
+            }                                                                    \
         }                                                                        \
         (best_out)  = bench_best;                                                \
         (worst_out) = bench_worst;                                               \
