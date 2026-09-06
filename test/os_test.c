@@ -9254,6 +9254,151 @@ static void test_queue_accounting(void)
  * @brief Regression checks: tick saturation, wake handoff on pause, priority-boost re-ordering,
  *        timer restart with an undrained expiry, and timer registry slot release.
  */
+/* ---------------------------------------------------------------------------------------------
+ * FPU context
+ * ---------------------------------------------------------------------------------------------
+ *
+ * s16-s31 are what the PORT saves; s0-s15 the hardware stacks on its own. So these are the
+ * registers a broken context switch loses, and until now nothing here looked at them.
+ *
+ * The load and the compare have to sit in the SAME function as the yield. Put them in helpers and
+ * the compiler saves s16-s31 in each helper's prologue and restores them in its epilogue - hiding
+ * exactly the failure being looked for. Here it cannot: the AAPCS says a callee preserves them, so
+ * across os_task_yield() it emits no reload, and what comes back is what really survived.
+ */
+#if defined(__ARM_FP)
+
+#define TEST_FPU_REGS   16U            /* s16-s31 */
+
+OS_TASK_DEFINE(fpu_partner, 512U);
+
+static __IO uint32_t os_test_fpu_partner_bad   = 0U;
+static __IO uint32_t os_test_fpu_partner_laps  = 0U;
+static __IO bool     os_test_fpu_partner_stop  = false;
+
+#define TEST_FPU_LOAD(src)  __asm volatile("vldmia %0, {s16-s31}" :: "r"(src) :        \
+                                           "s16", "s17", "s18", "s19", "s20", "s21",   \
+                                           "s22", "s23", "s24", "s25", "s26", "s27",   \
+                                           "s28", "s29", "s30", "s31")
+
+#define TEST_FPU_STORE(dst) __asm volatile("vstmia %0, {s16-s31}" :: "r"(dst) : "memory")
+
+/******************************************************************************************************/
+/**
+ * @brief Hold a pattern in s16-s31 and yield, so the task under test has something to be confused
+ *        with. Counts its own losses too - either task noticing is a failure.
+ *
+ * @param[in] context  Ignored.
+ * @return None.
+ */
+static void test_fpu_partner_entry(void *context)
+{
+    uint32_t mine[TEST_FPU_REGS];
+    uint32_t back[TEST_FPU_REGS];
+    uint32_t i;
+
+    (void)context;
+
+    for (i = 0U; i < TEST_FPU_REGS; i++)
+    {
+        mine[i] = 0xBBBB0000UL + i;
+    }
+
+    TEST_FPU_LOAD(mine);
+
+    while (!os_test_fpu_partner_stop)
+    {
+        os_task_yield();
+
+        TEST_FPU_STORE(back);
+
+        for (i = 0U; i < TEST_FPU_REGS; i++)
+        {
+            if (back[i] != mine[i])
+            {
+                os_test_fpu_partner_bad++;
+                break;
+            }
+        }
+
+        os_test_fpu_partner_laps++;
+        TEST_FPU_LOAD(mine);
+    }
+}
+#endif /* __ARM_FP */
+
+/******************************************************************************************************/
+/**
+ * @brief The port's half of the FPU context: s16-s31 survive a context switch intact.
+ *
+ * Two tasks at one priority hold different patterns and yield to each other. A port that saves
+ * neither, or saves the wrong half, hands one task the other's registers - and both notice.
+ *
+ * @return None.
+ */
+static void test_fpu_context(void)
+{
+    test_print_section("FPU Context (s16-s31 across a switch)");
+
+#if !defined(__ARM_FP)
+    printf("  [SKIP] this build has no FPU (__ARM_FP undefined)\r\n");
+#else
+    uint32_t mine[TEST_FPU_REGS];
+    uint32_t back[TEST_FPU_REGS];
+    uint32_t i;
+    uint32_t laps = 0U;
+    uint32_t bad  = 0U;
+
+    os_test_fpu_partner_bad  = 0U;
+    os_test_fpu_partner_laps = 0U;
+    os_test_fpu_partner_stop = false;
+
+    for (i = 0U; i < TEST_FPU_REGS; i++)
+    {
+        mine[i] = 0xAAAA0000UL + i;
+    }
+
+    AHURA_TEST_CHECK((os_task_create(&fpu_partner,
+                                     TEST_TASK_CONFIG(test_fpu_partner_entry, NULL,
+                                                      OS_CONFIG_TEST_PRIORITY)) == OS_ERR_NONE) &&
+                     (os_task_start(&fpu_partner) == OS_ERR_NONE),
+                      "partner task started at this priority, so a yield rotates to it");
+
+    TEST_FPU_LOAD(mine);
+
+    for (laps = 0U; laps < 200U; laps++)
+    {
+        os_task_yield();
+
+        TEST_FPU_STORE(back);
+
+        for (i = 0U; i < TEST_FPU_REGS; i++)
+        {
+            if (back[i] != mine[i])
+            {
+                bad++;
+                break;
+            }
+        }
+
+        TEST_FPU_LOAD(mine);
+    }
+
+    os_test_fpu_partner_stop = true;
+    os_delay_ms(20U);
+
+    AHURA_TEST_CHECK(os_test_fpu_partner_laps > 0U,
+                      "the two tasks interleaved (%lu partner laps)",
+                      (unsigned long)os_test_fpu_partner_laps);
+    AHURA_TEST_CHECK(bad == 0U, "s16-s31 survived all %lu switches", (unsigned long)laps);
+    AHURA_TEST_CHECK(os_test_fpu_partner_bad == 0U,
+                      "and the partner's too, on a different pattern");
+
+    AHURA_TEST_CHECK((os_task_state_get(&fpu_partner) == OS_TASK_STATE_INACTIVE) ||
+                     (os_task_delete(&fpu_partner) == OS_ERR_NONE), "partner cleaned up");
+#endif
+}
+
 static void test_regressions(void)
 {
     test_print_section("Regressions");
@@ -9527,6 +9672,7 @@ void os_test(void)
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
     test_queue_accounting();
 #endif
+    test_fpu_context();
     test_regressions();
 #if (OS_CONFIG_CORE_COUNT > 1U)
     /* Multi-core comes LAST, on purpose. Every section above exercises the kernel one subsystem
