@@ -61,9 +61,12 @@ Four things have to line up:
    `SVC_Handler` and the link fails on a duplicate. See
    [AhuraRTOS on STM32](stm32.md#2-cubemx-stop-generating-pendsv_handler-and-systick_handler).
 
-   If your application needs that handler, keep it and set
-   `OS_CONFIG_TEST_SVC_VECTOR` to `0`, then call `os_test_isr_entry()` from
-   inside it. Forgetting the call is reported as a SKIP naming it, never a hang.
+   That is the whole step, and it is what every board in this project does but
+   one. **Only** if your application genuinely uses `SVC` itself - a SoftDevice,
+   TF-M, a ROM API - keep the generated handler, set `OS_CONFIG_TEST_SVC_VECTOR`
+   to `0`, and call `os_test_isr_entry()` from inside it. That is a way to share a
+   vector you cannot give up, not a second way to run the tests: prefer the
+   checkbox whenever the vector is free.
 
    On the Pico SDK there is nothing to do: nothing else claims the vector.
 

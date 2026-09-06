@@ -325,10 +325,12 @@ from a task, and on CMSIS-Pack that handler is named `SVC_Handler` too. A
 generated one collides exactly the same way. Turning it off costs an application
 that does not use `SVC` nothing.
 
-**If you need CubeMX's `SVC_Handler`**, keep the checkbox ticked and set
-`OS_CONFIG_TEST_SVC_VECTOR` to `0` in `os_config.h` instead. Then add one line
-inside the handler CubeMX generates, in a `USER CODE` block so regeneration keeps
-it:
+**Only if your application itself uses `SVC`** - a SoftDevice, TF-M, a vendor ROM
+API - keep the checkbox ticked and set `OS_CONFIG_TEST_SVC_VECTOR` to `0` in
+`os_config.h` instead. This shares a vector you cannot give up; it is not a second
+way to run the suite, and clearing the checkbox is better whenever the vector is
+free. Then add one line inside the handler CubeMX generates, in a `USER CODE`
+block so regeneration keeps it:
 
 ```c
 void SVC_Handler(void)
@@ -340,8 +342,7 @@ void SVC_Handler(void)
 ```
 
 Nothing is deleted and nothing collides. If you forget the line, the suite says
-so with a SKIP naming it rather than hanging. This is how the NUCLEO-G431RB in
-this project's own test set is set up.
+so with a SKIP naming it rather than hanging.
 
 This is what the *Code generation* tab should look like when you are done -
 everything at its default except the three cleared rows:
