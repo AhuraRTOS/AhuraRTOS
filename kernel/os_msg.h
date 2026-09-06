@@ -44,6 +44,11 @@
  *  that is a decision every project would have to make and none would benefit from. */
 #define OS_MSG_HEADER_BYTES     2U
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /** Longest single message, in bytes: what OS_MSG_HEADER_BYTES can express. os_msg_send refuses
  *  anything longer with OS_ERR_INVALID_ARG rather than truncating it. */
 #define OS_MSG_LENGTH_MAX       0xFFFFU
@@ -179,5 +184,9 @@ size_t os_msg_peek_size(const os_msg_t *msg);
 os_err_t os_msg_cleanup(os_msg_t *msg);
 
 #endif /* OS_CONFIG_MSG_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_MSG_H */

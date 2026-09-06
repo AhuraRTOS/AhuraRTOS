@@ -19,15 +19,12 @@
  *   Critical section   For cores that cannot express those loops. Costs the length of the update in
  *                      interrupt latency, and needs no retry, since nothing can interfere.
  *
- * One shared file rather than a copy in each port, because the split that matters here is the one
- * above - which follows the instruction set - and it does not line up with the v6m/v7m/v8m split
- * the context-switch code needs: v7m and v8m would hold identical exclusives loops, and v6m would
- * hold a critical-section set that ARMv8-M baseline shares with it for a different reason.
+ * One shared file rather than one per port: the split that matters follows the INSTRUCTION SET,
+ * not the v6m/v7m/v8m split the context-switch code needs.
  *
- * Every operation below returns the value the word held BEFORE it ran, takes a pointer to a
- * naturally aligned 32-bit word, and is safe from tasks and from ISRs. os_arch_atomic_load() is the
- * one exception to all of this and is not here: a single aligned 32-bit load is already indivisible
- * on every core this port covers, so it is one LDR inlined in os_arch_port_common.h.
+ * Every operation returns the word's value from BEFORE it ran, takes a naturally aligned 32-bit
+ * pointer, and is safe from tasks and ISRs. os_arch_atomic_load() is not here - a single aligned
+ * load is already indivisible, so it is one LDR inlined in os_arch_port_common.h.
  *
  * @copyright (c) 2026 Ahura Project Contributors
  *            SPDX-License-Identifier: GPL-3.0-or-later

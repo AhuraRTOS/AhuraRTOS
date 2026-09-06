@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Critical sections
@@ -32,5 +37,9 @@ void os_critical_enter(void);
  * @brief Exit a critical section (re-enables interrupts at outermost level).
  */
 void os_critical_exit(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_CRITICAL_H */

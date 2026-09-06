@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Time and delays
@@ -63,5 +68,9 @@ void os_delay_ms(uint32_t milliseconds);
  * @brief Busy-wait for the requested microseconds (precise, does not yield).
  */
 void os_delay_us(uint32_t microseconds);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_DELAY_H */

@@ -125,16 +125,11 @@ static bool     os_arch_dwt_available      = false;
  * finds a real PSP and performs an ordinary switch.
  *
  * That sentinel is also why SVC is not used. Starting the first task through
- * "svc 0" is the traditional Cortex-M approach - it is what FreeRTOS does -
- * but it costs the kernel a second exception vector permanently, in exchange
- * for one action performed once at boot. SVC is the most contended vector on
- * the architecture: Nordic's SoftDevice reserves part of the SVC number space,
- * TF-M and other secure firmware use SVC for gateway calls, vendor bootloaders
- * and ROM APIs use it, and vendor IDEs generate a default SVC_Handler into
- * every project. A handler that decodes no SVC immediate - which is all a
- * "start the first task" handler needs - can share it with none of them, and
- * would additionally re-enter scheduling on any stray SVC later in the run.
+ * "svc 0" is traditional on Cortex-M, but SVC is the most contended vector on
+ * the architecture - SoftDevice, TF-M, ROM APIs and vendor IDEs all want it -
+ * and a handler that decodes no immediate can share it with none of them.
  * Folding the boot path into PendSV leaves SVC entirely to the application.
+ * See doc/design.md.
 */
 
 __asm(

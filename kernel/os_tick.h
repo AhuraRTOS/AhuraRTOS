@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Tick conversion
@@ -121,5 +126,9 @@ void os_tickless_post_sleep_cb(void);
 void os_arch_soc_sleep_cb(void);
 
 #endif /* OS_CONFIG_TICKLESS_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_TICK_H */

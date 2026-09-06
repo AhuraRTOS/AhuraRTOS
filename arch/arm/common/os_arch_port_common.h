@@ -621,19 +621,17 @@ OS_INLINE uint32_t os_arch_kernel_mask_active(void)
 /**
  * @brief Swap the kernel's BASEPRI mask for a PRIMASK one, around the sleep instruction ONLY.
  *
- * A WFI's wake-up condition is not the same thing as its interrupt mask, and the difference is the
- * whole reason this pair exists. The architecture defines a wake-up event as "an asynchronous
- * exception at a priority that, IF PRIMASK WAS SET TO 0, would preempt any currently active
- * exceptions" - so PRIMASK is virtually cleared for that test and BASEPRI is NOT. An interrupt held
- * off by BASEPRI is therefore not a guaranteed wake-up event at all.
+ * A WFI's wake-up condition is not its interrupt mask. The architecture tests wake-up as "an
+ * exception at a priority that, IF PRIMASK WAS SET TO 0, would preempt" - PRIMASK is virtually
+ * cleared for that test and BASEPRI is not, so an interrupt held off by BASEPRI is not a
+ * guaranteed wake-up at all.
  *
- * Which is fatal here, because every source that can end a tickless window is BASEPRI-reachable by
- * construction: the tick, the SoC's LPTIM or alarm, the inter-core IPI. They have to be, or the
- * kernel could not exclude them from its own critical sections. Sleeping with BASEPRI raised is
- * asking to be woken by exactly the interrupts that are masked - which on real silicon is a core
- * that goes to sleep and does not come back.
+ * Fatal here: every source that can end a tickless window is BASEPRI-reachable by construction -
+ * the tick, the SoC alarm, the IPI - because the kernel has to be able to exclude them. Sleeping
+ * with BASEPRI raised asks to be woken by exactly what is masked, and on silicon that is a core
+ * that does not come back.
  *
- * The order below is what makes the swap safe, and it is not interchangeable:
+ * The order is not interchangeable:
  *
  *   1. PRIMASK on.    Nothing can run from here, whatever BASEPRI says next.
  *   2. BASEPRI to 0.  Safe only because of step 1; this is what makes the wake-up test pass.
@@ -641,9 +639,8 @@ OS_INLINE uint32_t os_arch_kernel_mask_active(void)
  *   4. BASEPRI back.  The kernel's own mask is whole again.
  *   5. PRIMASK off.   Anything pending is taken now, subject to BASEPRI exactly as before.
  *
- * Compiles away entirely with OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY at 0, where the kernel mask is
- * already PRIMASK and the architecture guarantees the wake. FreeRTOS's tickless idle brackets its
- * own WFI with cpsid/cpsie for the same reason, in a port that otherwise uses BASEPRI throughout.
+ * Compiles away with OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY at 0, where the kernel mask is already
+ * PRIMASK. FreeRTOS brackets its own tickless WFI the same way, for the same reason.
  *
  * @return uint32_t  Opaque state for os_arch_sleep_mask_exit: PRIMASK in bit 8, BASEPRI in bits 0-7.
  */

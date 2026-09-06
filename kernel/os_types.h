@@ -13,6 +13,11 @@
 #ifndef OS_TYPES_H
 #define OS_TYPES_H
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Status codes and task types
@@ -191,5 +196,9 @@ OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
  *  of allowed cores. Cores are numbered from 0, so a dual-core part is
  *  OS_TASK_CORE(0) and OS_TASK_CORE(1). */
 #define OS_TASK_CORE(n)         (1UL << (n))
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_TYPES_H */

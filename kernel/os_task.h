@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Task declaration macros
@@ -319,5 +324,9 @@ void os_arch_soc_diagnose_cb(void);
  * May return spuriously; the idle loop simply calls it again.
  */
 void os_arch_soc_idle_cb(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_TASK_H */

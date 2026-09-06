@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Queue              - OS_CONFIG_QUEUE_ENABLE
@@ -175,5 +180,9 @@ size_t os_queue_free_get(const os_queue_t *queue);
 os_err_t os_queue_cleanup(os_queue_t *queue);
 
 #endif /* OS_CONFIG_QUEUE_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_QUEUE_H */

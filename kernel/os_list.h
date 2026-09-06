@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Intrusive list
@@ -81,5 +86,9 @@ void os_list_remove(os_list_t *list, os_list_node_t *node);
  * @brief Insert a node before the given position (NULL position appends at the tail).
  */
 void os_list_insert_before(os_list_t *list, os_list_node_t *position, os_list_node_t *node);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_LIST_H */

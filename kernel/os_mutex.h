@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Mutex              - OS_CONFIG_MUTEX_ENABLE
@@ -55,5 +60,9 @@ os_err_t os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms);
 os_err_t os_mutex_unlock(os_mutex_t *mutex);
 
 #endif /* OS_CONFIG_MUTEX_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_MUTEX_H */

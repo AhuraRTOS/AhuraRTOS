@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Logging            - OS_CONFIG_LOG_ENABLE
@@ -99,5 +104,9 @@ void os_log_output_cb(const uint8_t *data, size_t length);
 #define OS_LOG_DEBUG(...)       ((void)0)
 
 #endif /* OS_CONFIG_LOG_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_LOG_H */

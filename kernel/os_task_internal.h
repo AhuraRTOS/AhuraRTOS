@@ -15,7 +15,24 @@
 #ifndef OS_TASK_INTERNAL_H
 #define OS_TASK_INTERNAL_H
 
+/*
+ * ***********************************************************************************************************
+ * Includes
+ * ***********************************************************************************************************
+*/
+
 #include "os_internal.h"
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+/*
+ * ***********************************************************************************************************
+ * Macros
+ * ***********************************************************************************************************
+*/
 
 /* TCB back-references from the embedded intrusive list nodes. */
 #define OS_TASK_TCB_FROM_NODE(node)      ((os_task_tcb_t *)(void *)((uint8_t *)(node) - offsetof(os_task_tcb_t, state_node)))
@@ -34,6 +51,12 @@
 #define OS_TASK_NAME_OF(tcb)             ((const char *)NULL)
 #endif
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
+/*
+ * ***********************************************************************************************************
+ * Types
+ * ***********************************************************************************************************
+*/
+
 /* Mutex back-reference from its embedded owner_node (priority inheritance). */
 #define OS_MUTEX_FROM_OWNER_NODE(node)   ((const os_mutex_t *)(const void *)((const uint8_t *)(node) - offsetof(os_mutex_t, owner_node)))
 #endif
@@ -102,6 +125,12 @@ typedef struct
 
 } os_task_tcb_t;
 
+/*
+ * ***********************************************************************************************************
+ * Public function prototypes
+ * ***********************************************************************************************************
+*/
+
 /* Defined in os_task.c, used by os_task_mutex.c. */
 extern os_task_tcb_t* __IO os_task_current[OS_CONFIG_CORE_COUNT];
 
@@ -111,6 +140,10 @@ void           os_task_effective_priority_set(os_task_tcb_t *tcb, uint32_t new_p
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
 /* Defined in os_task_mutex.c, used by os_task.c when a waiter pauses or is deleted. */
 void os_task_mutex_waiter_depart_tcb(os_task_tcb_t *tcb);
+#endif
+
+#ifdef __cplusplus
+}
 #endif
 
 #endif /* OS_TASK_INTERNAL_H */

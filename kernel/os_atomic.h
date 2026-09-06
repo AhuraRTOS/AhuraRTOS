@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Atomics            - OS_CONFIG_ATOMIC_ENABLE
@@ -157,5 +162,9 @@ void os_atomic_clear_bit(os_atomic_t *target, uint32_t bit);
 void os_atomic_set_bit_to(os_atomic_t *target, uint32_t bit, bool value);
 
 #endif /* OS_CONFIG_ATOMIC_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_ATOMIC_H */

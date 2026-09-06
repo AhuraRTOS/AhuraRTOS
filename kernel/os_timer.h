@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Software timer     - OS_CONFIG_TIMER_ENABLE
@@ -265,5 +270,9 @@ os_err_t os_timer_value_set(os_timer_t *timer, uint32_t value);
 os_err_t os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value);
 
 #endif /* OS_CONFIG_TIMER_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_TIMER_H */

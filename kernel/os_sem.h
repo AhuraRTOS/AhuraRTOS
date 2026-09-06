@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Semaphore          - OS_CONFIG_SEM_ENABLE
@@ -54,5 +59,9 @@ os_err_t os_sem_give(os_sem_t *semaphore);
 os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms);
 
 #endif /* OS_CONFIG_SEM_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_SEM_H */

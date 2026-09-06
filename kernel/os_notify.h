@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Task notifications - OS_CONFIG_NOTIFY_ENABLE
@@ -39,5 +44,9 @@ os_err_t os_notify_give(os_task_t *task, uint32_t value);
 os_err_t os_notify_wait(uint32_t timeout_ms, uint32_t *value_out);
 
 #endif /* OS_CONFIG_NOTIFY_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_NOTIFY_H */

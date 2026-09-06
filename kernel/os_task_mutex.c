@@ -17,6 +17,11 @@
  *            See LICENSE in the project root for the full license text.
  */
 
+/*
+ * ***********************************************************************************************************
+ * Includes
+ * ***********************************************************************************************************
+*/
 #include "os_task_internal.h"
 
 /*
@@ -32,7 +37,7 @@ static void os_task_mutex_chain_recompute(os_task_tcb_t *task);
 
 /*
  * ***********************************************************************************************************
- * Function implementations
+ * Public function implementations
  * ***********************************************************************************************************
 */
 
@@ -56,52 +61,6 @@ void os_task_mutex_owner_link(os_list_node_t *owner_node)
     if ((current != NULL) && (current->id != 0U))
     {
         os_list_push_back(&current->owned_mutexes, owner_node);
-    }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Recompute a task's inherited priority and then everyone it is transitively waiting behind.
- *
- * A boost is only worth what it lets the boosted task DO, and a blocked task can do nothing with
- * one - so raising the immediate owner and stopping there leaves a three-deep inversion untouched.
- * The walk follows blocked_on_mutex until it reaches a task that is actually runnable.
- *
- * Each step is the same max() every other path uses, which makes it correct in BOTH directions: a
- * boost arriving raises each link, a boost released lowers it by the same rule, and nothing here
- * knows which is happening.
- *
- * OS_TASK_DEADLOCK_MAX_DEPTH is load-bearing, not decorative: a cycle among already-deadlocked
- * tasks would otherwise be walked forever inside a critical section. See doc/api.md, "Mutexes and
- * priority inheritance".
- *
- * Caller holds a critical section.
- *
- * @param[in,out] task  Where to start; NULL is a no-op.
- * @return None.
- */
-static void os_task_mutex_chain_recompute(os_task_tcb_t *task)
-{
-    uint32_t depth = 0U;
-
-    while ((task != NULL) && (depth < OS_TASK_DEADLOCK_MAX_DEPTH))
-    {
-        const os_mutex_t *waiting_on;
-
-        os_task_mutex_effective_recompute(task);
-
-        /* Runnable, or waiting on something that is not a mutex: the chain ends here. */
-        waiting_on = task->blocked_on_mutex;
-        if (waiting_on == NULL)
-        {
-            break;
-        }
-
-        /* One link further out. An owner that cannot be resolved - it was deleted while holding the
-         * mutex - ends the walk, exactly as it ends the deadlock walk, and for the same reason:
-         * there is nobody left to boost. */
-        task = os_task_find_by_id(waiting_on->owner_id);
-        depth++;
     }
 }
 
@@ -142,42 +101,6 @@ void os_task_mutex_priority_inherit(uint32_t owner_task_id)
             }
         }
     }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Recompute owner's effective priority as max(base_priority, highest waiter still queued on
- *        any mutex it still holds). Caller must hold a critical section.
- *
- * The single definition of what a task's inherited priority IS, so that every event which can change
- * the answer - an unlock, a waiter timing out, a waiter being paused or deleted - arrives at it the
- * same way instead of each path carrying its own idea.
- *
- * @param[in,out] owner  Task whose effective priority is recomputed.
- * @return None.
- */
-static void os_task_mutex_effective_recompute(os_task_tcb_t *owner)
-{
-    os_list_node_t *node;
-    uint32_t        new_priority = owner->base_priority;
-
-    for (node = owner->owned_mutexes.head; node != NULL; node = node->next)
-    {
-        const os_mutex_t *held       = OS_MUTEX_FROM_OWNER_NODE(node);
-        os_list_node_t   *top_waiter = held->waiters.head;
-
-        if (top_waiter != NULL)
-        {
-            uint32_t waiter_priority = OS_TASK_TCB_FROM_WAIT_NODE(top_waiter)->priority;
-
-            if (waiter_priority > new_priority)
-            {
-                new_priority = waiter_priority;
-            }
-        }
-    }
-
-    os_task_effective_priority_set(owner, new_priority);
 }
 
 /******************************************************************************************************/
@@ -273,6 +196,94 @@ void os_task_mutex_blocked_on_set(const os_mutex_t *mutex, bool forever)
     {
         current->blocked_on_mutex = mutex;
         current->blocked_forever  = forever;
+    }
+}
+
+/*
+ * ***********************************************************************************************************
+ * Private function implementations
+ * ***********************************************************************************************************
+*/
+
+/******************************************************************************************************/
+/**
+ * @brief Recompute owner's effective priority as max(base_priority, highest waiter still queued on
+ *        any mutex it still holds). Caller must hold a critical section.
+ *
+ * The single definition of what a task's inherited priority IS, so that every event which can change
+ * the answer - an unlock, a waiter timing out, a waiter being paused or deleted - arrives at it the
+ * same way instead of each path carrying its own idea.
+ *
+ * @param[in,out] owner  Task whose effective priority is recomputed.
+ * @return None.
+ */
+static void os_task_mutex_effective_recompute(os_task_tcb_t *owner)
+{
+    os_list_node_t *node;
+    uint32_t        new_priority = owner->base_priority;
+
+    for (node = owner->owned_mutexes.head; node != NULL; node = node->next)
+    {
+        const os_mutex_t *held       = OS_MUTEX_FROM_OWNER_NODE(node);
+        os_list_node_t   *top_waiter = held->waiters.head;
+
+        if (top_waiter != NULL)
+        {
+            uint32_t waiter_priority = OS_TASK_TCB_FROM_WAIT_NODE(top_waiter)->priority;
+
+            if (waiter_priority > new_priority)
+            {
+                new_priority = waiter_priority;
+            }
+        }
+    }
+
+    os_task_effective_priority_set(owner, new_priority);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Recompute a task's inherited priority and then everyone it is transitively waiting behind.
+ *
+ * A boost is only worth what it lets the boosted task DO, and a blocked task can do nothing with
+ * one - so raising the immediate owner and stopping there leaves a three-deep inversion untouched.
+ * The walk follows blocked_on_mutex until it reaches a task that is actually runnable.
+ *
+ * Each step is the same max() every other path uses, which makes it correct in BOTH directions: a
+ * boost arriving raises each link, a boost released lowers it by the same rule, and nothing here
+ * knows which is happening.
+ *
+ * OS_TASK_DEADLOCK_MAX_DEPTH is load-bearing, not decorative: a cycle among already-deadlocked
+ * tasks would otherwise be walked forever inside a critical section. See doc/api.md, "Mutexes and
+ * priority inheritance".
+ *
+ * Caller holds a critical section.
+ *
+ * @param[in,out] task  Where to start; NULL is a no-op.
+ * @return None.
+ */
+static void os_task_mutex_chain_recompute(os_task_tcb_t *task)
+{
+    uint32_t depth = 0U;
+
+    while ((task != NULL) && (depth < OS_TASK_DEADLOCK_MAX_DEPTH))
+    {
+        const os_mutex_t *waiting_on;
+
+        os_task_mutex_effective_recompute(task);
+
+        /* Runnable, or waiting on something that is not a mutex: the chain ends here. */
+        waiting_on = task->blocked_on_mutex;
+        if (waiting_on == NULL)
+        {
+            break;
+        }
+
+        /* One link further out. An owner that cannot be resolved - it was deleted while holding the
+         * mutex - ends the walk, exactly as it ends the deadlock walk, and for the same reason:
+         * there is nobody left to boost. */
+        task = os_task_find_by_id(waiting_on->owner_id);
+        depth++;
     }
 }
 

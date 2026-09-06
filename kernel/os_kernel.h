@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Kernel lifecycle
@@ -155,5 +160,9 @@ void os_arch_tz_context_save_cb(uint32_t task_id);
  */
 void os_arch_tz_context_restore_cb(uint32_t task_id);
 #endif /* OS_CONFIG_TRUSTZONE_NON_SECURE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_KERNEL_H */

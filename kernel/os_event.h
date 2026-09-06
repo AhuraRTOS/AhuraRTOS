@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Events             - OS_CONFIG_EVENT_ENABLE
@@ -61,5 +66,9 @@ os_err_t os_event_clear_bits(os_event_t *event, uint32_t bits);
 os_err_t os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, bool clear_on_exit, uint32_t *matched_bits, uint32_t timeout_ms);
 
 #endif /* OS_CONFIG_EVENT_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_EVENT_H */

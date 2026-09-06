@@ -21,28 +21,17 @@
 
 /* WHY THIS IS NOT A QUEUE
  *
- * os_queue stores N items of one fixed size, and that fixed size is the whole of what makes it
- * cheap: a slot address is one multiplication, every item costs the same, and the storage the
- * queue needs is settled once at the definition. Variable-length messages break all three.
+ * os_queue's fixed item size is what makes it cheap, and variable-length messages break it: sizing
+ * every slot for the longest message a link can carry wastes most of the buffer when the traffic is
+ * mostly short, and padding throws away the length the receiver needed.
  *
- * Sizing a queue for the LONGEST message a link can carry and then sending mostly short ones
- * spends the difference on every slot - a 256-byte protocol frame whose typical payload is 12
- * bytes wastes most of the buffer - while padding short messages up to that size throws away the
- * one thing the sender needed to tell the receiver, which is how many of those bytes are real.
- * Carrying the length as a field inside the item does not fix it either: the storage cost is
- * already paid by then.
+ * So this is a ring of BYTES, not of slots. Each message is a small length header followed by
+ * exactly its own bytes; capacity is stated in bytes and shared, so one buffer holds many short
+ * messages or few long ones with no slot count to guess.
  *
- * So this module keeps its own ring, and it is a ring of BYTES rather than of slots. Each message
- * is stored as a small length header followed by exactly its own bytes, and the next message
- * begins where the last one ended. Capacity is therefore stated in bytes and shared: one buffer
- * holds many short messages or few long ones, whichever the traffic turns out to be, with no slot
- * count to guess in advance.
- *
- * What it gives up is the queue's uniformity, and both places that shows are handled below rather
- * than hidden. There is no honest "how many more messages fit" - only how many bytes are free, see
- * os_msg_free_get. And a sender woken by a receive may still not fit, because the message that
- * left could be smaller than the one waiting to arrive, which is why the retry re-tests the
- * condition instead of trusting the wake.
+ * Two consequences, both handled below rather than hidden: there is no honest "how many messages
+ * fit", only free bytes (os_msg_free_get); and a sender woken by a receive may still not fit, so
+ * the retry re-tests the condition instead of trusting the wake.
  */
 
 /*

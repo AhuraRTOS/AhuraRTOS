@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Kernel heap        - OS_CONFIG_ALLOC_ENABLE
@@ -48,5 +53,9 @@ size_t os_mem_free_get(void);
 size_t os_mem_watermark_get(void);
 
 #endif /* OS_CONFIG_ALLOC_ENABLE */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OS_MEM_H */
