@@ -141,9 +141,11 @@ ARMv8-M port, not yet wired into the idle task). Both are listed in the
 
 ## Install it
 
-On a **Raspberry Pi Pico SDK** or **STM32CubeMX** project it is one command,
-which prints the exact diff it wants to apply and waits for a `y` before
-touching anything. Every installer has an offline twin for machines with no
+On a **Raspberry Pi Pico SDK** project it is one command, which prints the exact
+diff it wants to apply and waits for a `y` before touching anything. On
+**STM32CubeMX** it is that same command plus three settings you make in CubeMX
+first - the installer writes code, not the `.ioc`
+([which three](doc/stm32.md#automatic---one-command)). Every installer has an offline twin for machines with no
 internet, and the same integration by hand is six steps on any other vendor,
 IDE or build system.
 

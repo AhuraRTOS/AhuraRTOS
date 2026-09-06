@@ -61,10 +61,34 @@ irm https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm
 curl -fsSL https://raw.githubusercontent.com/AhuraRTOS/AhuraRTOS/main/tools/install_stm32_online.py | python3 -
 ```
 
-That is the whole thing. It prints the exact diff it wants to apply and waits
-for a `y` before touching anything. Python 3.8+ and nothing else - no
-`pip install`, and the script runs straight out of the pipe, so no installer
-file is left behind in your project.
+It prints the exact diff it wants to apply and waits for a `y` before touching
+anything. Python 3.8+ and nothing else - no `pip install`, and the script runs
+straight out of the pipe, so no installer file is left behind in your project.
+
+> ### First, three settings in CubeMX
+>
+> The installer writes code. It does **not** edit the `.ioc`, because that file is
+> CubeMX's and only CubeMX rewrites it safely. So these are yours to make first,
+> and they are the difference between an install that survives *Generate Code* and
+> one that does not:
+>
+> | Where | Setting |
+> |---|---|
+> | **System Core → NVIC → Code generation** | **Pendable request for system service** - clear *Generate IRQ handler*. The kernel owns `PendSV_Handler`. |
+> | **System Core → NVIC → Code generation** | **System tick timer** - clear *Generate IRQ handler*. The SoC package owns `SysTick_Handler`. |
+> | **System Core → SYS → Timebase Source** | Anything but SysTick - a spare `TIM`. `HAL_Delay()` must not ride the vector the kernel drives. |
+>
+> A fourth only if you will run the [self-test](self-test.md): clear **System
+> service call via SWI instruction**, or keep it and set
+> `OS_CONFIG_TEST_SVC_VECTOR` to `0`.
+>
+> Skip the third and the installer stops and tells you (step 3 below). Skip the
+> first and it wraps the generated `PendSV_Handler` in `#if 0` to get you
+> building - but that is a patch on generated code, and the next *Generate Code*
+> undoes it. **The checkbox is the durable fix; the `#if 0` is a courtesy.**
+>
+> All of it with screenshots: [step 2](#2-cubemx-stop-generating-pendsv_handler-and-systick_handler)
+> and [step 3](#3-cubemx-move-the-hal-time-base-off-systick) of the manual route.
 
 ### What it does
 
@@ -154,6 +178,10 @@ uses a copy of the repository already on the machine, and it does not import
 
 Use it on an air-gapped lab machine, behind a corporate proxy that blocks
 GitHub, or on a build agent with no route out.
+
+> The three CubeMX settings from the [automatic route](#automatic---one-command)
+> apply here unchanged. This installer writes the same code and edits the `.ioc`
+> just as little.
 
 ### 1. Get the repository, on a machine that has a connection
 
