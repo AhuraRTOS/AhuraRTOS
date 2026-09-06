@@ -290,6 +290,11 @@
  *
  * Two costs: tsk_log takes a kernel-reserved task slot, and formatting pulls newlib's vsnprintf
  * into the link (~1-3 KB) unless the application already uses printf. See doc/api.md "Debugging".
+ *
+ * A third cost lands on the CALLER's stack: os_log_write runs vsnprintf there. Give any task that
+ * logs at least 1 KB, more for %f. Not theoretical - os_log_emit_dropped() hand-formats its own
+ * message because vsnprintf overflowed the log task's stack, and application tasks get no such
+ * special case. Hard to debug, too: the line that would report it is the one that overflowed.
 */
 
 /* Values: 1 = on, 0 = compiled out. */
@@ -338,6 +343,22 @@
 
 /* Values: 1 = run the suite, 0 = run os_main(). */
 #define OS_CONFIG_TEST_ENABLE               0U
+
+/*
+ * Whether the self-test suite claims the SVC vector for itself (1, the default) or leaves it to
+ * the application (0). Only read when OS_CONFIG_TEST_ENABLE is 1.
+ *
+ * The KERNEL never uses SVC - it folds starting the first task into PendSV precisely so that
+ * vector stays yours. The SUITE wants it, and only to reach interrupt context so the ISR-safe
+ * APIs can be tested from a real ISR. Its definition has to be STRONG to beat the startup file s
+ * weak alias to Default_Handler, and strong collides with an application that generates its own
+ * SVC_Handler - which CubeMX does by default, as a bare multiple-definition link error.
+ *
+ * Leave it at 1 on a project with no SVC handler of its own. Set it to 0 when you have one, and
+ * call os_test_isr_entry() from that handler instead - one line, and on CubeMX it goes in a USER
+ * CODE block, which survives regeneration. Nothing has to be deleted either way.
+ */
+#define OS_CONFIG_TEST_SVC_VECTOR           1U
 
 /* The suite exercises every kernel feature, including nested helper tasks.
  * Same silent-failure caveat as OS_CONFIG_MAIN_TASK_* above.

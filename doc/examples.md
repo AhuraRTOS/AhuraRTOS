@@ -6,7 +6,9 @@ No board support beyond a working `printf`, no HAL headers, no per-example
 build changes.
 
 - **Kernel** - [`examples/kernel/`](../examples/kernel/), one
-  `os_main_<feature>.c` per feature. Catalogue [below](#the-examples).
+  `os_main_<feature>.c` per feature. Catalogue [below](#the-examples), with a
+  short signpost at [`examples/README.md`](../examples/README.md) for anyone who
+  reaches that directory first.
 
 New to AhuraRTOS? Install it first -
 [AhuraRTOS → Installation](installation.md).

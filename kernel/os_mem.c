@@ -345,8 +345,17 @@ static void os_mem_block_insert(os_mem_block_t *block)
     os_mem_block_t *iter;
     uint8_t        *address;
 
-    /* Find the free block we insert after (list is address ordered). */
-    for (iter = &os_mem_start; iter->next < block; iter = iter->next)
+    /* Find the free block we insert after (list is address ordered).
+     *
+     * Compared as integers rather than as pointers, and that is not pedantry dressed up: the walk
+     * STARTS at os_mem_start, which is a static living outside os_mem_heap[] entirely. Relational
+     * comparison between pointers into different objects is undefined in C - it happens to work on
+     * every flat address space, which is exactly what makes it the kind of thing a compiler is free
+     * to surprise you with later, and what a MISRA (Rule 18.3) or CERT run flags. Converting both
+     * sides costs nothing and the question being asked is genuinely about addresses. */
+    for (iter = &os_mem_start;
+         (uintptr_t)iter->next < (uintptr_t)block;
+         iter = iter->next)
     {
     }
 

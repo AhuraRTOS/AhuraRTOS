@@ -419,8 +419,9 @@ void os_task_mutex_owner_link(os_list_node_t *owner_node);
 /******************************************************************************************************/
 /**
  * @brief Boost owner_task_id's effective priority to the calling (waiting) task's effective
- *        priority if that is higher; single-level only, not transitive (os_task.c, call inside
- *        a critical section, right before joining the mutex's waiter list).
+ *        priority if that is higher, then walk the blocked_on_mutex chain so every owner behind
+ *        it is raised too (os_task.c, call inside a critical section, right before joining the
+ *        mutex's waiter list).
  */
 void os_task_mutex_priority_inherit(uint32_t owner_task_id);
 
@@ -470,10 +471,17 @@ void os_task_mutex_waiter_depart(void);
 #define OS_MUTEX_DEADLOCK_CHECK  0
 #endif
 
-#if (OS_MUTEX_DEADLOCK_CHECK == 1)
-
-/* Longest wait chain a walk follows, and so the most mutexes a reported cycle can name. */
+/* Longest wait chain either walk follows: the most mutexes a reported deadlock can name, and the
+ * most links a priority boost is carried along. Defined outside the debug guard below because
+ * priority inheritance uses it in every build, not only in one with assertions on.
+ *
+ * The bound is load-bearing rather than decorative. A cycle that has already formed among other
+ * tasks would otherwise be walked forever - inside a critical section, on the path of an ordinary
+ * mutex lock. Eight is far past any sane nesting depth; a design needing more than a couple of held
+ * mutexes at once has a lock-ordering problem neither walk can fix. */
 #define OS_TASK_DEADLOCK_MAX_DEPTH   8U
+
+#if (OS_MUTEX_DEADLOCK_CHECK == 1)
 
 /******************************************************************************************************/
 /**
@@ -505,17 +513,26 @@ typedef struct
 
 extern os_task_deadlock_report_t os_task_deadlock_report;
 
+#endif /* OS_MUTEX_DEADLOCK_CHECK */
+
 /******************************************************************************************************/
 /**
  * @brief Record the mutex the calling task is about to block on, so another task's chain walk can
  *        follow it (os_task.c, call inside the same critical section as the wait). Cleared for the
  *        caller by os_task_wait_end().
  *
- * Call it ONLY for an unbounded wait. A task that will time out is not a link in any deadlock -
- * it breaks the chain by giving up - so it must stay invisible to the walk.
+ * Call it for EVERY blocking mutex wait. Priority inheritance follows this edge to find the task
+ * a boost actually has to reach, and a waiter that will time out still blocks the owner - and still
+ * inverts priorities - for as long as its timeout lasts.
+ *
+ * `forever` says whether the wait is an unbounded one, which is the narrower question the deadlock
+ * walk asks: a task that will give up breaks any cycle it is part of, so reporting it would be a
+ * false alarm. That distinction used to be carried by simply not publishing the edge; it has its
+ * own flag now because the two walks want different subsets of the same information.
  */
-void os_task_mutex_blocked_on_set(const os_mutex_t *mutex);
+void os_task_mutex_blocked_on_set(const os_mutex_t *mutex, bool forever);
 
+#if (OS_MUTEX_DEADLOCK_CHECK == 1)
 /******************************************************************************************************/
 /**
  * @brief Report whether blocking the calling task on this mutex would close a wait cycle - i.e.

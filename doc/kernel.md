@@ -28,7 +28,7 @@ thing: a periodic call to `os_tick_handler()`. It claims no `SVC_Handler`, no
 
 - **Preemptive priority scheduler.** 31 priority levels, O(1) list-based ready
   queues, and round-robin among tasks of equal priority.
-- **Full sync/IPC set.** Mutexes (always with single-level priority
+- **Full sync/IPC set.** Mutexes (always with transitive priority
   inheritance), counting semaphores, queues, events, and lightweight
   per-task notifications, all with millisecond timeouts.
 - **Software timers and deferred calls.** One-shot and periodic timers, plus

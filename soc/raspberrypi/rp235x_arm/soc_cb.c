@@ -117,6 +117,21 @@ POWMAN timer cannot express a window. Use a slower tick, or light sleep."
 /** Timer reading when the open window started, in milliseconds. */
 static uint64_t soc_powman_entry_ms = 0U;
 
+/** Time measured but not yet announced, in milliseconds x OS_CONFIG_TICK_HZ.
+ *
+ * A window's last, incomplete tick used to be dropped: elapsed was a truncating division and the
+ * next window re-read its reference from the timer, so up to one whole tick went missing EVERY time
+ * the core slept. Nothing in a single window shows it; a run that sleeps once a second loses a
+ * second every few minutes.
+ *
+ * Scaling by OS_CONFIG_TICK_HZ rather than pre-dividing also makes the conversion exact for tick
+ * rates that do not divide 1000 - 300 Hz, 768 Hz - where SOC_POWMAN_MS_PER_TICK is a rounded number
+ * and every window inherited its error. What is left after the whole ticks are taken out stays here
+ * and is spent by a later window, so announced time converges on real time.
+ *
+ * Always below 1000, by construction. */
+static uint64_t soc_powman_accum_ms_hz = 0U;
+
 /** Raised once the timer is running and its vector is taken. */
 static bool     soc_powman_ready    = false;
 
@@ -238,12 +253,24 @@ void os_arch_tick_suppress_cb(uint32_t ticks)
     {
         /* Read before anything else: this is where the window starts, and every microsecond after
          * it - the alarm write, the sleep itself - is inside what gets measured. */
+        /* Rounded UP: a window must never end before the tick it was asked for.
+         *
+         * soc_powman_accum_ms_hz is deliberately NOT subtracted here, and getting that wrong is
+         * worth a note because it looks like the symmetric thing to do and it is not. The
+         * accumulator holds time that has already ELAPSED and merely has not been announced yet - it
+         * sits behind the reference this window is about to take. The kernel's deadline is `ticks`
+         * from NOW. Netting the accumulator off makes the window end that much before the deadline,
+         * while the close adds the same amount back into `elapsed` - so the kernel is told a full
+         * window passed when it did not, the clock runs fast, and the next window is planned shorter
+         * still. On an STM32 that showed up as a 50-tick sleep measuring 5. */
+        uint64_t wanted_ms = (((uint64_t)ticks * 1000ULL) + (uint64_t)OS_CONFIG_TICK_HZ - 1ULL) /
+                             (uint64_t)OS_CONFIG_TICK_HZ;
+
         soc_powman_entry_ms = powman_timer_get_ms();
 
         powman_clear_alarm();
         irq_set_enabled(POWMAN_IRQ_TIMER, true);
-        powman_timer_enable_alarm_at_ms(soc_powman_entry_ms +
-                                        ((uint64_t)ticks * SOC_POWMAN_MS_PER_TICK));
+        powman_timer_enable_alarm_at_ms(soc_powman_entry_ms + wanted_ms);
     }
 }
 
@@ -259,6 +286,7 @@ void os_arch_tick_suppress_cb(uint32_t ticks)
 uint32_t os_arch_tick_resume_cb(void)
 {
     uint64_t elapsed_ms;
+    uint32_t elapsed_ticks;
 
     /* Disarmed first: a window that ran its length leaves the alarm fired, and one cut short
      * leaves it armed for a moment nobody will wait for. Either way it must not survive into the
@@ -269,7 +297,16 @@ uint32_t os_arch_tick_resume_cb(void)
 
     elapsed_ms = powman_timer_get_ms() - soc_powman_entry_ms;
 
-    return (uint32_t)(elapsed_ms / SOC_POWMAN_MS_PER_TICK);
+    /* Banked first, then spent. The whole ticks come out; the fraction of a tick left over stays in
+     * the accumulator for the next window rather than being thrown away - see
+     * soc_powman_accum_ms_hz. */
+    soc_powman_accum_ms_hz += elapsed_ms * (uint64_t)OS_CONFIG_TICK_HZ;
+
+    elapsed_ticks = (uint32_t)(soc_powman_accum_ms_hz / 1000ULL);
+
+    soc_powman_accum_ms_hz -= (uint64_t)elapsed_ticks * 1000ULL;
+
+    return elapsed_ticks;
 }
 
 #if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP) && (OS_CONFIG_CORE_COUNT > 1U)

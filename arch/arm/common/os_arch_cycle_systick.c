@@ -3,65 +3,36 @@
  * @brief Cycle counter synthesized from SysTick, for cores and devices where DWT CYCCNT is not
  *        available.
  *
- * Textually included by the shared port implementations (os_arch_port_v6m.c, _v7m.c, _v8m.c), the
- * same way each variant's os_arch_port.c includes those - it is not a separate compilation unit and
- * must never be added to a build as one.
+ * Textually included by the shared port implementations (os_arch_port_v6m.c, _v7m.c,
+ * _v8m.c), the same way each variant's os_arch_port.c includes those. This file is
+ * not a translation unit - no include guard, statics the includer uses - so it opens with a
+ * #error unless the wrapper that includes it has claimed OS_ARCH_PORT_TRANSLATION_UNIT.
  *
- * Two ports need it for different reasons:
+ * v6m has no DWT at all; on v7m and v8m CYCCNT is optional, may sit behind debug power, or may be
+ * locked, so those ports fall back here. Only DIFFERENCES between two reads mean anything, and they
+ * stay correct across the 32-bit wrap. Callers: os_delay_us(), the busy-wait half of os_delay_ms(),
+ * and the benchmark table.
  *
- *   v6m   ARMv6-M has no DWT at all, so this is the only cycle counter that exists there.
- *   v7m   DWT is OPTIONAL on Cortex-M3/M4/M7 and on ARMv8-M, and even where the unit is present
- *   v8m   CYCCNT itself may not be (DWT_CTRL.NOCYCCNT), may be gated behind debug power, or may
- *         be locked. Those ports use CYCCNT when it really counts and fall back to here when it
- *         does not - see os_arch_cycle_count_get() in each.
+ * Three things here are not obvious, and each was a bug once:
  *
- * What it provides is a counter that advances monotonically in CPU cycles, which is exactly what
- * its callers need: os_delay_us(), the busy-wait path of os_delay_ms(), and the self-test suite's
- * benchmark table all measure an interval as the difference between two reads. It is not absolute
- * time - only differences mean anything, and they stay correct across the 32-bit wrap.
+ *   - Whole periods are counted in the TICK INTERRUPT (os_arch_cycle_tick), not by polling
+ *     COUNTFLAG, which only reports wraps since the last look.
+ *   - The count is PER CORE: each core runs its own SysTick on its own phase, while os_tick_count
+ *     belongs to core 0 alone.
+ *   - The wrap-to-interrupt lag is closed with ICSR.PENDSTSET, never COUNTFLAG - reading CSR clears
+ *     that flag, so using it made the counter step BACKWARDS on alternating reads.
  *
- * WHERE THE WHOLE PERIODS COME FROM
- *
- * The SysTick down-counter alone gives a position inside one period; something has to count the
- * periods themselves. An earlier version of this file did that by watching COUNTFLAG on every call,
- * and that is subtly wrong in a way worth recording, because it looks right and passes short tests:
- * COUNTFLAG only says "it wrapped since you last looked". A period that elapses while NOBODY calls
- * this function is never credited, so two reads a few milliseconds apart could report less elapsed
- * time than one period, or - when the second read landed after a wrap - report a value LOWER than
- * the first. On the RP2040 that showed up as a counter running at 1/100 of the CPU clock and as
- * negative intervals wrapping to nearly 2^32.
- *
- * So the periods are counted in the tick interrupt instead, by os_arch_cycle_tick(), which the
- * kernel calls on EVERY core once per tick of that core's own timer. Nothing can be missed, because
- * nothing has to be caught.
- *
- * Per core, and that part is not optional. Every core runs its own SysTick, started when that core
- * entered the scheduler, so their periods do not share a phase - while os_tick_count belongs to
- * core 0 alone (see os_tick_handler). Pairing core 0's tick with core 1's down-counter gives the
- * right average rate with a sawtooth of up to a whole period on top, which is exactly the kind of
- * number that looks plausible and is not.
- *
- * THE LAG, AND WHY COUNTFLAG CANNOT CLOSE IT
- *
- * One window remains: between the hardware wrap and the interrupt that records it, os_tick_get() is
- * still one period behind while the down-counter has already restarted at the top. Reading straight
- * through that gives a value a whole period too LOW.
- *
- * COUNTFLAG looks like the answer and is not. It is set by the wrap and cleared only by a read of
- * SYST_CSR - not by the handler running - so once a wrap has happened it stays set until somebody
- * reads it, long after the tick was counted. Using it added a period that had already been counted,
- * and the next call (which found the flag cleared, because the previous call consumed it) dropped
- * it again: the counter stepped BACKWARDS by a period on alternating reads, which is worse than the
- * bug it was meant to fix.
- *
- * ICSR.PENDSTSET is the signal that actually means it. The hardware sets it on the wrap and clears
- * it when the SysTick handler is ENTERED, so it reads as "a tick is owed and has not been counted",
- * which is exactly the correction needed - and reading it changes nothing.
+ * What each looked like on hardware: doc/design.md, "The SysTick-derived cycle counter".
  *
  * @copyright (c) 2026 Ahura Project Contributors
  *            SPDX-License-Identifier: GPL-3.0-or-later
  *            See LICENSE in the project root for the full license text.
  */
+
+#ifndef OS_ARCH_PORT_TRANSLATION_UNIT
+#error "os_arch_cycle_systick.c is a textual include, not a translation unit. Compile arch/<family>/<core>/os_arch_port.c instead - it defines OS_ARCH_PORT_TRANSLATION_UNIT and includes this. See doc/installation.md."
+#endif
+
 
 /*
  * ***********************************************************************************************************

@@ -2,32 +2,18 @@
  * @file soc_cb.c
  * @brief SoC-owned kernel callbacks for STMicroelectronics STM32.
  *
- * STM32 asks less of a SoC package than most parts, and it is worth saying why rather than
- * leaving the short file to look unfinished. Every STM32 uses CMSIS-Pack startup files, so the
- * PendSV vector already carries the kernel's default name and SystemCoreClock already exists and
- * is maintained by the generated SystemInit(). Single-core parts need no core id, no inter-core
- * IPI and no hardware spinlock. What is left is the handful of things below.
+ * A short file, and deliberately so: CMSIS-Pack startup already gives the kernel its PendSV
+ * vector and SystemCoreClock, and single-core parts need no core id, IPI or spinlock.
  *
- * Everything here is weak, so a strong definition anywhere in the application replaces that one
- * callback and leaves the rest of the package in place. Nothing in this file is mandatory: with
- * the HAL absent, or with the options in soc_config.h turned off, each body compiles to nothing
- * and the kernel behaves exactly as it does with no package at all.
+ * Everything here is weak, so one strong definition in the application replaces that callback and
+ * leaves the rest. Nothing is mandatory - with the HAL absent, or the soc_config.h options off,
+ * each body compiles to nothing and the kernel behaves as it does with no package at all.
  *
- * Options live in soc_config.h, copied from template/soc_config.h into Core/Inc beside
- * os_config.h. The file and every option in it are required, on the same terms as os_config.h: a
- * missing option is a compile error, never a silent default.
+ * Not here on purpose: the PendSV vector name (a CubeMX setting, see doc/vendor-notes.md), and
+ * programming the tick (the port does that; only the VECTOR is here).
  *
- * NOT in this file, deliberately:
- *
- *   - The PendSV vector name. CubeMX generating a competing PendSV_Handler is a project problem,
- *     fixed in the .ioc rather than in code - see doc/vendor-notes.md, and the installer applies
- *     it for you.
- *   - Programming the tick. OS_CONFIG_TICK_SOURCE_SYSTICK is the right answer on almost every
- *     STM32 and the port sets SysTick's reload itself. The VECTOR is here, though - see
- *     SysTick_Handler below, and turn CubeMX's own off as that comment describes.
- *     The low-power L and U families, where SysTick stops in STOP mode, want an LPTIM or RTC tick
- *     instead - that is os_arch_tick_init_cb(), and it is family-specific enough to belong to the
- *     application until this package grows a per-family layer.
+ * Why the package is shaped this way, and what an LPTIM or RTC tick would need on the L and U
+ * families: doc/stm32.md, "The SoC package".
  *
  * @copyright (c) 2026 Ahura Project Contributors
  *            SPDX-License-Identifier: GPL-3.0-or-later
@@ -174,6 +160,29 @@ void SysTick_Handler(void)
 
 #endif /* OS_CONFIG_TICK_SOURCE_SYSTICK && SOC_CONFIG_SYSTICK_VECTOR */
 
+/** Referenced by nothing, and that is its entire job.
+ *
+ *  A static archive gives up an object only when the link still has an undefined symbol that object
+ *  defines. Everything in this file fails that test: SysTick_Handler is already DEFINED by the
+ *  startup file - weakly, aliased to Default_Handler - and every _cb here has a weak default in the
+ *  kernel. So there is never an unresolved reference pointing this way, the linker never extracts
+ *  this object, and the whole package loses silently to those defaults.
+ *
+ *  What that costs is the kernel tick. SysTick's vector keeps the startup file's Default_Handler,
+ *  which is `b .`: the first tick jumps into an infinite loop and the board stops dead, with
+ *  os_tick_count still 0, SysTick both active and pending, and no fault recorded anywhere to say
+ *  why. Found on a Nucleo-G431RB, where it froze twelve characters into the self-test banner.
+ *
+ *  It stayed hidden for as long as it did because OS_CONFIG_TICKLESS_ENABLE was on in every project
+ *  that had run this package. os_tick.c references os_tickless_pre_sleep_cb, the kernel deliberately
+ *  ships no default for it, and that one undefined symbol was enough to drag the object - and
+ *  SysTick_Handler with it - into the link by accident. Turn tickless off and the accident stops.
+ *
+ *  soc.cmake names this symbol in a -u link option, which is what forces the extraction.
+ *  Unconditional on purpose: a symbol behind the same #if as the things it rescues would disappear
+ *  along with them. The raspberrypi packages carry the same anchor for the same reason. */
+const uint32_t soc_stm32_anchor = 0U;
+
 
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 
@@ -309,7 +318,10 @@ Configuration tab, point the LPTIM1 mux at LSI or LSE - the default is PCLK3."
  *  stopping it. */
 #define SOC_LPTIM_PRESCALER         LPTIM_PRESCALER_DIV1
 
-/** Counts in one kernel tick. Settled at compile time, and refused below if it comes out as 0. */
+/** Counts in one kernel tick, ROUNDED DOWN. Used only where a rough size is wanted - the arming
+ *  floor below - and deliberately not for measuring a window: see soc_lptim_accum for why one
+ *  pre-divided constant cannot express this ratio and what is used instead. Refused below if it
+ *  comes out as 0. */
 #define SOC_LPTIM_COUNTS_PER_TICK   (SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ / OS_CONFIG_TICK_HZ)
 
 #if (SOC_LPTIM_COUNTS_PER_TICK == 0U)
@@ -322,9 +334,14 @@ slower tick."
  *  against. */
 #define SOC_LPTIM_PERIOD            0xFFFFUL
 
-/** Ceiling on one window, in counts. One short of a full wrap, so a window that ran its whole
- *  length can never be mistaken for one that has not started. */
-#define SOC_LPTIM_MAX_COUNTS        (SOC_LPTIM_PERIOD - 1UL)
+/** Ceiling on one window, in counts: three quarters of the span, leaving a quarter as headroom.
+ *
+ *  The resume path takes its difference modulo the span, so a core still asleep past the compare -
+ *  a masked NVIC line, a debugger halt - wraps it and reports a full window as an empty one, and
+ *  every deadline then runs late by the difference. A quarter of the span is half a second at
+ *  32 kHz. Costs nothing: the ceiling goes from ~2047 ticks to 1536, and windows are bounded by the
+ *  next expiry long before this. */
+#define SOC_LPTIM_MAX_COUNTS        (((SOC_LPTIM_PERIOD + 1UL) * 3UL) / 4UL)
 
 /** What one window costs to arm, in counts. The compare write takes three low-speed periods to
  *  reach the counter's clock domain and the arming path waits for it; one more is carried for the
@@ -337,11 +354,123 @@ slower tick."
  *  clock that never starts cannot hold the idle path forever. */
 #define SOC_LPTIM_CMPOK_POLLS       100000UL
 
+/*
+ * ***********************************************************************************************************
+ * Two generations of LPTIM HAL, one driver
+ * ***********************************************************************************************************
+ *
+ * ST rewrote the LPTIM HAL part-way through the range, and the two versions are not
+ * source-compatible. Everything below is written against the difference rather than against one of
+ * them, because a package that says "STM32" and only builds on half of it is worse than one that
+ * says which half.
+ *
+ *   CHANNELLED (H5, U5, H7 recent, WBA)   The compare belongs to a channel: LPTIM_CHANNEL_1, its
+ *                                         own CC1/CMP1OK flags, an Init.Period field, and
+ *                                         HAL_LPTIM_PWM_Start_IT(h, channel). Writes to DIER are
+ *                                         themselves acknowledged, through DIEROK.
+ *   LEGACY (G0, G4, L0, L4, L5, F7, WB)   One compare, no channels: CMPM/CMPOK, no Init.Period -
+ *                                         the reload is an argument to
+ *                                         HAL_LPTIM_PWM_Start_IT(h, Period, Pulse) - and no DIEROK.
+ *
+ * LPTIM_CHANNEL_1 is the discriminator: it exists only in the channelled headers. What is shared -
+ * HAL_LPTIM_Init, HAL_LPTIM_ReadCounter, HAL_LPTIM_IRQHandler, the CompareMatch and
+ * AutoReloadMatch callbacks, __HAL_LPTIM_GET_FLAG and __HAL_LPTIM_CLEAR_FLAG - is used directly
+ * and appears nowhere here.
+ */
+#if defined(LPTIM_CHANNEL_1)
+
+#define SOC_LPTIM_FLAG_MATCH        LPTIM_FLAG_CC1
+#define SOC_LPTIM_FLAG_CMPOK        LPTIM_FLAG_CMP1OK
+#define SOC_LPTIM_COMPARE_SET(v)    __HAL_LPTIM_COMPARE_SET(SOC_LPTIM_HANDLE, LPTIM_CHANNEL_1, (v))
+#define SOC_LPTIM_START_IT()        HAL_LPTIM_PWM_Start_IT(SOC_LPTIM_HANDLE, LPTIM_CHANNEL_1)
+
+/* The reload is a handle field here, applied by HAL_LPTIM_Init. */
+#define SOC_LPTIM_PERIOD_APPLY()    do { SOC_LPTIM_HANDLE->Init.Period = SOC_LPTIM_PERIOD; } while (0)
+
+/* CMP1OK is not wanted as an interrupt: every window writes the compare register and the arming
+ * path waits on that very flag, so a handler would clear it before the wait could see it and the
+ * interrupt left pending would drop the following sleep straight back out. Disabling it is itself a
+ * DIER write, which this generation acknowledges through DIEROK - hence the wait. */
+#define SOC_LPTIM_QUIET_CMPOK()                                                                   \
+    do {                                                                                          \
+        __HAL_LPTIM_CLEAR_FLAG(SOC_LPTIM_HANDLE, LPTIM_FLAG_DIEROK);                              \
+        __HAL_LPTIM_DISABLE_IT(SOC_LPTIM_HANDLE, LPTIM_IT_CMP1OK);                                \
+        soc_lptim_write_settle(LPTIM_FLAG_DIEROK);                                                \
+    } while (0)
+
+#else
+
+#define SOC_LPTIM_FLAG_MATCH        LPTIM_FLAG_CMPM
+#define SOC_LPTIM_FLAG_CMPOK        LPTIM_FLAG_CMPOK
+#define SOC_LPTIM_COMPARE_SET(v)    __HAL_LPTIM_COMPARE_SET(SOC_LPTIM_HANDLE, (v))
+
+/* Period and Pulse are start-up arguments rather than handle fields. The pulse is 0 because no
+ * output pin is routed; the first real compare is written by the first window. */
+#define SOC_LPTIM_START_IT()        HAL_LPTIM_PWM_Start_IT(SOC_LPTIM_HANDLE, SOC_LPTIM_PERIOD, 0U)
+#define SOC_LPTIM_PERIOD_APPLY()    do { } while (0)
+
+/* Same reasoning as the channelled branch, minus the DIEROK acknowledgement this generation does
+ * not have: the DIER write here takes effect directly. */
+#define SOC_LPTIM_QUIET_CMPOK()                                                                   \
+    do {                                                                                          \
+        __HAL_LPTIM_DISABLE_IT(SOC_LPTIM_HANDLE, LPTIM_IT_CMPOK);                                 \
+    } while (0)
+
+#endif /* LPTIM_CHANNEL_1 */
+
 /** Counter reading the open window started from. */
 static uint32_t soc_lptim_start = 0U;
 
 /** Counts the open window was armed for; 0 when no window is open. */
 static uint32_t soc_lptim_armed = 0U;
+
+/** Time this driver has measured but not yet announced, in counts x OS_CONFIG_TICK_HZ.
+ *
+ * Two separate errors used to live where this now sits, and neither was visible in a single window.
+ *
+ *  1. SOC_LPTIM_COUNTS_PER_TICK is an integer division. At the usual 32768 Hz against a 1 kHz tick
+ *     it is 32, so a "tick" measured against it is 32/32768 s = 976.6 us rather than 1000. Every
+ *     window therefore ran the kernel clock 2.4% FAST, while SysTick outside the window kept it
+ *     right - an error that changes sign depending on how much of the second was spent asleep.
+ *  2. The leftover counts of the final, incomplete tick were dropped: elapsed was a truncating
+ *     division and the next window re-read its reference from the counter, so up to a whole tick
+ *     went missing per window - this time SLOW. The two did not cancel; their sum moved with the
+ *     workload.
+ *
+ * Scaling by OS_CONFIG_TICK_HZ instead of pre-dividing removes both. A count is worth TICK_HZ
+ * units and a tick is worth SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ of them, which is exact for every
+ * ratio including the ones that are not whole. What is left after the whole ticks are taken out
+ * stays here and is spent by a later window, so the announced time converges on the real elapsed
+ * time rather than drifting away from it at a fixed rate.
+ *
+ * Always below SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ, by construction. 64-bit because the
+ * multiplication is by a frequency and this is the idle path, where one library division per
+ * WINDOW - not per tick - costs nothing worth counting. */
+static uint64_t soc_lptim_accum = 0U;
+
+/******************************************************************************************************/
+/**
+ * @brief Counts to wait for a given number of whole kernel ticks. Rounded UP: a window must never
+ *        end before the tick it was asked for.
+ *
+ * soc_lptim_accum is deliberately NOT subtracted here, and getting that wrong is worth a note
+ * because it looks like the symmetric thing to do and it is not. The accumulator holds time that has
+ * already ELAPSED and merely has not been announced yet - it sits behind the reference this window
+ * is about to take. The kernel deadline is ticks from NOW. Netting the accumulator off makes the
+ * window end that much before the deadline, while os_arch_tick_resume_cb() adds the same amount back
+ * into elapsed - so the kernel is told a full window passed when it did not. The clock then runs
+ * fast, every deadline looks nearer than it is, and the next window is planned shorter still. On the
+ * H503 that fed back until a 50-tick sleep measured 5.
+ *
+ * @param[in] ticks  Kernel ticks the window should cover.
+ * @return uint32_t  Counts to arm.
+ */
+static uint32_t soc_lptim_ticks_to_counts(uint32_t ticks)
+{
+    uint64_t wanted = (uint64_t)ticks * (uint64_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ;
+
+    return (uint32_t)((wanted + (uint64_t)OS_CONFIG_TICK_HZ - 1U) / (uint64_t)OS_CONFIG_TICK_HZ);
+}
 
 /******************************************************************************************************/
 /**
@@ -380,7 +509,7 @@ static uint32_t soc_lptim_count_get(void)
  * timeout in any useful sense - it is there so that a clock which never starts cannot hold the idle
  * path forever.
  *
- * @param[in] flag  LPTIM_FLAG_CMP1OK or LPTIM_FLAG_DIEROK.
+ * @param[in] flag  SOC_LPTIM_FLAG_CMPOK, or LPTIM_FLAG_DIEROK where that generation has one.
  * @return None.
  */
 static void soc_lptim_write_settle(uint32_t flag)
@@ -415,7 +544,7 @@ static void soc_lptim_init(void)
     /* CubeMX picks a reload for whatever it imagined the timer was for; a free-running counter wants
      * the whole range. The rest of the handle - clock source, prescaler - is left as generated,
      * which is the part CubeMX is authoritative about. */
-    SOC_LPTIM_HANDLE->Init.Period          = SOC_LPTIM_PERIOD;
+    SOC_LPTIM_PERIOD_APPLY();
     SOC_LPTIM_HANDLE->Init.Clock.Prescaler = SOC_LPTIM_PRESCALER;
 
     if (HAL_LPTIM_Init(SOC_LPTIM_HANDLE) == HAL_OK)
@@ -429,16 +558,13 @@ static void soc_lptim_init(void)
          * The wrap interrupt comes with it. That fires once per full span of the counter, which is
          * the same 2 seconds as the longest window this source will ever be asked for, so it costs
          * at most one extra wake per window and usually none. */
-        if (HAL_LPTIM_PWM_Start_IT(SOC_LPTIM_HANDLE, LPTIM_CHANNEL_1) == HAL_OK)
+        if (SOC_LPTIM_START_IT() == HAL_OK)
         {
-            /* CMP1OK is not wanted as an interrupt. Every window writes the compare register, and
-             * the arming path waits on this very flag - a handler would clear it before the wait
-             * could see it, and the interrupt left pending would drop the following sleep straight
-             * back out again. ARROK, REPOK and UPDATE are left as they are: they answer writes to
-             * registers this driver never touches after start-up. */
-            __HAL_LPTIM_CLEAR_FLAG(SOC_LPTIM_HANDLE, LPTIM_FLAG_DIEROK);
-            __HAL_LPTIM_DISABLE_IT(SOC_LPTIM_HANDLE, LPTIM_IT_CMP1OK);
-            soc_lptim_write_settle(LPTIM_FLAG_DIEROK);
+            /* The compare-ok interrupt is not wanted; see SOC_LPTIM_QUIET_CMPOK above for why, and
+             * for what each HAL generation needs in order to do it. ARROK, REPOK and UPDATE are
+             * left as they are: they answer writes to registers this driver never touches after
+             * start-up. */
+            SOC_LPTIM_QUIET_CMPOK();
         }
     }
 }
@@ -491,7 +617,12 @@ void HAL_LPTIM_AutoReloadMatchCallback(LPTIM_HandleTypeDef *hlptim)
  */
 uint32_t os_arch_tick_suppress_max_cb(void)
 {
-    return (uint32_t)(SOC_LPTIM_MAX_COUNTS / SOC_LPTIM_COUNTS_PER_TICK);
+    /* Whole ticks that fit in the longest window this counter can express, on the same exact ratio
+     * soc_lptim_accum uses. The pre-divided form this replaced answered 2048 where the counter can
+     * really only hold 1999 (at 32768 Hz / 1 kHz): the kernel then planned a window the arming path
+     * silently clamped, and reported the shortfall as time that never happened. */
+    return (uint32_t)(((uint64_t)SOC_LPTIM_MAX_COUNTS * (uint64_t)OS_CONFIG_TICK_HZ) /
+                      (uint64_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ);
 }
 
 /******************************************************************************************************/
@@ -529,7 +660,7 @@ uint32_t os_arch_tick_suppress_min_cb(void)
  */
 void os_arch_tick_suppress_cb(uint32_t ticks)
 {
-    uint32_t counts = ticks * (uint32_t)SOC_LPTIM_COUNTS_PER_TICK;
+    uint32_t counts = soc_lptim_ticks_to_counts(ticks);
 
     if (counts > SOC_LPTIM_MAX_COUNTS)
     {
@@ -545,8 +676,8 @@ void os_arch_tick_suppress_cb(uint32_t ticks)
      * the length of the wait below, so it could match in there and leave a flag that wakes this
      * window instantly - a wasted idle pass, and harmless. Clearing afterwards would instead risk
      * discarding a real match, which is a sleep that never ends. */
-    __HAL_LPTIM_CLEAR_FLAG(SOC_LPTIM_HANDLE, LPTIM_FLAG_CC1);
-    __HAL_LPTIM_CLEAR_FLAG(SOC_LPTIM_HANDLE, LPTIM_FLAG_CMP1OK);
+    __HAL_LPTIM_CLEAR_FLAG(SOC_LPTIM_HANDLE, SOC_LPTIM_FLAG_MATCH);
+    __HAL_LPTIM_CLEAR_FLAG(SOC_LPTIM_HANDLE, SOC_LPTIM_FLAG_CMPOK);
 
     /* The peripheral flag and the NVIC's latched pending bit are two separate things, and clearing
      * the first above leaves the second exactly where it was. That matters here and almost nowhere
@@ -560,14 +691,13 @@ void os_arch_tick_suppress_cb(uint32_t ticks)
      * the next line, so a real match from here on sets the bit again and ends the sleep. */
     NVIC_ClearPendingIRQ(SOC_LPTIM_IRQN);
 
-    __HAL_LPTIM_COMPARE_SET(SOC_LPTIM_HANDLE, LPTIM_CHANNEL_1,
-                            (soc_lptim_start + counts) & (uint32_t)SOC_LPTIM_PERIOD);
+    SOC_LPTIM_COMPARE_SET((soc_lptim_start + counts) & (uint32_t)SOC_LPTIM_PERIOD);
 
     /* Waited out rather than left to land during the sleep, because the next window can arrive
      * sooner than three low-speed periods and a compare written over one still in flight is lost.
      * It costs nothing in accuracy: the counter is running through the wait, so the wait is inside
      * the window being measured. Which is the whole point of this driver. */
-    soc_lptim_write_settle(LPTIM_FLAG_CMP1OK);
+    soc_lptim_write_settle(SOC_LPTIM_FLAG_CMPOK);
 }
 
 /******************************************************************************************************/
@@ -587,8 +717,15 @@ uint32_t os_arch_tick_resume_cb(void)
          * inside the window come out right. */
         uint32_t counts = (soc_lptim_count_get() - soc_lptim_start) & (uint32_t)SOC_LPTIM_PERIOD;
 
-        elapsed         = counts / (uint32_t)SOC_LPTIM_COUNTS_PER_TICK;
-        soc_lptim_armed = 0U;
+        /* Banked first, then spent. The whole ticks come out; the fraction of a tick that is left
+         * stays in the accumulator for the next window instead of being thrown away, which is what
+         * stops the clock losing up to a tick every time it sleeps. See soc_lptim_accum. */
+        soc_lptim_accum += (uint64_t)counts * (uint64_t)OS_CONFIG_TICK_HZ;
+
+        elapsed = (uint32_t)(soc_lptim_accum / (uint64_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ);
+
+        soc_lptim_accum -= (uint64_t)elapsed * (uint64_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ;
+        soc_lptim_armed  = 0U;
     }
 
     return elapsed;

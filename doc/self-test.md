@@ -22,7 +22,7 @@ writing anything on top of it.
 
 ## Turning it on
 
-Three things have to line up:
+Four things have to line up:
 
 1. **Turn it on** in `os_config.h`:
 
@@ -52,6 +52,21 @@ Three things have to line up:
 
    An `os_cb.c` copied before that guard existed needs the same condition added.
 
+4. **Give the suite the `SVC` vector**, so the ISR-safe APIs are exercised from a
+   real interrupt rather than from a task pretending to be one. The kernel never
+   uses `SVC`; only the suite does.
+
+   On **STM32CubeMX**, clear *System service call via SWI instruction* in
+   **System Core → NVIC → Code generation** - otherwise CubeMX emits its own
+   `SVC_Handler` and the link fails on a duplicate. See
+   [AhuraRTOS on STM32](stm32.md#2-cubemx-stop-generating-pendsv_handler-and-systick_handler).
+
+   If your application needs that handler, keep it and set
+   `OS_CONFIG_TEST_SVC_VECTOR` to `0`, then call `os_test_isr_entry()` from
+   inside it. Forgetting the call is reported as a SKIP naming it, never a hang.
+
+   On the Pico SDK there is nothing to do: nothing else claims the vector.
+
 With the switch on, `os_init()` creates the test task **instead of** the default
 application task, so the suite runs alone and `os_main()` is never called
 (`os_main.c` can stay in the build; it is simply unused).
@@ -60,6 +75,8 @@ application task, so the suite runs alone and `os_main()` is never called
 |---|---|
 | `undefined reference to 'os_test'` | Point 2: the test library is not linked |
 | `multiple definition of 'os_log_output_cb'` | Point 3: your `os_cb.c` still defines it |
+| `multiple definition of 'SVC_Handler'` | Point 4: CubeMX is still generating it |
+| `[SKIP] this port has no SVC exception to raise ISR context with` | Point 4: with `OS_CONFIG_TEST_SVC_VECTOR = 0`, the handler never calls `os_test_isr_entry()` |
 
 ## One switch instead of two
 

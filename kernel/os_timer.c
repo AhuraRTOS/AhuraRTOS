@@ -124,6 +124,8 @@ static bool        os_timer_expired_fetch(os_timer_callback_t *callback_out, voi
 static os_err_t   os_timer_arm(os_timer_t *timer, bool reload, void *context, uint32_t value);
 static void        os_timer_detach_locked(os_timer_t *timer);
 static bool        os_timer_is_running_linked(const os_timer_t *timer);
+static void        os_timer_running_insert(os_timer_t *timer);
+static uint32_t    os_timer_running_remove(os_timer_t *timer);
 static bool        os_timer_member_locked(const os_list_t *list, const os_list_node_t *node);
 static bool        os_timer_unlink_locked(os_list_t *list, os_list_node_t *node);
 static void        os_timer_pool_prepare_locked(os_timer_pool_t *pool);
@@ -200,7 +202,15 @@ os_err_t os_timer_pause(os_timer_t *timer)
         {
             timer->active = false;
             timer->paused = true;
-            status        = OS_ERR_NONE;
+
+            /* Out of the list, which is what makes the list a pure expiry order: a halted timer has
+             * no deadline to be ordered by. The remove hands back the ticks it had left, and stores
+             * them, so a later start() resumes on exactly that remainder - which is the promise
+             * os_timer_pause has always made. It used to stay linked with active clear and the tick
+             * skipped over it; a delta list has no room for a member that does not count down. */
+            (void)os_timer_running_remove(timer);
+
+            status = OS_ERR_NONE;
         }
         else
         {
@@ -415,7 +425,7 @@ os_err_t os_timer_submit(os_timer_pool_t *pool, void *context, uint32_t value)
                 entry->remaining_ticks = pool->delay_ticks;
                 entry->paused          = false;
                 entry->active          = true;
-                os_list_push_back(&os_timer_running_list, &entry->running_node);
+                os_timer_running_insert(entry);
 
                 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
                 /* A new expiry, which core 0 may already have committed to sleeping past. */
@@ -535,6 +545,10 @@ void os_timer_tick_process(uint32_t elapsed_ticks)
     os_list_node_t *node;
     bool            wake_needed = false;
 
+    /* Holds the timers found due, between taking them out of the running list and dealing with
+     * them. Local, so it needs no storage in the timer objects and cannot outlive this call. */
+    os_list_t       due_list    = { NULL, NULL };
+
     if (elapsed_ticks > 0U)
     {
 
@@ -552,30 +566,49 @@ void os_timer_tick_process(uint32_t elapsed_ticks)
         mask_state = os_arch_kernel_mask_save();
         os_critical_multicore_lock();
 
-        for (node = os_timer_running_list.head; node != NULL; node = node->next)
+        /* Detach the due prefix in one pass. The list is in expiry order (os_timer_running_insert)
+         * and only the head is measured against now, so the walk stops at the first timer that is
+         * not due - which on almost every tick is the first one it looks at. Everything linked here
+         * is active: os_timer_pause takes a halted timer out of the list entirely.
+         *
+         * Two phases rather than one, and the reason is a periodic timer re-arming. Handled inline,
+         * it would go straight back into the list this loop is walking, and a period shorter than
+         * the elapsed window would then fire it again and again inside a single call. Taking the
+         * due ones out first gives every timer exactly one expiry per call, which is the behaviour
+         * this has always had. */
+        while ((node = os_timer_running_list.head) != NULL)
         {
             os_timer_t *timer = OS_TIMER_FROM_RUNNING_NODE(node);
-
-            /* Linked but halted: os_timer_pause keeps a timer here so a resume needs nothing back. */
-            if (!timer->active)
-            {
-                continue;
-            }
 
             if (timer->remaining_ticks > elapsed_ticks)
             {
                 timer->remaining_ticks -= elapsed_ticks;
-                continue;
+                break;
             }
+
+            elapsed_ticks -= timer->remaining_ticks;
+
+            (void)os_list_pop_front(&os_timer_running_list);
+            os_list_push_back(&due_list, node);
+        }
+
+        while ((node = os_list_pop_front(&due_list)) != NULL)
+        {
+            os_timer_t *timer = OS_TIMER_FROM_RUNNING_NODE(node);
 
             if (timer->mode == OS_TIMER_MODE_PERIODIC)
             {
+                /* Straight back in, a whole period out. Measured from the end of the window that
+                 * just elapsed rather than from the moment it was due, which is what keeps a long
+                 * tickless announcement from queueing a burst of catch-up expiries. */
                 timer->remaining_ticks = timer->period_ticks;
+                os_timer_running_insert(timer);
             }
             else
             {
                 /* One-shot: keep the registry slot until the callback has run. */
-                timer->active = false;
+                timer->remaining_ticks = 0U;
+                timer->active          = false;
             }
 
             /* The queued flag and the delivery queue are two views of one fact, so they are
@@ -625,16 +658,13 @@ uint32_t os_timer_next_expiry_ticks_get(void)
     }
     else
     {
-        const os_list_node_t *node;
+        /* One read. The list is kept in expiry order, so the earliest deadline IS the head -
+         * there is no minimum left to search for, and nothing inactive to skip past. */
+        const os_list_node_t *head = os_timer_running_list.head;
 
-        for (node = os_timer_running_list.head; node != NULL; node = node->next)
+        if (head != NULL)
         {
-            const os_timer_t *timer = OS_TIMER_FROM_RUNNING_NODE(node);
-
-            if (timer->active && (timer->remaining_ticks < minimum))
-            {
-                minimum = timer->remaining_ticks;
-            }
+            minimum = OS_TIMER_FROM_RUNNING_NODE(head)->remaining_ticks;
         }
     }
 
@@ -739,7 +769,7 @@ static bool os_timer_expired_fetch(os_timer_callback_t *callback_out, void **con
         {
             /* Finished, so it stops being something the tick counts down. One unlink, no search:
              * that is the whole reason this is a list. */
-            (void)os_timer_unlink_locked(&os_timer_running_list, &timer->running_node);
+            (void)os_timer_running_remove(timer);
 
             if (timer->mode == OS_TIMER_MODE_SUBMIT)
             {
@@ -788,15 +818,12 @@ static os_err_t os_timer_arm(os_timer_t *timer, bool reload, void *context, uint
         /* Already linked when re-arming a running or paused timer, and pushing a node twice
          * would corrupt the list - so the check, not a blind push. There is nothing to run out
          * of here, which is why this cannot report OS_ERR_FULL. */
-        if (!os_timer_is_running_linked(timer))
-        {
-            os_list_push_back(&os_timer_running_list, &timer->running_node);
-
-            #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
-            /* A new expiry, which core 0 may already have committed to sleeping past. */
-            os_tickless_deadline_armed();
-            #endif
-        }
+        /* Out of the list first, whatever it was doing. The insert below places it by its new
+         * deadline, and an expiry-ordered list has no way to move a node in place - so a re-arm is
+         * a remove and an insert, not a push guarded by a membership test as it was when the list
+         * had no order to keep. A timer that was not linked is simply not found, and the remove
+         * costs one failed walk. */
+        (void)os_timer_running_remove(timer);
 
         /* This run's arguments. Written inside the critical section because the tick may be about
          * to queue an expiry that will be delivered with them. */
@@ -823,6 +850,16 @@ static os_err_t os_timer_arm(os_timer_t *timer, bool reload, void *context, uint
                 timer->queued = false;
             }
         }
+
+        /* Placed by its deadline now that remaining_ticks holds the right one. */
+        os_timer_running_insert(timer);
+
+        #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+        /* An expiry that may now be nearer than the window core 0 committed to. Unconditional,
+         * unlike the version that only fired when the timer was newly linked: a re-arm can move a
+         * deadline EARLIER, and that is exactly the case the nudge exists for. */
+        os_tickless_deadline_armed();
+        #endif
 
         timer->paused = false;
         timer->active = true;
@@ -851,7 +888,7 @@ static os_err_t os_timer_arm(os_timer_t *timer, bool reload, void *context, uint
  */
 static void os_timer_detach_locked(os_timer_t *timer)
 {
-    (void)os_timer_unlink_locked(&os_timer_running_list, &timer->running_node);
+    (void)os_timer_running_remove(timer);
     (void)os_timer_unlink_locked(&os_timer_ready_list, &timer->ready_node);
 
     timer->queued = false;
@@ -919,6 +956,103 @@ static bool os_timer_member_locked(const os_list_t *list, const os_list_node_t *
  * @param[in,out] node  Node to remove.
  * @return bool  true when the node was a member and has been unlinked.
  */
+/******************************************************************************************************/
+/**
+ * @brief Put a timer in the running list, keyed by how far away its expiry is.
+ *
+ * The list is a DELTA list: kept in expiry order, with each entry holding the ticks it waits AFTER
+ * the one in front of it. Only the head is measured against now.
+ *
+ * Same reason as the delay list in os_task.c, and the same trade. The tick used to decrement every
+ * running timer on every tick; now it decrements one, and reaches a second only when the first has
+ * actually expired. What it costs is a walk when a timer is armed - once per period rather than a
+ * thousand times a second.
+ *
+ * Caller holds the critical section; the timer must not already be linked. remaining_ticks is read
+ * as ticks-from-now on the way in and left holding the delta on the way out.
+ *
+ * @param[in,out] timer  Timer to insert.
+ * @return None.
+ */
+static void os_timer_running_insert(os_timer_t *timer)
+{
+    os_list_node_t *node      = os_timer_running_list.head;
+    uint32_t        remaining = timer->remaining_ticks;
+
+    while (node != NULL)
+    {
+        os_timer_t *entry = OS_TIMER_FROM_RUNNING_NODE(node);
+
+        if (entry->remaining_ticks > remaining)
+        {
+            /* We expire first, so this entry now waits only the difference after us. */
+            entry->remaining_ticks -= remaining;
+            break;
+        }
+
+        remaining -= entry->remaining_ticks;
+        node       = node->next;
+    }
+
+    timer->remaining_ticks = remaining;
+
+    /* NULL appends, which is the "we expire last" case the loop falls out of. */
+    os_list_insert_before(&os_timer_running_list, node, &timer->running_node);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Take a timer out of the running list, restoring remaining_ticks to ticks-from-now.
+ *
+ * Two things at once, and both are needed. The delta this entry was carrying belongs to everything
+ * behind it, so it is handed to the successor - a delta list only means anything while that chain
+ * is unbroken. And the caller gets back an absolute remaining, which is what os_timer_pause has to
+ * store: a paused timer holds no position in an expiry-ordered list, so it leaves the list
+ * entirely and comes back on resume.
+ *
+ * The absolute value costs a walk from the head, which is why this returns it rather than making
+ * every caller re-derive it. It also keeps the property the whole file is built on: membership is
+ * PROVEN by finding the node in the list, never assumed from a pointer the object supplied.
+ *
+ * @param[in,out] timer  Timer to remove.
+ * @return uint32_t  Ticks from now it had left, or 0 when it was not in the list at all.
+ */
+static uint32_t os_timer_running_remove(os_timer_t *timer)
+{
+    const os_list_node_t *node;
+    uint32_t              absolute = 0U;
+    bool                  found    = false;
+
+    for (node = os_timer_running_list.head; node != NULL; node = node->next)
+    {
+        const os_timer_t *entry = OS_TIMER_FROM_RUNNING_NODE(node);
+
+        absolute += entry->remaining_ticks;
+
+        if (entry == timer)
+        {
+            found = true;
+            break;
+        }
+    }
+
+    if (found)
+    {
+        os_list_node_t *next = timer->running_node.next;
+
+        if (next != NULL)
+        {
+            OS_TIMER_FROM_RUNNING_NODE(next)->remaining_ticks += timer->remaining_ticks;
+        }
+
+        os_list_remove(&os_timer_running_list, &timer->running_node);
+        timer->remaining_ticks = absolute;
+    }
+
+    return found ? absolute : 0U;
+}
+
+/******************************************************************************************************/
 static bool os_timer_unlink_locked(os_list_t *list, os_list_node_t *node)
 {
     bool found = os_timer_member_locked(list, node);

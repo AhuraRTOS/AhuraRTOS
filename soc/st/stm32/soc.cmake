@@ -46,3 +46,10 @@ set(AHURA_SOC_SOURCES "${CMAKE_CURRENT_LIST_DIR}/soc_cb.c")
 if(TARGET stm32cubemx)
 	set(AHURA_SOC_LINK_LIBRARIES stm32cubemx)
 endif()
+
+# Forces soc_cb.c into the link. Nothing in it is ever an UNRESOLVED symbol - SysTick_Handler is
+# already defined weakly by the startup file, and every _cb has a weak default in the kernel - so
+# the linker has no reason to take the object out of the archive at all, and the package loses to
+# those defaults in silence. The tick is what that costs: SysTick's vector keeps pointing at the
+# startup file's Default_Handler, which is an infinite loop. See the anchor in soc_cb.c.
+set(AHURA_SOC_LINK_OPTIONS -u soc_stm32_anchor)

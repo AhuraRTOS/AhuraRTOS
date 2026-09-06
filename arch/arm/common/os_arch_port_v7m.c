@@ -14,6 +14,11 @@
  *            See LICENSE in the project root for the full license text.
  */
 
+#ifndef OS_ARCH_PORT_TRANSLATION_UNIT
+#error "os_arch_port_v7m.c is a textual include, not a translation unit. Compile arch/<family>/<core>/os_arch_port.c instead - it defines OS_ARCH_PORT_TRANSLATION_UNIT and includes this. See doc/installation.md."
+#endif
+
+
 /*
  * ***********************************************************************************************************
  * Includes
@@ -34,6 +39,23 @@
  * instruction set (OS_ARCH_ATOMIC_LOCK_FREE), not the v6m/v7m/v8m split. Textual
  * include as well. */
 #include "os_arch_atomic.c"
+
+/* Tickless idle, in the form that never touches SysTick's reload: the interrupt alone is masked and
+ * a timer the SoC package owns ends the window. Same include, and for the same reason, as in
+ * os_arch_port_v6m.c.
+ *
+ * NOT the v8m arrangement, which reprograms the reload. On this port DWT is optional (see
+ * os_arch_dwt_enable below), and where it is missing os_arch_cycle_count_get falls back to the
+ * counter os_arch_cycle_systick.c synthesizes from SysTick's own periods - measured against the
+ * reload it reads live. Moving that reload would strand os_delay_us() and the busy-wait half of
+ * os_delay_ms() on every such part, which is exactly the trade the ceiling in
+ * os_arch_max_suppressed_ticks_get() exists to refuse.
+ *
+ * Before this include the port answered a hard 0 to every tickless query and never called the SoC
+ * suppress callbacks at all, so a package that supplied a wake source got nothing from it - and
+ * OS_ARCH_SLEEP() still ran os_arch_soc_sleep_cb(), which on an STM32 under
+ * OS_CONFIG_SLEEP_MODE_DEEP entered Stop mode with no window armed and no way to measure it. */
+#include "os_arch_tickless.c"
 
 /*
  * ***********************************************************************************************************
@@ -75,9 +97,6 @@
  * Global variables
  * ***********************************************************************************************************
 */
-
-static uint32_t os_arch_sleep_entry_cycles = 0U;
-static uint32_t os_arch_planned_idle_ticks = 0U;
 
 /* Whether DWT CYCCNT is present and actually counting on this device; decided
  * once in os_arch_init(). False routes os_arch_cycle_count_get() to the
@@ -287,8 +306,6 @@ void os_arch_init(void)
     os_arch_dwt_available = os_arch_dwt_enable();
 
     os_arch_cycle_systick_reset();
-    os_arch_sleep_entry_cycles = os_arch_cycle_count_get();
-    os_arch_planned_idle_ticks = 0U;
 }
 
 /******************************************************************************************************/
@@ -423,91 +440,6 @@ uint32_t* os_arch_task_stack_initialize(uint8_t *stack_base, size_t stack_bytes,
 uint32_t os_arch_cycle_count_get(void)
 {
     return os_arch_dwt_available ? OS_ARCH_REG_DWT_CYCCNT : os_arch_cycle_systick_get();
-}
-
-/******************************************************************************************************/
-/**
- * @brief Return elapsed ticks while in low-power mode.
- *
- * @return uint32_t  Elapsed ticks since sleep entry.
- */
-uint32_t os_arch_elapsed_ticks_get(void)
-{
-    /* Always 0 on this port, and deliberately so.
-     *
-     * os_arch_max_suppressed_ticks_get() returns 0 here: ticking is never suppressed, so the WFI
-     * runs with SysTick still counting and its interrupt still enabled, and the interrupt that
-     * ends the sleep is normally the very next tick. Every tick that passed was therefore already
-     * counted, one at a time, by os_tick_handler().
-     *
-     * Returning a measured duration as well would have os_tick.c announce time the ISR had just
-     * accounted for, advancing os_tick_count at roughly twice real time for the whole idle period
-     * - delays and timers would then fire early in proportion to how long the system sat idle. A
-     * suppression-capable port (v8m) returns a real figure precisely because there the ISR did not
-     * run. Measuring the sleep only becomes meaningful here once this port learns to reprogram
-     * SysTick, at which point os_arch_sleep_prepare's recorded entry cycle count is what it needs.
-     */
-    os_arch_planned_idle_ticks = 0U;
-
-    return 0U;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Close the tickless window. Nothing to release on this port.
- *
- * @return None.
- */
-void os_arch_sleep_finish(void)
-{
-    /* os_arch_sleep_prepare takes no interrupt mask here: a plain WFI needs interrupts left
-     * enabled in order to wake at all, so there is nothing to hand back. */
-}
-
-
-/******************************************************************************************************/
-/**
- * @brief Record low-power entry context for elapsed tick accounting.
- *
- * @param[in] planned_ticks  Planned idle duration in kernel ticks.
- * @return None.
- */
-void os_arch_sleep_prepare(uint32_t planned_ticks)
-{
-    os_arch_planned_idle_ticks = planned_ticks;
-    os_arch_sleep_entry_cycles = os_arch_cycle_count_get();
-}
-
-/******************************************************************************************************/
-/**
- * @brief Maximum ticks this port can suppress in a single tickless window (see
- *        os_arch_port_common.h for the full contract).
- *
- * This port does not yet reprogram SysTick's reload for real suppression (see os_arch_port_v8m.c,
- * which does) - os_arch_sleep_prepare/os_arch_elapsed_ticks_get above still measure via the DWT
- * cycle counter around a plain WFI, so there is no register-width-limited window to report here.
- * 0 tells callers (os_tick.c, tests) not to expect a real suppressed sleep on this port yet.
- *
- * @return uint32_t  Always 0 until this port gets the same fix as os_arch_port_v8m.c.
- */
-uint32_t os_arch_max_suppressed_ticks_get(void)
-{
-    return 0U;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Shortest window worth opening on this port.
- *
- * 0, and for the same reason the ceiling above is 0: this port opens no windows at all yet. Present
- * so the pair stays a pair - a port that answered one and not the other would read as an oversight
- * in whichever direction the next person guessed.
- *
- * @return uint32_t  Always 0 until this port gets the same fix as os_arch_port_v8m.c.
- */
-uint32_t os_arch_min_suppressed_ticks_get(void)
-{
-    return 0U;
 }
 
 /*

@@ -18,8 +18,24 @@ pick one:**
 | **C** | **[Manual](#manual---step-by-step)** - eight steps by hand | CubeIDE projects, non-CMake builds, or when you want to make every edit yourself |
 
 All three end in the same place. Verified end to end on a **NUCLEO-H503RB**
-(Cortex-M33) built with `arm-none-eabi-gcc` 14.3.1 from the STM32Cube toolchain;
-the only board-specific names below are the `stm32h5xx_*` file names and `TIM7`.
+(Cortex-M33) and a **NUCLEO-G431RB** (Cortex-M4), built with `arm-none-eabi-gcc`
+from the STM32Cube toolchain; the only board-specific names below are the
+`stm32h5xx_*` file names and `TIM7`.
+
+> **"STM32" on this page means STM32 + CubeMX + HAL.** The `st/stm32` SoC package
+> is written against ST's generated code and calls into the HAL by name -
+> `SystemCoreClock`, `HAL_SuspendTick()` / `HAL_ResumeTick()`, and (for tickless
+> deep sleep) an `MX_LPTIM1_Init()`-style handle named in `soc_config.h`. Every
+> one of those is guarded and degrades to nothing when the HAL is absent, but the
+> package as a whole assumes that project shape.
+>
+> **On a bare-metal or LL-only STM32 project, do not select `AHURA_SOC st/stm32`.**
+> Copy `template/soc_cb.c` into your own tree instead and fill in the two or three
+> callbacks you need, exactly as you would for any unpackaged MCU
+> ([SoC packages](soc.md)). The kernel itself assumes nothing about ST: it needs a
+> `PendSV_Handler` and a tick, and that is all. Choosing the package on a project
+> without the HAL fails at link time with names that look like kernel bugs and are
+> not.
 
 ST tooling differs from every other vendor's in exactly two places, and both are
 CubeMX checkboxes: it generates its own `PendSV_Handler`, and its HAL takes
@@ -119,7 +135,7 @@ Every C edit it makes goes inside a CubeMX `USER CODE` section, so regeneration
 keeps it. The one exception is that `PendSV_Handler`, because CubeMX owns the
 function and offers no section inside it - so regenerating brings the stub back,
 and re-running the installer disables it again. To stop it being generated at
-all, do [manual step 2](#2-cubemx-stop-generating-pendsv_handler) once.
+all, do [manual step 2](#2-cubemx-stop-generating-pendsv_handler-and-systick_handler) once.
 
 It stops with an explanation, **before writing anything**, if the HAL still owns
 SysTick or if FreeRTOS is already in the project. The fix is a CubeMX checkbox
@@ -281,6 +297,24 @@ from a task, and on CMSIS-Pack that handler is named `SVC_Handler` too. A
 generated one collides exactly the same way. Turning it off costs an application
 that does not use `SVC` nothing.
 
+**If you need CubeMX's `SVC_Handler`**, keep the checkbox ticked and set
+`OS_CONFIG_TEST_SVC_VECTOR` to `0` in `os_config.h` instead. Then add one line
+inside the handler CubeMX generates, in a `USER CODE` block so regeneration keeps
+it:
+
+```c
+void SVC_Handler(void)
+{
+  /* USER CODE BEGIN SVCall_IRQn 1 */
+  os_test_isr_entry();
+  /* USER CODE END SVCall_IRQn 1 */
+}
+```
+
+Nothing is deleted and nothing collides. If you forget the line, the suite says
+so with a SKIP naming it rather than hanging. This is how the NUCLEO-G431RB in
+this project's own test set is set up.
+
 This is what the *Code generation* tab should look like when you are done -
 everything at its default except the three cleared rows:
 
@@ -297,9 +331,10 @@ involved; leave them as they are.
 
 > **On the installer route?** It refuses to write anything while either handler is
 > still generated, and names the checkbox that turns it off - it cannot clear the
-> `.ioc` for you. `SVC_Handler` it cannot check at all, because nothing in the
+> `.ioc` for you. `SVC_Handler` it does not check, because nothing in the
 > generated sources says whether you intend to run the self-test. If you enable
-> the suite later and the link fails on `SVC_Handler`, this checkbox is the fix.
+> the suite later and the link fails on `SVC_Handler`, you have two fixes: this
+> checkbox, or `OS_CONFIG_TEST_SVC_VECTOR = 0` and the one line above.
 
 ### 3. CubeMX: move the HAL time base off SysTick
 
@@ -544,6 +579,42 @@ whatever `OS_LOG_*` emits.
 
 ## The SoC package
 
+### Why it is so short
+
+STM32 asks less of a SoC package than most parts, and the near-empty file is the
+answer rather than an unfinished one. Every STM32 uses CMSIS-Pack startup files,
+so the PendSV vector already carries the kernel's default name and
+`SystemCoreClock` already exists and is maintained by the generated
+`SystemInit()`. Single-core parts need no core id, no inter-core IPI and no
+hardware spinlock. What is left is the handful of callbacks in `soc_cb.c`.
+
+Everything in it is **weak**, so a strong definition anywhere in the application
+replaces that one callback and leaves the rest of the package in place. Nothing
+is mandatory: with the HAL absent, or with the options in `soc_config.h` turned
+off, each body compiles to nothing and the kernel behaves exactly as it does
+with no package at all.
+
+Options live in `soc_config.h`, copied from `template/soc_config.h` into
+`Core/Inc` beside `os_config.h`. The file and every option in it are required on
+the same terms as `os_config.h`: a missing option is a compile error, never a
+silent default.
+
+Two things are deliberately **not** in the package:
+
+- **The PendSV vector name.** CubeMX generating a competing `PendSV_Handler` is a
+  project problem, fixed in the `.ioc` rather than in code - see
+  [Vendor notes](vendor-notes.md). The installer applies it for you.
+- **Programming the tick.** `OS_CONFIG_TICK_SOURCE_SYSTICK` is the right answer
+  on almost every STM32, and the port sets SysTick's reload itself. The *vector*
+  is in the package, and CubeMX's own `SysTick_Handler` has to be turned off.
+
+  The low-power **L and U families are the exception**: SysTick stops in STOP
+  mode there, so they want an LPTIM or RTC tick instead. That is
+  `os_arch_tick_init_cb()`, and it is family-specific enough to belong to the
+  application until this package grows a per-family layer (see **E6** in
+  `AUDIT.md`).
+
+
 ```cmake
 set(AHURA_SOC st/stm32)
 ```
@@ -575,7 +646,7 @@ so a value here could only be wrong.
 
 | | |
 |---|---|
-| **Context-switch vector** | Nothing to supply. CMSIS-Pack startup already names it `PendSV_Handler`, which is the kernel's default - but CubeMX will *generate its own* unless told not to, and that one wins at link time. This is step [2. CubeMX: stop generating `PendSV_Handler`](#2-cubemx-stop-generating-pendsv_handler) |
+| **Context-switch vector** | Nothing to supply. CMSIS-Pack startup already names it `PendSV_Handler`, which is the kernel's default - but CubeMX will *generate its own* unless told not to, and that one wins at link time. This is step [2. CubeMX: stop generating `PendSV_Handler`](#2-cubemx-stop-generating-pendsv_handler-and-systick_handler) |
 | **Tick** | Nothing to supply, but the HAL competes for SysTick and must be moved off it. This is step [3. CubeMX: move the HAL time base off SysTick](#3-cubemx-move-the-hal-time-base-off-systick) |
 | **`SystemCoreClock`** | Already defined by CMSIS-Pack. The package refreshes it in `os_arch_soc_init_cb()` before the kernel programs its tick, so a clock tree brought up after `SystemInit()` is still reflected. `SOC_CONFIG_CLOCK_AUTO_UPDATE 0` turns that off |
 | **Core id** | Not needed - single-core parts |

@@ -161,13 +161,24 @@ OS_WEAK uint32_t os_arch_core_id_get_cb(void)
 /******************************************************************************************************/
 /**
  * @brief Interrupt another core so it re-evaluates scheduling. SoC-specific: e.g. the RP2040
- *        inter-core FIFO/doorbell. Without an implementation the target core reacts at its
- *        next tick instead.
+ *        inter-core FIFO/doorbell.
+ *
+ * OPTIONAL while ticking is continuous: without an implementation the target core reacts at its own
+ * next tick instead, which costs latency and nothing else.
+ *
+ * REQUIRED as soon as OS_CONFIG_TICKLESS_ENABLE is on, which is why the default below disappears in
+ * that combination and leaving it out becomes a link error naming this symbol. A suppressed window
+ * is precisely the absence of a next tick: os_tickless_deadline_armed() (kernel/os_tick.c) has this
+ * call and nothing else to pull core 0 out of a window that a deadline armed on another core now
+ * falls inside. With an empty body that deadline is simply missed - a 10 ms delay on core 1 taking
+ * as long as core 0's window, with nothing anywhere reporting it.
  */
+#if !((OS_CONFIG_CORE_COUNT > 1U) && (OS_CONFIG_TICKLESS_ENABLE == 1U))
 OS_WEAK void os_arch_core_ipi_request_cb(uint32_t core_id)
 {
     (void)core_id;
 }
+#endif
 
 /******************************************************************************************************/
 /**

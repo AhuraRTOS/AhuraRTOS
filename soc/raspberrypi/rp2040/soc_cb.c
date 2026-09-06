@@ -200,6 +200,45 @@ static int32_t soc_tickless_alarm = -1;
 /** Timer reading when the window opened, so the close can measure against it. */
 static uint64_t soc_tickless_entry_us;
 
+/** Time measured but not yet announced, in microseconds x OS_CONFIG_TICK_HZ.
+ *
+ * A window's last, incomplete tick used to be dropped: elapsed was a truncating division and the
+ * next window re-read its reference from the timer, so up to one whole tick went missing EVERY time
+ * the core slept. Nothing in a single window shows it; a run that sleeps once a second loses a
+ * second every few minutes.
+ *
+ * Scaling by OS_CONFIG_TICK_HZ rather than pre-dividing also makes the conversion exact for tick
+ * rates that do not divide 1 MHz - 300 Hz, 1024 Hz - where SOC_TICKLESS_US_PER_TICK is a rounded
+ * number and every window inherited its error. What is left after the whole ticks are taken out
+ * stays here and is spent by a later window, so announced time converges on real time.
+ *
+ * Always below 1000000, by construction. */
+static uint64_t soc_tickless_accum_us_hz;
+
+/******************************************************************************************************/
+/**
+ * @brief Microseconds to wait for a given number of whole kernel ticks, honouring what
+ *        soc_tickless_accum_us_hz has already banked. Rounded UP: a window must never end before
+ *        the tick it was asked for.
+ *
+ * @param[in] ticks  Kernel ticks the window should cover.
+ * @return uint64_t  Microseconds to arm.
+ */
+static uint64_t soc_tickless_ticks_to_us(uint32_t ticks)
+{
+    /* soc_tickless_accum_us_hz is deliberately NOT subtracted here, and getting that wrong is worth
+     * a note because it looks like the symmetric thing to do and it is not. The accumulator holds
+     * time that has already ELAPSED and merely has not been announced yet - it sits behind the
+     * reference this window is about to take. The kernel's deadline is `ticks` from NOW. Netting the
+     * accumulator off makes the window end that much before the deadline, while the close adds the
+     * same amount back into `elapsed` - so the kernel is told a full window passed when it did not,
+     * the clock runs fast, and the next window is planned shorter still. On an STM32 that showed up
+     * as a 50-tick sleep measuring 5. */
+    uint64_t wanted = (uint64_t)ticks * 1000000ULL;
+
+    return (wanted + (uint64_t)OS_CONFIG_TICK_HZ - 1ULL) / (uint64_t)OS_CONFIG_TICK_HZ;
+}
+
 /******************************************************************************************************/
 /**
  * @brief Alarm handler: exists only to end the WFI.
@@ -266,7 +305,7 @@ uint32_t os_arch_tick_suppress_max_cb(void)
      * package with no alarm to spare answers 0 and the port stops there. */
     if (soc_tickless_alarm_ready())
     {
-        max_ticks = (60UL * 1000000UL) / SOC_TICKLESS_US_PER_TICK;   /* one minute */
+        max_ticks = 60UL * OS_CONFIG_TICK_HZ;   /* one minute, exact at every tick rate */
     }
 
     return max_ticks;
@@ -290,7 +329,7 @@ void os_arch_tick_suppress_cb(uint32_t ticks)
         uint64_t target;
 
         soc_tickless_entry_us = timer_time_us_64(timer_hw);
-        target                = soc_tickless_entry_us + ((uint64_t)ticks * SOC_TICKLESS_US_PER_TICK);
+        target                = soc_tickless_entry_us + soc_tickless_ticks_to_us(ticks);
 
         hw_set_bits(&timer_hw->inte, 1UL << alarm);
         irq_set_enabled((uint)(TIMER_IRQ_0 + alarm), true);
@@ -313,6 +352,7 @@ void os_arch_tick_suppress_cb(uint32_t ticks)
 uint32_t os_arch_tick_resume_cb(void)
 {
     uint64_t elapsed_us;
+    uint32_t elapsed_ticks;
 
     /* Disarm first: a window that ran to completion leaves the alarm fired and its bit set, and a
      * window cut short leaves it armed for a moment that will never be waited for. */
@@ -322,7 +362,16 @@ uint32_t os_arch_tick_resume_cb(void)
 
     elapsed_us = timer_time_us_64(timer_hw) - soc_tickless_entry_us;
 
-    return (uint32_t)(elapsed_us / SOC_TICKLESS_US_PER_TICK);
+    /* Banked first, then spent. The whole ticks come out; the fraction of a tick left over stays in
+     * the accumulator for the next window rather than being thrown away - see
+     * soc_tickless_accum_us_hz. */
+    soc_tickless_accum_us_hz += elapsed_us * (uint64_t)OS_CONFIG_TICK_HZ;
+
+    elapsed_ticks = (uint32_t)(soc_tickless_accum_us_hz / 1000000ULL);
+
+    soc_tickless_accum_us_hz -= (uint64_t)elapsed_ticks * 1000000ULL;
+
+    return elapsed_ticks;
 }
 
 #endif /* OS_CONFIG_TICKLESS_ENABLE */

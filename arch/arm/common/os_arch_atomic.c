@@ -3,9 +3,10 @@
  * @brief Atomic read-modify-write of a single 32-bit word - the port half of the portable
  *        os_atomic_* API.
  *
- * Textually included by the shared port implementations (os_arch_port_v6m.c, _v7m.c, _v8m.c), the
- * same way each variant's os_arch_port.c includes those - it is not a separate compilation unit and
- * must never be added to a build as one.
+ * Textually included by the shared port implementations (os_arch_port_v6m.c, _v7m.c,
+ * _v8m.c), the same way each variant's os_arch_port.c includes those. This file is
+ * not a translation unit - no include guard, statics the includer uses - so it opens with a
+ * #error unless the wrapper that includes it has claimed OS_ARCH_PORT_TRANSLATION_UNIT.
  *
  * The port supplies the complete set the os_atomic_* API rests on, rather than one primitive it
  * composes from, because how a word updates indivisibly is a property of the core. Two backends,
@@ -32,6 +33,11 @@
  *            SPDX-License-Identifier: GPL-3.0-or-later
  *            See LICENSE in the project root for the full license text.
  */
+
+#ifndef OS_ARCH_PORT_TRANSLATION_UNIT
+#error "os_arch_atomic.c is a textual include, not a translation unit. Compile arch/<family>/<core>/os_arch_port.c instead - it defines OS_ARCH_PORT_TRANSLATION_UNIT and includes this. See doc/installation.md."
+#endif
+
 
 #if (OS_CONFIG_ATOMIC_ENABLE == 1U)
 

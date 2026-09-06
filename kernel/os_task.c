@@ -29,6 +29,31 @@
 
 #define OS_TASK_STACK_FILL_BYTE      0xA5U
 
+/* A task id carries the table slot that owns it, so resolving one is an index rather than a search.
+ *
+ *     bits 31..24   slot + 1   (never 0, so a whole id can never be 0 either)
+ *     bits 23..0    generation, bumped every time this slot is handed out
+ *
+ * os_task_find_by_id used to walk the whole table. That is not a cold path: it is on os_task_wake,
+ * on every blocking mutex lock through os_task_mutex_priority_inherit, on every timeout, pause or
+ * delete of a waiter through os_task_mutex_waiter_depart_tcb - and once priority inheritance
+ * started walking CHAINS, once per link as well. The id already had to be unique; making it say
+ * where it lives costs nothing and turns all of that into one bounds check and one compare.
+ *
+ * The generation is what keeps a stale handle honest. A slot reused by a new task gets a new
+ * generation, so an id from the previous occupant no longer matches and resolves to NULL - which is
+ * exactly what it did before, when the search simply failed to find it. 16.7 million creations per
+ * slot before a generation repeats, and a repeat needs the ORIGINAL handle to still be held that
+ * many creations later.
+ *
+ * The slot count is bounded by the 8 bits reserved for it, which OS_TASK_TABLE_SIZE is checked
+ * against below. */
+#define OS_TASK_ID_SLOT_SHIFT        24U
+#define OS_TASK_ID_GENERATION_MASK   0x00FFFFFFUL
+#define OS_TASK_ID_SLOT(id)          (((id) >> OS_TASK_ID_SLOT_SHIFT) - 1U)
+#define OS_TASK_ID_MAKE(slot, gen)   ((((uint32_t)(slot) + 1UL) << OS_TASK_ID_SLOT_SHIFT) |        \
+                                      ((gen) & OS_TASK_ID_GENERATION_MASK))
+
 /* Guard word written at the LOWEST address of every task stack - the last place a growing stack
  * reaches before it leaves its own memory. Deliberately the fill byte repeated, so a build with
  * OS_CONFIG_STACK_WATERMARK_ENABLE already writes it as part of its whole-stack fill and the two
@@ -110,11 +135,26 @@ typedef struct
      * owner may be gone by the time it is read, and an id resolves to NULL where a pointer would
      * dangle. */
     uint32_t        pi_owner_id;
-#endif
-#if (OS_MUTEX_DEADLOCK_CHECK == 1)
-    /* Mutex this task is blocked on, NULL otherwise: the forward edge a deadlock walk follows
-     * ("this owner is itself waiting for..."). Debug builds only - see os_internal.h. */
+
+    /* Mutex this task is blocked on, NULL otherwise: the forward edge "this owner is itself waiting
+     * for...". TWO walks follow it, and they want different subsets of it:
+     *
+     *   priority inheritance   every blocked waiter, timed or not. A task that will give up in
+     *                          200 ms still blocks the owner for those 200 ms, and the inversion it
+     *                          causes meanwhile is just as real.
+     *   deadlock detection     infinite waiters only, which is what blocked_forever below says. A
+     *                          timed waiter breaks any cycle it is part of by timing out, so
+     *                          reporting it as a deadlock would be a false alarm.
+     *
+     * The edge used to be published only for the infinite case, because the deadlock walk was its
+     * only reader and it lived in debug builds alone. Priority inheritance needs it in every build
+     * and for every waiter, so it is unconditional now and the narrower question moved into its own
+     * flag. */
     const os_mutex_t *blocked_on_mutex;
+
+    /* Whether the wait recorded above is an OS_WAIT_FOREVER one. Placed against the other bools so
+     * it shares their alignment hole and costs no RAM. */
+    bool            blocked_forever;
 #endif
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
     /* One-word mailbox owned by os_notify.c; stored here because it belongs to the task. */
@@ -144,10 +184,17 @@ typedef struct
 
 #define OS_TASK_TABLE_SIZE    (OS_CONFIG_MAX_USER_TASKS + OS_TASK_SYSTEM_SLOTS)
 
+/* The slot has to fit in the byte a task id reserves for it, and slot + 1 must not overflow it. */
+OS_STATIC_ASSERT(OS_TASK_TABLE_SIZE < 255U,
+                 "OS_CONFIG_MAX_USER_TASKS leaves more task slots than a task id can name");
+
 static uint8_t                 os_task_idle_stack[OS_CONFIG_CORE_COUNT][OS_CONFIG_MIN_STACK_SIZE] OS_STACK_ALIGNED;
 static os_task_tcb_t           os_task_idle_tcb[OS_CONFIG_CORE_COUNT];
 static os_task_tcb_t           os_task_table[OS_TASK_TABLE_SIZE];
-static uint32_t                os_task_next_id = 1U;
+/* Next generation to hand out for each slot. Per slot rather than global, because that is what
+ * lets an id name its slot: a global counter would put an arbitrary number in the bits the slot
+ * needs. Starts at 1 so a slot's first id is never all-zero in the generation field either. */
+static uint32_t                os_task_next_generation[OS_TASK_TABLE_SIZE];
 
 /* Written by PendSV and read from task/ISR context: the pointer itself is the
  * shared object (it changes on every context switch), not what it points to -
@@ -197,6 +244,8 @@ static void           os_task_idle_entry(void *context);
 static void           os_task_tcb_clear(os_task_tcb_t *tcb);
 static os_task_tcb_t* os_task_find_by_id(uint32_t id);
 static os_task_tcb_t* os_task_self_tcb(void);
+static void           os_task_delay_insert(os_task_tcb_t *tcb, uint32_t ticks);
+static void           os_task_delay_remove(os_task_tcb_t *tcb);
 static void           os_task_make_ready(os_task_tcb_t *tcb);
 static void           os_task_unlink(os_task_tcb_t *tcb);
 static void           os_task_wait_node_insert(os_list_t *waiters, os_task_tcb_t *tcb);
@@ -856,7 +905,12 @@ os_err_t os_task_stack_watermark_get(const os_task_t *task, size_t *min_free_byt
      * - which re-fills that same array with the fill byte - and on SMP a peer core can run exactly
      * that concurrently. The number would then describe a task that no longer exists, reported as
      * though it were current. So the slot is re-resolved afterwards and the result is only
-     * published if the id still names the same live task. */
+     * published if the id still names the same live task.
+     *
+     * Formally still a data race, recorded so a static-analysis run does not report it as new: a
+     * peer core can be writing these bytes. The re-check does not remove the race, it removes the
+     * wrong ANSWER - a torn read is thrown away by the identity test. Locking instead would put an
+     * O(stack_bytes) walk inside the cross-core critical section, for a diagnostic. */
     if (status == OS_ERR_NONE)
     {
         size_t               index;
@@ -950,6 +1004,78 @@ bool os_task_tcb_is_blocked(const void *tcb_handle)
 
 /******************************************************************************************************/
 /**
+ * @brief Put a task in the delay list, keyed by how far away its wake-up is.
+ *
+ * A DELTA list: kept in wake-up order, each entry holding the ticks it waits AFTER the one in
+ * front. Only the head is measured against the present, so the tick decrements ONE entry instead of
+ * walking every sleeper. The cost moves to this insert, which is the right trade - a task blocks
+ * once per wait, the tick fires a thousand times a second.
+ *
+ * Deltas rather than absolute wake ticks: nothing here ever compares two times, so there is no wrap
+ * to be safe against and no cap on how long a single delay may be. See doc/design.md, "The delay
+ * and timer lists".
+ *
+ * Caller holds a critical section.
+ *
+ * @param[in,out] tcb    Task to insert; must not already be in the list.
+ * @param[in]     ticks  Ticks from now until it should wake. Never OS_WAIT_FOREVER - those sleepers
+ *                       are in no list at all.
+ * @return None.
+ */
+static void os_task_delay_insert(os_task_tcb_t *tcb, uint32_t ticks)
+{
+    os_list_node_t *node      = os_task_delay_list.head;
+    uint32_t        remaining = ticks;
+
+    while (node != NULL)
+    {
+        os_task_tcb_t *entry = OS_TASK_TCB_FROM_NODE(node);
+
+        if (entry->delay_ticks > remaining)
+        {
+            /* We wake first, so this entry now waits only the difference after us. */
+            entry->delay_ticks -= remaining;
+            break;
+        }
+
+        /* It wakes before us: its share of the wait is spent, and what is left is ours. */
+        remaining -= entry->delay_ticks;
+        node        = node->next;
+    }
+
+    tcb->delay_ticks = remaining;
+
+    /* A NULL position appends, which is exactly the "we wake last" case the loop falls out of. */
+    os_list_insert_before(&os_task_delay_list, node, &tcb->state_node);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Take a task out of the delay list, handing its remaining share to whoever follows it.
+ *
+ * A delta list only means anything as long as the chain of differences is unbroken: an entry
+ * removed from the middle was carrying part of the wait of everything behind it, and dropping that
+ * silently would wake all of them early by exactly its delta.
+ *
+ * Caller holds a critical section; the task must be in the list.
+ *
+ * @param[in,out] tcb  Task to remove.
+ * @return None.
+ */
+static void os_task_delay_remove(os_task_tcb_t *tcb)
+{
+    os_list_node_t *next = tcb->state_node.next;
+
+    if (next != NULL)
+    {
+        OS_TASK_TCB_FROM_NODE(next)->delay_ticks += tcb->delay_ticks;
+    }
+
+    os_list_remove(&os_task_delay_list, &tcb->state_node);
+}
+
+/******************************************************************************************************/
+/**
  * @brief Update task delays with elapsed kernel ticks; wakes expired tasks.
  *
  * @param[in] elapsed_ticks  Number of elapsed ticks.
@@ -973,6 +1099,10 @@ void os_task_tick_update(uint32_t elapsed_ticks)
         mask_state = os_arch_kernel_mask_save();
         os_critical_multicore_lock();
 
+        /* The list is a delta list (os_task_delay_insert), so only the HEAD is measured against
+         * now. Everything behind it is measured against the entry in front, which means the walk
+         * stops at the first entry that is not due yet - and on the overwhelming majority of ticks
+         * that is the first entry it looks at. */
         node = os_task_delay_list.head;
         while (node != NULL)
         {
@@ -982,11 +1112,18 @@ void os_task_tick_update(uint32_t elapsed_ticks)
             if (tcb->delay_ticks > elapsed_ticks)
             {
                 tcb->delay_ticks -= elapsed_ticks;
+                break;
             }
             else
             {
+                /* Due. Spend its share of the elapsed time and carry the rest to the next entry,
+                 * which is what lets one announced window (tickless) expire several sleepers in
+                 * the right order rather than only the first. */
+                elapsed_ticks -= tcb->delay_ticks;
+
                 /* Unlink leaves the delay list and any object waiter list;
-                 * wait_signaled stays false = the wait timed out. */
+                 * wait_signaled stays false = the wait timed out. Zeroed first so the delta this
+                 * entry hands to its successor on the way out is nothing - it has none left. */
                 tcb->delay_ticks = 0U;
                 os_task_unlink(tcb);
                 os_task_make_ready(tcb);
@@ -1027,22 +1164,27 @@ void os_task_tick_update(uint32_t elapsed_ticks)
  */
 uint32_t os_task_next_delay_ticks_get(void)
 {
-    uint32_t       mask_state = os_arch_kernel_mask_save();
-    uint32_t       minimum    = UINT32_MAX;
-    os_list_node_t *node;
+    uint32_t             mask_state = os_arch_kernel_mask_save();
+    uint32_t             minimum    = UINT32_MAX;
+    const os_list_node_t *head;
 
     /* See os_task_tick_update: the cross-core spinlock excludes the other
      * cores' insertions into this same shared delay list. */
     os_critical_multicore_lock();
 
-    for (node = os_task_delay_list.head; node != NULL; node = node->next)
-    {
-        const os_task_tcb_t *tcb = OS_TASK_TCB_FROM_NODE(node);
+    /* One read. The list is kept in wake-up order (os_task_delay_insert), so the earliest deadline
+     * IS the head - there is no minimum left to search for.
+     *
+     * This used to walk the whole list, on the idle path, holding the cross-core spinlock, every
+     * time a tickless window was planned. That walk is what the once-per-tick planning guard in
+     * os_tickless_idle_process exists to ration: core 0's idle loop otherwise spent its time taking
+     * and releasing the very lock the other core's tasks needed. The guard is still there and still
+     * correct, but it is no longer paying for anything expensive. */
+    head = os_task_delay_list.head;
 
-        if (tcb->delay_ticks < minimum)
-        {
-            minimum = tcb->delay_ticks;
-        }
+    if (head != NULL)
+    {
+        minimum = OS_TASK_TCB_FROM_NODE(head)->delay_ticks;
     }
 
     os_critical_multicore_unlock();
@@ -1088,7 +1230,7 @@ void os_task_sleep_ticks(uint32_t ticks)
              * no ready list, so no unlink is needed first. */
             if (ticks != OS_WAIT_FOREVER)
             {
-                os_list_push_back(&os_task_delay_list, &current->state_node);
+                os_task_delay_insert(current, ticks);
 
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
                 /* A deadline core 0 may already have committed to sleeping through. */
@@ -1194,7 +1336,7 @@ void os_task_wait_begin(os_list_t *waiters, uint32_t timeout_ticks)
 
         if (timeout_ticks != OS_WAIT_FOREVER)
         {
-            os_list_push_back(&os_task_delay_list, &current->state_node);
+            os_task_delay_insert(current, timeout_ticks);
 
             #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
             /* Same reason as os_task_sleep_ticks: a timeout armed here can fall inside a window
@@ -1242,11 +1384,11 @@ void os_task_wait_end(void)
              * os_task_mutex_waiter_depart first, which is what actually releases the boost; this makes
              * sure no exit route can leave a stale id behind to be spent on the wrong owner later. */
             current->pi_owner_id   = 0U;
-    #endif
-    #if (OS_MUTEX_DEADLOCK_CHECK == 1)
+
             /* Cleared here rather than in os_mutex.c because every way out of a wait passes through
              * this call, so no exit path can leave a stale edge behind for a later walk to follow. */
             current->blocked_on_mutex = NULL;
+            current->blocked_forever  = false;
     #endif
         }
     }
@@ -1439,9 +1581,54 @@ void os_task_mutex_owner_link(os_list_node_t *owner_node)
 
 /******************************************************************************************************/
 /**
- * @brief Boost owner_task_id's effective priority to the calling (waiting) task's effective
- *        priority when that is higher. Single-level only: does not chase what the owner may
- *        itself be blocked on.
+ * @brief Recompute a task's inherited priority and then everyone it is transitively waiting behind.
+ *
+ * A boost is only worth what it lets the boosted task DO, and a blocked task can do nothing with
+ * one - so raising the immediate owner and stopping there leaves a three-deep inversion untouched.
+ * The walk follows blocked_on_mutex until it reaches a task that is actually runnable.
+ *
+ * Each step is the same max() every other path uses, which makes it correct in BOTH directions: a
+ * boost arriving raises each link, a boost released lowers it by the same rule, and nothing here
+ * knows which is happening.
+ *
+ * OS_TASK_DEADLOCK_MAX_DEPTH is load-bearing, not decorative: a cycle among already-deadlocked
+ * tasks would otherwise be walked forever inside a critical section. See doc/api.md, "Mutexes and
+ * priority inheritance".
+ *
+ * Caller holds a critical section.
+ *
+ * @param[in,out] task  Where to start; NULL is a no-op.
+ * @return None.
+ */
+static void os_task_mutex_chain_recompute(os_task_tcb_t *task)
+{
+    uint32_t depth = 0U;
+
+    while ((task != NULL) && (depth < OS_TASK_DEADLOCK_MAX_DEPTH))
+    {
+        const os_mutex_t *waiting_on;
+
+        os_task_mutex_effective_recompute(task);
+
+        /* Runnable, or waiting on something that is not a mutex: the chain ends here. */
+        waiting_on = task->blocked_on_mutex;
+        if (waiting_on == NULL)
+        {
+            break;
+        }
+
+        /* One link further out. An owner that cannot be resolved - it was deleted while holding the
+         * mutex - ends the walk, exactly as it ends the deadlock walk, and for the same reason:
+         * there is nobody left to boost. */
+        task = os_task_find_by_id(waiting_on->owner_id);
+        depth++;
+    }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Boost owner_task_id's effective priority to the calling (waiting) task's, and carry that
+ *        along the chain of owners the boost has to reach to be worth anything.
  *
  * @param[in] owner_task_id  Id of the mutex's current owner.
  * @return None.
@@ -1462,7 +1649,17 @@ void os_task_mutex_priority_inherit(uint32_t owner_task_id)
 
         if (current->priority > owner->priority)
         {
+            /* The immediate owner is raised directly rather than recomputed, because the caller is
+             * not in the mutex's waiter list yet - os_task_wait_begin runs after this - so a max()
+             * over that list would not see the very waiter asking for the boost. */
             os_task_effective_priority_set(owner, current->priority);
+
+            /* From the next link outward every waiter IS queued, so the ordinary recompute is both
+             * correct and the same rule the release paths use. */
+            if (owner->blocked_on_mutex != NULL)
+            {
+                os_task_mutex_chain_recompute(os_task_find_by_id(owner->blocked_on_mutex->owner_id));
+            }
         }
     }
 }
@@ -1520,17 +1717,14 @@ static void os_task_mutex_waiter_depart_tcb(os_task_tcb_t *tcb)
 
     if (owner_id != 0U)
     {
-        os_task_tcb_t *owner;
-
         /* Cleared first: this task owes the owner nothing from here on, and clearing before the
          * lookup means an owner that has since been deleted still ends the debt. */
         tcb->pi_owner_id = 0U;
 
-        owner = os_task_find_by_id(owner_id);
-        if (owner != NULL)
-        {
-            os_task_mutex_effective_recompute(owner);
-        }
+        /* Chain, not a single step: this task may have been the reason a whole line of owners was
+         * lifted, and dropping only the first of them leaves the rest boosted for nothing - which
+         * inverts the priorities the other way and is just as wrong. */
+        os_task_mutex_chain_recompute(os_task_find_by_id(owner_id));
     }
 }
 
@@ -1573,9 +1767,35 @@ void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node
     if (owner != NULL)
     {
         os_list_remove(&owner->owned_mutexes, owner_node);
-        os_task_mutex_effective_recompute(owner);
+
+        /* Chain, for the same reason as in os_task_mutex_waiter_depart_tcb: releasing a mutex can
+         * lower this owner, and anyone waiting behind IT was only boosted on its account. */
+        os_task_mutex_chain_recompute(owner);
     }
 }
+/******************************************************************************************************/
+/**
+ * @brief Record the mutex the calling task is about to block on, and whether that wait ever ends.
+ *        Cleared by os_task_wait_end().
+ *
+ * In every build, not only a debug one: this edge is what os_task_mutex_chain_recompute follows to
+ * find the task a boost actually has to reach.
+ *
+ * @param[in] mutex    Mutex about to be waited on, NULL to clear.
+ * @param[in] forever  True for an OS_WAIT_FOREVER wait - the narrower case the deadlock walk wants.
+ * @return None.
+ */
+void os_task_mutex_blocked_on_set(const os_mutex_t *mutex, bool forever)
+{
+    os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
+
+    if (current != NULL)
+    {
+        current->blocked_on_mutex = mutex;
+        current->blocked_forever  = forever;
+    }
+}
+
 #endif /* OS_CONFIG_MUTEX_ENABLE */
 
 #if (OS_MUTEX_DEADLOCK_CHECK == 1)
@@ -1583,23 +1803,6 @@ void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node
 /* Post-mortem record for the debugger; see os_internal.h for why an assertion cannot carry this
  * itself. Zero-initialised, so requested == NULL means nothing has been detected. */
 os_task_deadlock_report_t os_task_deadlock_report;
-
-/******************************************************************************************************/
-/**
- * @brief Record the mutex the calling task is about to block on. Cleared by os_task_wait_end().
- *
- * @param[in] mutex  Mutex about to be waited on, NULL to clear.
- * @return None.
- */
-void os_task_mutex_blocked_on_set(const os_mutex_t *mutex)
-{
-    os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
-
-    if (current != NULL)
-    {
-        current->blocked_on_mutex = mutex;
-    }
-}
 
 /******************************************************************************************************/
 /**
@@ -1669,10 +1872,11 @@ bool os_task_mutex_deadlock_check(const os_mutex_t *mutex)
             break;
         }
 
-        /* NULL for a task waiting with a timeout, which ends the walk: it will give up and break
-         * the chain, so it cannot be part of a real deadlock (os_mutex.c publishes the edge only
-         * for OS_WAIT_FOREVER). */
-        link = owner->blocked_on_mutex;
+        /* Only an UNBOUNDED wait continues the walk. A task that will time out gives up and
+         * breaks the chain, so it cannot be part of a real deadlock - and the edge itself is no
+         * longer the place to encode that, now that priority inheritance follows the same edge for
+         * every waiter. blocked_forever is what draws the line. */
+        link = owner->blocked_forever ? owner->blocked_on_mutex : NULL;
     }
 
     return cycle;
@@ -1710,8 +1914,35 @@ bool os_task_reschedule_possible(void)
     os_task_tcb_t  *current;
     bool           result;
 
-    os_critical_multicore_lock();
-
+    /* No cross-core spinlock here, and that is the point of the function.
+     *
+     * This runs from EVERY core's tick, a thousand times a second, to answer what is usually one
+     * bitmap AND. Taking the global lock for it put two cores in contention on the kernel's single
+     * hottest shared object at that rate, for a question neither of them is going to act on
+     * directly.
+     *
+     * What makes dropping it safe is that the answer is a HINT and nothing else. Both callers use
+     * it only to decide whether to pend PendSV, and PendSV re-derives the whole decision under the
+     * lock in os_task_stack_select_next(). A false positive costs one PendSV that looks and changes
+     * nothing; a false negative costs one tick of latency, and cannot lose a wake - anything urgent
+     * enough to need one arrived through os_task_preempt_request, which pends PendSV or sends an
+     * IPI directly rather than waiting to be noticed here.
+     *
+     * The reads themselves are sound without it:
+     *
+     *   os_kernel_lock_count[core]   this core's own, and the kernel mask above holds off the only
+     *   os_task_current[core]        thing that writes them from here - this core's PendSV, which
+     *   os_task_slice_left[core]     is below the tick in priority and cannot preempt it anyway.
+     *
+     *   os_task_ready_bitmap         another core may be changing it. One aligned 32-bit load, so
+     *   current->priority            never torn; at worst a tick out of date, which is exactly the
+     *                                stale-hint case above. current->priority can be moved by a
+     *                                priority-inheritance boost on another core, with the same
+     *                                consequence and no other.
+     *
+     * The mask stays. It is what makes the three per-core reads stable, and it costs two
+     * instructions where the lock cost an uncontended round trip and, on a busy second core, a
+     * spin. */
     core    = os_arch_core_id_get();
     current = os_task_current[core];
 
@@ -1745,7 +1976,6 @@ bool os_task_reschedule_possible(void)
 #endif
     }
 
-    os_critical_multicore_unlock();
     os_arch_kernel_mask_restore(mask_state);
 
     return result;
@@ -1958,7 +2188,14 @@ void os_task_system_init(void)
     os_task_ready_bitmap = 0U;
     os_list_init(&os_task_delay_list);
 
-    os_task_next_id = 1U;
+    {
+        uint32_t slot;
+
+        for (slot = 0U; slot < OS_TASK_TABLE_SIZE; slot++)
+        {
+            os_task_next_generation[slot] = 1U;
+        }
+    }
 
     for (core = 0U; core < OS_CONFIG_CORE_COUNT; core++)
     {
@@ -2296,13 +2533,12 @@ static os_err_t os_task_create_any(os_task_t *task, const os_task_config_t *conf
                 {
                     os_task_tcb_t *tcb = &os_task_table[index];
 
-                    /* Skip ids still owned by live tasks: the counter wraps at 2^32,
-                     * and a reused id would hand the new task another task's
-                     * identity (e.g. the right to unlock a dead owner's mutex). */
-                    while ((os_task_next_id == 0U) || (os_task_find_by_id(os_task_next_id) != NULL))
-                    {
-                        os_task_next_id++;
-                    }
+                    /* This slot's next generation, which is what stops a reused slot handing the
+                     * new task the previous occupant's identity - the right to unlock its mutexes,
+                     * to receive its notifications. No search is needed to establish that: the id
+                     * is unique by construction because no other slot can produce this slot's
+                     * number, and no earlier occupant of it used this generation. */
+                    uint32_t generation = os_task_next_generation[index];
 
 #if (OS_CONFIG_TASK_NAME_ENABLE == 1U)
                     tcb->name             = task->storage->name;
@@ -2315,19 +2551,19 @@ static os_err_t os_task_create_any(os_task_t *task, const os_task_config_t *conf
                     tcb->base_priority    = config->priority;
                     tcb->pi_owner_id      = 0U;
 #endif
-                    tcb->id               = os_task_next_id;
+                    tcb->id               = OS_TASK_ID_MAKE(index, generation);
                     tcb->delay_ticks      = 0U;
                     tcb->core_affinity    = config->core_affinity;
                     tcb->system_task      = system_task;
                     tcb->state            = OS_TASK_STATE_SUSPENDED;
 
-                    task->id = os_task_next_id;
-                    os_task_next_id++;
+                    task->id = tcb->id;
 
-                    if (os_task_next_id == 0U)
-                    {
-                        os_task_next_id = 1U;
-                    }
+                    /* Wrapping the generation past its 24 bits would eventually repeat an id for
+                     * this slot; keeping it out of 0 keeps every id non-zero, which the whole API
+                     * reads as "no task". */
+                    generation = (generation + 1U) & OS_TASK_ID_GENERATION_MASK;
+                    os_task_next_generation[index] = (generation == 0U) ? 1U : generation;
 
                     claimed = true;
                     status  = OS_ERR_NONE;
@@ -2498,9 +2734,8 @@ static void os_task_tcb_clear(os_task_tcb_t *tcb)
     {
         (void)os_list_pop_front(&tcb->owned_mutexes);
     }
-#endif
-#if (OS_MUTEX_DEADLOCK_CHECK == 1)
     tcb->blocked_on_mutex = NULL;
+    tcb->blocked_forever  = false;
 #endif
 #if (OS_CONFIG_NOTIFY_ENABLE == 1U)
     tcb->notify.value   = 0U;
@@ -2547,15 +2782,21 @@ static os_task_tcb_t* os_task_self_tcb(void)
 static os_task_tcb_t* os_task_find_by_id(uint32_t id)
 {
     os_task_tcb_t *found = NULL;
-    uint32_t       index;
 
-    /* The match ends the search through the loop condition rather than a return, so the
-     * function keeps one exit (MISRA Rule 15.5) and the loop keeps none of its own. */
-    for (index = 0U; (index < OS_TASK_TABLE_SIZE) && (found == NULL); index++)
+    /* Id 0 names nothing, and its slot field would underflow the subtraction below. */
+    if (id != 0U)
     {
-        if ((os_task_table[index].state != OS_TASK_STATE_INACTIVE) && (os_task_table[index].id == id))
+        uint32_t slot = OS_TASK_ID_SLOT(id);
+
+        /* The slot comes from the id, so a corrupt or forged one has to be bounds-checked before it
+         * indexes anything. Then the full id is compared, not just the slot: that is what makes a
+         * stale handle to a recycled slot resolve to nothing, exactly as the old search did by
+         * failing to find it. A slot only counts as live while its state is not INACTIVE. */
+        if ((slot < OS_TASK_TABLE_SIZE) &&
+            (os_task_table[slot].state != OS_TASK_STATE_INACTIVE) &&
+            (os_task_table[slot].id == id))
         {
-            found = &os_task_table[index];
+            found = &os_task_table[slot];
         }
     }
 
@@ -2606,7 +2847,7 @@ static void os_task_unlink(os_task_tcb_t *tcb)
     }
     else if ((tcb->state == OS_TASK_STATE_BLOCKED) && (tcb->delay_ticks != OS_WAIT_FOREVER))
     {
-        os_list_remove(&os_task_delay_list, &tcb->state_node);
+        os_task_delay_remove(tcb);
     }
     else
     {
@@ -2630,6 +2871,11 @@ static void os_task_unlink(os_task_tcb_t *tcb)
  * a wait node in a list goes through here, so a task whose priority changes
  * while it is queued can be re-sorted by removing it and inserting it again
  * (see os_task_effective_priority_set). Caller holds a critical section.
+ *
+ * O(waiters) by choice, not oversight: the order has to exist somewhere, and a sorted insert puts
+ * the cost on the task about to block rather than on the wake path, which often runs from an ISR.
+ * It walks one object's waiters and stops at the first of lower priority, so the common shapes cost
+ * one comparison. Many blocked senders of similar priority is the case that pays.
  *
  * @param[in,out] waiters  The object's waiter list.
  * @param[in,out] tcb      Task to queue; its priority decides the position.

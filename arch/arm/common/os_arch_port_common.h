@@ -435,6 +435,13 @@ extern "C"
 
 #define OS_ARCH_STACK_ALIGNMENT_BYTES     4U
 #define OS_ARCH_DSB()                     __asm volatile("dsb 0xF" ::: "memory")
+
+/* Data Memory Barrier: orders memory accesses against each other without waiting for them to
+ * complete, which is what makes it the cheap one. DSB is a superset and is what the kernel's own
+ * spinlock uses; DMB is enough wherever the requirement is ORDER rather than completion, which is
+ * the case for the public atomics (os_atomic.c). Compiles to nothing observable on a single-core
+ * build, where there is no second observer for an order to be visible to. */
+#define OS_ARCH_DMB()                     __asm volatile("dmb 0xF" ::: "memory")
 #define OS_ARCH_ISB()                     __asm volatile("isb 0xF" ::: "memory")
 
 /*
@@ -444,7 +451,21 @@ extern "C"
  * routes the request through the SoC IPI callback instead (os_task.c,
  * os_task_preempt_request).
  */
-#define OS_ARCH_CONTEXT_SWITCH_REQUEST()  do { OS_ARCH_REG_ICSR = OS_ARCH_ICSR_PENDSVSET_MSK; OS_ARCH_DSB(); OS_ARCH_ISB(); } while (0)
+/*
+ * Pend PendSV. The DSB is required and the ISB is not, which is worth stating because the pair is
+ * usually written together out of habit.
+ *
+ * DSB makes the ICSR write reach the NVIC before anything after it runs - without it a caller can
+ * return, drop its interrupt mask and reach the next instruction while the request is still in a
+ * write buffer. ISB would additionally flush the pipeline, which matters when the very next
+ * instruction must be fetched under new state (a CONTROL or MPU change). Pending an exception is
+ * not that: PendSV is taken by the exception mechanism when it becomes the highest pending
+ * priority, and nothing about that depends on this core's prefetch.
+ *
+ * It is on the path of every wake that preempts, every yield and every tick that decides to switch,
+ * so the barrier that does nothing here is worth not paying.
+ */
+#define OS_ARCH_CONTEXT_SWITCH_REQUEST()  do { OS_ARCH_REG_ICSR = OS_ARCH_ICSR_PENDSVSET_MSK; OS_ARCH_DSB(); } while (0)
 
 /*
  * CPS writes to PRIMASK are self-synchronizing on ARMv6-M/v7-M/v8-M: masking
@@ -467,7 +488,20 @@ extern "C"
  * counting the wake out - so the core may go as deep as THAT timer survives, which is Stop mode
  * on an STM32 and dormant on an RP2350. Only the package knows how deep that is; the weak
  * default in os_kernel.c is exactly the WFI this line used to hold. */
-#define OS_ARCH_SLEEP(ticks)              do { os_arch_sleep_prepare((ticks)); OS_ARCH_DSB(); os_arch_soc_sleep_cb(); OS_ARCH_ISB(); } while (0)
+/* os_arch_sleep_mask_enter/exit wrap the sleep INSTRUCTION and nothing else: a WFI's wake-up
+ * condition ignores PRIMASK and honours BASEPRI, which is the wrong way round for a kernel that
+ * masks with BASEPRI and expects a BASEPRI-reachable timer to end the window. See the pair's own
+ * comment; both compile away when the kernel mask is already PRIMASK. */
+#define OS_ARCH_SLEEP(ticks)                                                                         \
+    do {                                                                                             \
+        uint32_t os_arch_sleep_mask_state_;                                                          \
+        os_arch_sleep_prepare((ticks));                                                              \
+        os_arch_sleep_mask_state_ = os_arch_sleep_mask_enter();                                      \
+        OS_ARCH_DSB();                                                                               \
+        os_arch_soc_sleep_cb();                                                                      \
+        OS_ARCH_ISB();                                                                               \
+        os_arch_sleep_mask_exit(os_arch_sleep_mask_state_);                                          \
+    } while (0)
 
 /* WFE and the event it waits for. WFE's event register LATCHES, so an SEV that
  * arrives before the WFE still wakes it - unlike WFI, where the wake can be
@@ -580,6 +614,83 @@ OS_INLINE uint32_t os_arch_kernel_mask_active(void)
     return basepri;
 #else
     return os_arch_primask_get();
+#endif
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Swap the kernel's BASEPRI mask for a PRIMASK one, around the sleep instruction ONLY.
+ *
+ * A WFI's wake-up condition is not the same thing as its interrupt mask, and the difference is the
+ * whole reason this pair exists. The architecture defines a wake-up event as "an asynchronous
+ * exception at a priority that, IF PRIMASK WAS SET TO 0, would preempt any currently active
+ * exceptions" - so PRIMASK is virtually cleared for that test and BASEPRI is NOT. An interrupt held
+ * off by BASEPRI is therefore not a guaranteed wake-up event at all.
+ *
+ * Which is fatal here, because every source that can end a tickless window is BASEPRI-reachable by
+ * construction: the tick, the SoC's LPTIM or alarm, the inter-core IPI. They have to be, or the
+ * kernel could not exclude them from its own critical sections. Sleeping with BASEPRI raised is
+ * asking to be woken by exactly the interrupts that are masked - which on real silicon is a core
+ * that goes to sleep and does not come back.
+ *
+ * The order below is what makes the swap safe, and it is not interchangeable:
+ *
+ *   1. PRIMASK on.    Nothing can run from here, whatever BASEPRI says next.
+ *   2. BASEPRI to 0.  Safe only because of step 1; this is what makes the wake-up test pass.
+ *   3. WFI.           Wakes on any enabled interrupt. PRIMASK keeps it from being TAKEN.
+ *   4. BASEPRI back.  The kernel's own mask is whole again.
+ *   5. PRIMASK off.   Anything pending is taken now, subject to BASEPRI exactly as before.
+ *
+ * Compiles away entirely with OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY at 0, where the kernel mask is
+ * already PRIMASK and the architecture guarantees the wake. FreeRTOS's tickless idle brackets its
+ * own WFI with cpsid/cpsie for the same reason, in a port that otherwise uses BASEPRI throughout.
+ *
+ * @return uint32_t  Opaque state for os_arch_sleep_mask_exit: PRIMASK in bit 8, BASEPRI in bits 0-7.
+ */
+OS_INLINE uint32_t os_arch_sleep_mask_enter(void)
+{
+    uint32_t state = 0U;
+
+#if (OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY != 0U)
+    uint32_t basepri;
+
+    /* PRIMASK is captured rather than assumed clear: nothing in the kernel holds it across a call
+     * on this path, but restoring a state that was never sampled is how a mask leaks. */
+    state = os_arch_primask_get() << 8;
+
+    OS_ARCH_IRQ_DISABLE();
+
+    __asm volatile("mrs %0, basepri" : "=r"(basepri));
+    __asm volatile("msr basepri, %0" :: "r"(0U) : "memory");
+    OS_ARCH_DSB();
+    OS_ARCH_ISB();
+
+    state |= (basepri & 0xFFU);
+#endif
+
+    return state;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Undo os_arch_sleep_mask_enter: BASEPRI back first, then PRIMASK. See it for the ordering.
+ *
+ * @param[in] state  The value os_arch_sleep_mask_enter returned.
+ */
+OS_INLINE void os_arch_sleep_mask_exit(uint32_t state)
+{
+#if (OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY != 0U)
+    __asm volatile("msr basepri, %0" :: "r"(state & 0xFFU) : "memory");
+    OS_ARCH_DSB();
+    OS_ARCH_ISB();
+
+    /* Only if this pair is what set it. A caller that arrived with PRIMASK already raised keeps it. */
+    if ((state & 0x100U) == 0U)
+    {
+        OS_ARCH_IRQ_ENABLE();
+    }
+#else
+    (void)state;
 #endif
 }
 

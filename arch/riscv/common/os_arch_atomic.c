@@ -2,8 +2,9 @@
  * @file os_arch_atomic.c
  * @brief The kernel's atomic set for RV32.
  *
- * Included textually by os_arch_port_rv32.c, exactly as the ARM tree includes its own; never added
- * to a build directly.
+ * Included textually by os_arch_port_rv32.c, exactly as the ARM tree includes its own. This
+ * file is not a translation unit - no include guard, statics the includer uses - so it opens
+ * with a #error unless the includer has claimed OS_ARCH_PORT_TRANSLATION_UNIT.
  *
  * WHY MOST OF THIS IS ONE INSTRUCTION
  *
@@ -27,6 +28,11 @@
  *            SPDX-License-Identifier: GPL-3.0-or-later
  *            See LICENSE in the project root for the full license text.
  */
+
+#ifndef OS_ARCH_PORT_TRANSLATION_UNIT
+#error "os_arch_atomic.c is a textual include, not a translation unit. Compile arch/<family>/<core>/os_arch_port.c instead - it defines OS_ARCH_PORT_TRANSLATION_UNIT and includes this. See doc/installation.md."
+#endif
+
 
 #if (OS_CONFIG_ATOMIC_ENABLE == 1U)
 

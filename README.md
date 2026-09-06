@@ -168,6 +168,7 @@ that names all three routes for every packaged chip.
 | [How the kernel works](doc/design.md) | Boot, the scheduler, the context switch, the tick, blocking and waking, priority inheritance, and where the RAM goes |
 | [What the kernel needs from a platform](doc/integration.md) | The reference behind the install: non-CMake build inputs, every `os_config.h` option, and the two-item integration contract |
 | [Platform support](doc/porting.md) | The callbacks a platform must supply, the clock, TrustZone, multi-core and tickless idle |
+| [Tickless idle](doc/tickless.md) | The whole suppressed-tick contract on one page: who masks, who plans, who clamps, who measures, who may sleep, what each port and each SoC package does, and how to prove it on a board |
 | [Source layout](doc/source.md) | What each directory and each `kernel/` source file is, and why `os_internal.h` is reachable from none of them |
 | [SoC packages](doc/soc.md) | The optional per-silicon layer under `soc/`: who owns which callback, what may and may not live there, and how to write one. The four packaged parts are documented in the two vendor pages above |
 | **Testing and examples** | |

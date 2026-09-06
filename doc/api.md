@@ -271,15 +271,29 @@ it holds the mutex, and `os_mutex_unlock` restores it. This stays correct even
 when the task holds several mutexes at once, because the restore recomputes
 against every mutex it still holds rather than only the one just released.
 
-Two limitations are accepted rather than implemented:
+Inheritance is **transitive**. An owner that is itself blocked on a second mutex
+held by a third, lower-priority task propagates the boost along the whole chain,
+so the task at the far end runs at the priority of the task waiting at the near
+end. The walk is bounded by `OS_TASK_DEADLOCK_MAX_DEPTH`, and the chain is
+recomputed on every event that can change it - a waiter arriving, a waiter timing
+out or being deleted, an owner releasing - so a boost is dropped as soon as the
+reason for it is gone rather than lingering until the owner's next mutex call.
 
-- **Single-level only.** An owner that is itself blocked on a second mutex held
-  by a third, lower-priority task does not propagate the boost through that
-  chain.
-- **Lazy recompute.** A boost already in effect is not eagerly repositioned
-  within some other object's wait queue, nor eagerly lowered when a waiter times
-  out early. Both recompute at the owner's next `os_mutex_lock` or
-  `os_mutex_unlock`.
+One limitation is accepted rather than implemented:
+
+- **Lazy repositioning.** A boost already in effect is not eagerly repositioned
+  within some *other* object's wait queue: a task boosted while queued on a
+  semaphore keeps the place it had. Its priority is correct immediately, and it
+  is scheduled at the correct priority; only its position in that unrelated queue
+  lags until it is woken.
+
+**Take a mutex only after `os_start()`.** Ownership is recorded as a task id, and
+id 0 means *no identifiable task* - the idle task, or any code running before the
+scheduler starts. A mutex locked from there is unowned for the rest of the run:
+any task may unlock it, and it never takes part in priority inheritance. The
+ownership check in `os_mutex_unlock` deliberately passes when either side is
+unidentifiable, because refusing would leave such a mutex locked forever with no
+caller able to release it - a permanent hang in place of a documented weakening.
 
 A mutex is also an ownership object, which makes it task-only: calls from an ISR
 are rejected, because an ISR has no identity of its own. It is not recursive
@@ -968,8 +982,16 @@ Two costs to budget for. `tsk_log` needs its own stack (`OS_CONFIG_LOG_TASK_STAC
 though not an `OS_CONFIG_MAX_USER_TASKS` slot - the kernel reserves service-task slots
 separately), and formatting uses libc `vsnprintf`, which pulls newlib's formatter into the link
 (roughly 1 to 3 KB) for a project that does not already use `printf`. As usual,
-`%f` additionally needs `-u _printf_float`. `OS_CONFIG_LOG_LINE_MAX` is the
-scratch buffer `os_log_write` places on the **caller's** stack, so every task
-that logs needs that much extra headroom.
+`%f` additionally needs `-u _printf_float`.
+
+The third cost is the one that bites without warning: `os_log_write` runs
+`vsnprintf` on the **caller's** stack. That is `OS_CONFIG_LOG_LINE_MAX` for the
+scratch buffer *plus* the formatter's own frame, which for newlib is
+substantial and larger again for `%f`. Budget at least 1 KB of stack for any
+task that logs. This is not theoretical - `os_log_emit_dropped()` hand-formats
+its own message precisely because `vsnprintf` overflowed the log task's stack,
+and application tasks get no such special case. A stack overflow inside a log
+call is also unusually confusing to debug, because the log line that would have
+reported it is the thing that overflowed.
 
 ---

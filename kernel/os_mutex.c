@@ -181,17 +181,12 @@ os_err_t os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                      * window instead of leaving it open until the owner's next unlock. */
                     os_task_mutex_priority_inherit(mutex->owner_id);
 
-#if (OS_MUTEX_DEADLOCK_CHECK == 1)
-                    /* Publish the edge another task's walk follows to reach this owner - but only
-                     * for a wait that never ends. A timed waiter breaks any cycle it is part of by
-                     * timing out, so it must not appear in one: leaving its edge NULL is what ends
-                     * another task's walk there instead of reporting a deadlock that resolves
-                     * itself. */
-                    if (timeout_ms == OS_WAIT_FOREVER)
-                    {
-                        os_task_mutex_blocked_on_set(mutex);
-                    }
-#endif
+                    /* Publish the edge the chain walks follow to reach this owner. Unconditional,
+                     * because priority inheritance needs it for every waiter: a task that will give
+                     * up in 200 ms still blocks the owner for those 200 ms. The flag carries the
+                     * narrower question the deadlock walk asks - whether this wait ever ends - so
+                     * that walk still ignores a waiter which will break its own cycle. */
+                    os_task_mutex_blocked_on_set(mutex, (timeout_ms == OS_WAIT_FOREVER));
 
                     /* Join the waiter list inside the same critical section that saw the
                      * mutex locked (no lost-wakeup window); the switch happens on exit. */
@@ -262,7 +257,12 @@ os_err_t os_mutex_unlock(os_mutex_t *mutex)
          * Deliberately NOT an OS_ASSERT: OS_ERR_NOT_OWNER is a documented return
          * value, so callers are entitled to attempt the unlock and handle it. It
          * also depends on runtime scheduling rather than on a static mistake in the
-         * code, which is the line assertions are meant to sit on. */
+         * code, which is the line assertions are meant to sit on.
+         *
+         * THE RULE: take a mutex only after os_start(). Id 0 means "no identifiable task" - the
+         * idle task, or pre-scheduler code - and a mutex locked from there is unowned for the rest
+         * of the run: anyone may unlock it and it never inherits priority. Refusing here instead
+         * would lock it forever with no caller able to release it. Also in doc/api.md. */
         else if ((mutex->owner_id != 0U) && (self_id != 0U) && (mutex->owner_id != self_id))
         {
             status = OS_ERR_NOT_OWNER;
@@ -282,8 +282,29 @@ os_err_t os_mutex_unlock(os_mutex_t *mutex)
              * the wake's own preempt check compares against the correct priority. */
             os_task_mutex_owner_unlink_and_reprioritize(owner_id, &mutex->owner_node);
 
-            /* Hand the release to the highest-priority waiter (it re-takes in its
-             * own context; no ownership transfer inside the unlock). */
+            /* Hand the release to the highest-priority waiter, which re-takes in its own context.
+             * NO ownership transfer happens here, and that is a decision rather than an omission.
+             *
+             * What it costs is barging: between this wake and the woken task actually running, any
+             * other task reaching os_mutex_lock finds the mutex free and may take it. On one core
+             * that window is narrower than it sounds - the woken waiter is the highest-priority one
+             * queued, so os_task_preempt_request switches to it immediately unless the barger
+             * outranks it, and a barger that outranks it is exactly who SHOULD have the CPU. What
+             * is left is equal-priority contention, which round-robin already bounds: the suite's
+             * four-task convoy comes back 200 acquisitions each, dead level. Across cores the
+             * window is real, and an application that cannot tolerate it should not be handing the
+             * same mutex to both cores in a tight loop.
+             *
+             * A hand-off - marking the woken waiter the owner here, so nobody can get in front of
+             * it - is the textbook answer and was measured against this one. It introduces a
+             * failure this design does not have: a task can be paused or deleted after being woken
+             * and before it runs (os_task_wake_compensate exists for exactly that window), and it
+             * would then be carrying ownership of a mutex it never asked for. Compensating passes
+             * a WAKE to the next waiter; it has no way to pass ownership, so the mutex would stay
+             * locked behind an owner that no longer exists - which os_task_tcb_clear asserts on,
+             * and which os_task_mutex_deadlock_check cannot explain because the owner resolves to
+             * nothing. Trading a bounded fairness window for an unbounded hang is the wrong way
+             * round. */
             (void)os_task_waiters_wake_one(&mutex->waiters);
 
             status = OS_ERR_NONE;

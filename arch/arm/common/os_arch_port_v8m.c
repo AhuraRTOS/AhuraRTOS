@@ -15,6 +15,11 @@
  *            See LICENSE in the project root for the full license text.
  */
 
+#ifndef OS_ARCH_PORT_TRANSLATION_UNIT
+#error "os_arch_port_v8m.c is a textual include, not a translation unit. Compile arch/<family>/<core>/os_arch_port.c instead - it defines OS_ARCH_PORT_TRANSLATION_UNIT and includes this. See doc/installation.md."
+#endif
+
+
 /*
  * ***********************************************************************************************************
  * Includes
@@ -83,23 +88,10 @@
  * ***********************************************************************************************************
 */
 
-/* Tickless idle (SysTick suppression): os_arch_tick_reload_cycles is the normal
- * 1-tick reload, cached once by os_arch_tick_init(); os_arch_planned_idle_ticks
- * is the effective (possibly 24-bit-capped) request, 0 = not currently armed;
- * os_arch_suppressed_reload_cycles is the cycle count actually programmed for
- * (planned - 1) ticks (see os_arch_sleep_prepare); os_arch_sleep_mask_state is
- * the os_arch_kernel_mask_save() token, acquired in os_arch_sleep_prepare and
- * released in os_arch_elapsed_ticks_get. */
+/** The normal 1-tick SysTick reload, cached once by os_arch_tick_init(). Read by the tickless
+ *  block far below, which is also where the rest of that state lives - next to the only code that
+ *  touches it, and compiled out entirely when OS_CONFIG_TICKLESS_ENABLE is 0. */
 static uint32_t os_arch_tick_reload_cycles      = 0U;
-static uint32_t os_arch_planned_idle_ticks      = 0U;
-static uint32_t os_arch_suppressed_reload_cycles = 0U;
-
-/** Cycles of the tick already running when the window opened; the first boundary falls there. */
-static uint32_t os_arch_suppressed_head_cycles = 0U;
-static uint32_t os_arch_sleep_mask_state        = 0U;
-
-/* Whether os_arch_sleep_mask_state actually holds a mask os_arch_sleep_finish must release. */
-static bool     os_arch_sleep_mask_held         = false;
 
 /* Whether DWT CYCCNT is present and actually counting on this device; decided
  * once in os_arch_init(). False routes os_arch_cycle_count_get() to the
@@ -366,7 +358,6 @@ void os_arch_init(void)
     os_arch_dwt_available = os_arch_dwt_enable();
 
     os_arch_cycle_systick_reset();
-    os_arch_planned_idle_ticks = 0U;
 
     /* Guard the handler stack: an MSP push below the stack bottom raises a
      * UsageFault instead of corrupting whatever sits below the stack.
@@ -584,187 +575,40 @@ uint32_t os_arch_cycle_count_get(void)
 
 /*
  * ***********************************************************************************************************
- * SoC wake source
+ * Tickless idle - the ARMv8-M half
  * ***********************************************************************************************************
  *
- * A package may own a timer that keeps running when the core clock does not - an LPTIM, an RTC, an
- * always-on alarm. When it does, that timer takes the window: it is the only kind that can end one
- * in a sleep deep enough to gate SysTick, which is the whole reason a package would offer one.
+ * The contract is in arch/common/os_arch_tickless.c, included at the bottom of this block.
+ * Everything above it is the one thing this port has that no other does: a SECOND way to open a
+ * window, by reprogramming SysTick's reload and reading back from CVR how far it got - no package,
+ * no second timer.
  *
- * Weak defaults answer "no source", so a package that offers none is not obliged to say so and the
- * port keeps suppressing SysTick itself, exactly as before.
+ * Gated on os_arch_dwt_available, and that is not optional. Without CYCCNT the cycle counter is the
+ * one SYNTHESIZED from SysTick, which multiplies counted periods by the reload it reads LIVE, so
+ * moving the reload silently rescales every os_delay_us(). A package's own source wins where there
+ * is one: it is not bounded by SysTick's 24 bits and it survives a sleep that gates SysTick's clock.
 */
 
-/******************************************************************************************************/
-/**
- * @brief Weak default: this package has no wake source of its own.
- *
- * @return uint32_t  0.
- */
-OS_WEAK uint32_t os_arch_tick_suppress_max_cb(void)
-{
-    return 0U;
-}
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+
+/** The effective (possibly 24-bit-capped) window this port armed for itself, in cycles: the reload
+ *  actually programmed for (planned - 1) ticks plus the remainder of the tick already running. */
+static uint32_t os_arch_suppressed_reload_cycles = 0U;
+
+/** Cycles of the tick already running when the window opened; the first boundary falls there. */
+static uint32_t os_arch_suppressed_head_cycles  = 0U;
+
+/** The os_arch_kernel_mask_save() token taken when this port commits to reprogramming SysTick. */
+static uint32_t os_arch_sleep_mask_state        = 0U;
+
+/** Whether os_arch_sleep_mask_state actually holds a mask os_arch_sleep_finish must release. */
+static bool     os_arch_sleep_mask_held         = false;
 
 /******************************************************************************************************/
 /**
- * @brief Weak default: this package has nothing to say about how short a window may be.
- *
- * @return uint32_t  0.
- */
-OS_WEAK uint32_t os_arch_tick_suppress_min_cb(void)
-{
-    return 0U;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Weak default: nothing to arm.
- *
- * @param[in] ticks  Ignored.
- * @return None.
- */
-OS_WEAK void os_arch_tick_suppress_cb(uint32_t ticks)
-{
-    (void)ticks;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Weak default: no window was opened, so none elapsed.
- *
- * @return uint32_t  0.
- */
-OS_WEAK uint32_t os_arch_tick_resume_cb(void)
-{
-    return 0U;
-}
-
-/** Raised for a window the SoC's timer is ending, so the close path knows which of the two
- *  mechanisms opened it. */
-static bool     os_arch_soc_window = false;
-
-/** SysTick CSR as it stood before a SoC window masked the tick interrupt. */
-static uint32_t os_arch_soc_saved_csr = 0U;
-
-/******************************************************************************************************/
-/**
- * @brief Return elapsed ticks while in low-power mode, restoring SysTick's normal cadence.
- *
- * Detects whether the suppressed (planned-1)-tick window fully elapsed (a real SysTick
- * exception is then already pending, and supplies the final +1 through the ordinary
- * os_tick_handler() path once the mask this function releases lets it fire) or whether
- * some other interrupt woke the core early (elapsed cycles reconstructed from CVR).
- *
- * @return uint32_t  Elapsed ticks since os_arch_sleep_prepare(), 0 if it never armed a window.
- */
-uint32_t os_arch_elapsed_ticks_get(void)
-{
-    uint32_t csr;
-    uint32_t soc_elapsed;
-    uint32_t cvr;
-    uint32_t elapsed_cycles;
-    uint32_t elapsed_ticks = 0U;   /* no window was armed */
-
-    if (os_arch_soc_window)
-    {
-        /* The SoC's timer measured this window, so it is the one that says how long it was. */
-        soc_elapsed = os_arch_tick_resume_cb();
-
-        if (soc_elapsed > os_arch_planned_idle_ticks)
-        {
-            soc_elapsed = os_arch_planned_idle_ticks;
-        }
-
-        OS_ARCH_REG_SYST_CSR = os_arch_soc_saved_csr;
-
-        os_arch_cycle_window_close(soc_elapsed);
-
-        elapsed_ticks              = soc_elapsed;
-        os_arch_planned_idle_ticks = 0U;
-        os_arch_soc_window         = false;
-    }
-    else if (os_arch_planned_idle_ticks != 0U)
-    {
-    /* Single CSR read: it clears COUNTFLAG as a side effect, so it must be sampled once. */
-    csr = OS_ARCH_REG_SYST_CSR;
-
-    if ((csr & OS_ARCH_SYST_CSR_COUNTFLAG_MSK) != 0U)
-    {
-        /* Full window elapsed: a real SysTick exception is already pending in the
-         * NVIC (latched the instant the down-counter hit zero, independent of the
-         * interrupt mask still held here) - it supplies the final +1 once the mask
-         * below is released, through the unmodified os_tick_handler() ISR. */
-        elapsed_ticks = os_arch_planned_idle_ticks - 1U;
-    }
-    else
-    {
-        /* Woke early: reconstruct how far CVR counted down from the reload
-         * actually programmed for this window. */
-        cvr            = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
-        elapsed_cycles = (os_arch_suppressed_reload_cycles - 1U) - cvr;
-
-        /* Boundaries, not a plain cycles-to-ticks conversion. The window did not begin on a tick
-         * boundary: the first one falls after os_arch_suppressed_head_cycles, and whole periods
-         * follow it. Dividing the raw elapsed cycles instead would report a tick before the first
-         * boundary was ever reached. */
-        if ((elapsed_cycles >= os_arch_suppressed_head_cycles) && (os_arch_tick_reload_cycles != 0U))
-        {
-            elapsed_ticks = 1U + ((elapsed_cycles - os_arch_suppressed_head_cycles) /
-                                  os_arch_tick_reload_cycles);
-        }
-
-        if (elapsed_ticks > (os_arch_planned_idle_ticks - 1U))
-        {
-            elapsed_ticks = os_arch_planned_idle_ticks - 1U;
-        }
-    }
-
-    /* Restore SysTick to its normal single-tick cadence (identical values
-     * os_arch_tick_init programs). Writing CVR clears COUNTFLAG and forces an
-     * immediate reload from the now-normal RVR on the next clock; it does not
-     * affect an already-latched pending exception in the NVIC, which is exactly
-     * the point of the COUNTFLAG branch above. */
-    OS_ARCH_REG_SYST_CSR = 0U;
-    OS_ARCH_REG_SYST_RVR = os_arch_tick_reload_cycles - 1UL;
-    OS_ARCH_REG_SYST_CVR = 0U;
-    OS_ARCH_REG_SYST_CSR = OS_ARCH_SYST_CSR_CLKSOURCE_MSK |
-                           OS_ARCH_SYST_CSR_TICKINT_MSK |
-                           OS_ARCH_SYST_CSR_ENABLE_MSK;
-
-    os_arch_planned_idle_ticks = 0U;
-    }
-
-    /* The kernel interrupt mask taken in os_arch_sleep_prepare stays held: os_arch_sleep_finish()
-     * releases it once os_tick.c has announced this sleep and restored the application's hardware.
-     * Releasing it here instead would expose a window in which os_tick_count is short by the
-     * entire sleep duration while the pending SysTick and any other interrupt are free to run. */
-    return elapsed_ticks;
-}
-
-/******************************************************************************************************/
-/**
- * @brief Release the interrupt mask held across the tickless window. See os_arch_port_common.h.
- *
- * @return None.
- */
-void os_arch_sleep_finish(void)
-{
-    /* os_arch_sleep_prepare only masks once it commits to reprogramming SysTick; every early
-     * return leaves the mask untaken. Restoring unconditionally would then push a stale saved
-     * state onto a core that was never masked, so the flag tracks ownership explicitly. */
-    if (os_arch_sleep_mask_held)
-    {
-        os_arch_sleep_mask_held = false;
-        os_arch_kernel_mask_restore(os_arch_sleep_mask_state);
-    }
-}
-
-/******************************************************************************************************/
-/**
- * @brief Ticks that fit in one suppressed window given the register width (24-bit SysTick
- *        reload) and the current tick-to-cycle ratio. Shared by os_arch_sleep_prepare (the cap)
- *        and os_arch_max_suppressed_ticks_get (the public query) so the two can never disagree.
+ * @brief Ticks that fit in one self-armed window given the register width (24-bit SysTick
+ *        reload) and the current tick-to-cycle ratio. Shared by the arming path (the cap) and
+ *        os_arch_tickless_self_max_ticks (the query) so the two can never disagree.
  *
  * @return uint64_t  Maximum ticks per window, 0 if the normal tick was never set up.
  */
@@ -781,160 +625,200 @@ static uint64_t os_arch_max_window_ticks_get(void)
     return window;
 }
 
+/******************************************************************************************************/
+/**
+ * @brief Whether this port may stretch SysTick itself on this device.
+ *
+ * Only with DWT CYCCNT - see the block comment. False makes the shared file report a 0 ceiling, and
+ * the kernel then does not sleep at all, which beats a window that breaks every os_delay_us().
+ *
+ * @return bool  true when SysTick may be reprogrammed for a window.
+ */
+static bool os_arch_tickless_self_available(void)
+{
+    return os_arch_dwt_available;
+}
 
 /******************************************************************************************************/
 /**
- * @brief Reprogram SysTick to suppress ticking for (planned_ticks - 1) ticks and mask
- *        interrupts until os_arch_elapsed_ticks_get() restores normal cadence.
+ * @brief Ceiling on a self-armed window, in ticks - exactly what the open will honour, no +1.
+ *
+ * Both sides read os_arch_max_window_ticks_get() so they cannot disagree; this used to add a tick
+ * the arming path then capped away.
+ *
+ * @return uint32_t  Maximum suppressible ticks, 0 if the normal tick was never set up.
+ */
+static uint32_t os_arch_tickless_self_max_ticks(void)
+{
+    return (uint32_t)os_arch_max_window_ticks_get();
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Reprogram SysTick to suppress ticking for (planned_ticks - 1) ticks and mask interrupts
+ *        until os_arch_tickless_self_close() restores normal cadence.
  *
  * TICKINT stays enabled throughout: if this window fully elapses, the SysTick exception
- * legitimately becomes pending exactly like a normal tick would, and os_arch_elapsed_ticks_get()
- * relies on that pending exception to supply the final tick once it releases the mask below -
- * The established technique for this, rather than a self-contained alternative.
+ * legitimately becomes pending exactly like a normal tick would, and the close relies on that
+ * pending exception to supply the final tick once the mask is released. The established technique
+ * for this, rather than a self-contained alternative.
  *
  * @param[in] planned_ticks  Planned idle duration in kernel ticks.
- * @return None.
+ * @return uint32_t  Ticks actually armed - capped to the register width, and 0 if this port
+ *                    declined the window, in which case the sleep is a plain WFI.
  */
-
-void os_arch_sleep_prepare(uint32_t planned_ticks)
+static uint32_t os_arch_tickless_self_open(uint32_t planned_ticks)
 {
     uint32_t clock_hz;
     uint32_t remaining_cycles;
     uint64_t max_window_ticks;
     uint64_t suppressed_cycles64;
+    uint32_t armed = 0U;   /* nothing armed until every check below passes */
 
-    os_arch_planned_idle_ticks = 0U; /* not armed until proven below */
-    os_arch_soc_window         = false;
-
-    /* A package with a wake source of its own wins, and the SysTick path below is skipped entirely.
-     * Only SysTick's INTERRUPT is masked here - never its reload - because the reload is what the
-     * cycle counter synthesized in os_arch_cycle_systick.c measures its periods against, and moving
-     * it would strand os_delay_us on any part whose DWT is missing. The periods the silenced
-     * interrupt misses are put back when the window closes. */
-    if ((planned_ticks >= 2U) && (os_arch_tick_suppress_max_cb() != 0U))
-    {
-        os_arch_soc_saved_csr = OS_ARCH_REG_SYST_CSR;
-
-        OS_ARCH_REG_SYST_CSR = os_arch_soc_saved_csr & ~OS_ARCH_SYST_CSR_TICKINT_MSK;
-
-        os_arch_cycle_window_open();
-        os_arch_tick_suppress_cb(planned_ticks);
-
-        os_arch_planned_idle_ticks = planned_ticks;
-        os_arch_soc_window         = true;
-    }
-    /* Below 2 ticks there is nothing meaningful to suppress (planned_ticks - 1
-     * would be 0); os_arch_elapsed_ticks_get() then reports 0 and this idle
-     * pass behaves like a plain WFI. */
-    else if (planned_ticks >= 2U)
-    {
-    clock_hz = os_arch_clock_hz_get();
-
-    /* No usable clock, or the normal tick was never actually set up
-     * (os_arch_tick_init bailed at boot): nothing safe to reprogram. */
-    if ((clock_hz != 0U) && (os_arch_tick_reload_cycles != 0U))
-    {
-
-    /* Cap the TICK COUNT first, then re-derive the cycle budget from the capped
-     * count: (planned_ticks - 1) * reload_cycles can vastly exceed uint32_t
-     * range for realistic tick counts, so capping after multiplying would
-     * overflow. One tick of headroom is left because the remainder below is
-     * added on top and can be almost a whole reload by itself. */
+    clock_hz         = os_arch_clock_hz_get();
     max_window_ticks = os_arch_max_window_ticks_get();
 
-    /* Zero is defensive only: unreachable given the reload range os_arch_tick_init enforces. */
-    if (max_window_ticks > 1U)
+    /* No usable clock, or the normal tick was never actually set up (os_arch_tick_init bailed at
+     * boot): nothing safe to reprogram. The max_window_ticks > 1 test is defensive only -
+     * unreachable given the reload range os_arch_tick_init enforces. */
+    if ((clock_hz != 0U) && (os_arch_tick_reload_cycles != 0U) && (max_window_ticks > 1U))
     {
-    if ((uint64_t)(planned_ticks - 1U) > (max_window_ticks - 1U))
-    {
-        planned_ticks = (uint32_t)max_window_ticks;
+        /* Cap the TICK COUNT first, then re-derive the cycle budget from the capped count:
+         * (planned_ticks - 1) * reload_cycles can vastly exceed uint32_t range for realistic tick
+         * counts, so capping after multiplying would overflow. One tick of headroom is left
+         * because the remainder below is added on top and can be almost a whole reload by
+         * itself. */
+        if ((uint64_t)(planned_ticks - 1U) > (max_window_ticks - 1U))
+        {
+            planned_ticks = (uint32_t)max_window_ticks;
+        }
+
+        /* Whatever is left of the tick ALREADY RUNNING, kept rather than discarded.
+         *
+         * The deadline the kernel asked for is planned_ticks tick BOUNDARIES away, and the first of
+         * them is this remainder away - not a whole period. Zeroing CVR here, as this once did,
+         * silently shortens every window to planned_ticks - 1 periods while the close still reports
+         * planned_ticks, so the clock gains a tick per window. A single sleep looks right; twenty
+         * of them are twenty ticks fast. */
+        remaining_cycles = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
+
+        suppressed_cycles64 = (uint64_t)remaining_cycles +
+                              ((uint64_t)(planned_ticks - 1U) * (uint64_t)os_arch_tick_reload_cycles);
+
+        /* Committed to reprogramming SysTick: hold the kernel interrupt mask until
+         * os_arch_tickless_self_close() restores normal cadence and os_arch_sleep_finish() releases
+         * it, so a real tick can never fire against a half-reprogrammed register set. */
+        os_arch_sleep_mask_state         = os_arch_kernel_mask_save();
+        os_arch_sleep_mask_held          = true;
+        os_arch_suppressed_reload_cycles = (uint32_t)suppressed_cycles64;
+        os_arch_suppressed_head_cycles   = remaining_cycles;
+
+        OS_ARCH_REG_SYST_CSR = 0U;
+        OS_ARCH_REG_SYST_RVR = os_arch_suppressed_reload_cycles - 1UL;
+        OS_ARCH_REG_SYST_CVR = 0U;
+        OS_ARCH_REG_SYST_CSR = OS_ARCH_SYST_CSR_CLKSOURCE_MSK |
+                               OS_ARCH_SYST_CSR_TICKINT_MSK |
+                               OS_ARCH_SYST_CSR_ENABLE_MSK;
+
+        armed = planned_ticks;
     }
 
-    /* Whatever is left of the tick ALREADY RUNNING, kept rather than discarded.
-     *
-     * The deadline the kernel asked for is planned_ticks tick BOUNDARIES away, and the first of
-     * them is this remainder away - not a whole period. Zeroing CVR here, as this once did,
-     * silently shortens every window to planned_ticks - 1 periods while os_arch_elapsed_ticks_get
-     * still reports planned_ticks, so the clock gains a tick per window. A single sleep looks
-     * right; twenty of them are twenty ticks fast. */
-    remaining_cycles = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
+    return armed;
+}
 
-    suppressed_cycles64 = (uint64_t)remaining_cycles +
-                          ((uint64_t)(planned_ticks - 1U) * (uint64_t)os_arch_tick_reload_cycles);
+/******************************************************************************************************/
+/**
+ * @brief Close a window this port armed itself: how long it really was, and normal cadence back.
+ *
+ * A fully elapsed window leaves a real SysTick exception pending, which supplies the final +1 once
+ * the mask drops; an early wake is reconstructed from CVR instead.
+ *
+ * The mask taken at the open stays held until os_arch_sleep_finish(), so nothing runs against a
+ * clock still short by the whole sleep.
+ *
+ * @param[in] planned_ticks  What the window was armed for, as returned by the open.
+ * @return uint32_t  Whole ticks elapsed.
+ */
+static uint32_t os_arch_tickless_self_close(uint32_t planned_ticks)
+{
+    uint32_t csr;
+    uint32_t cvr;
+    uint32_t elapsed_cycles;
+    uint32_t elapsed_ticks = 0U;
 
-    /* Committed to reprogramming SysTick: hold the kernel interrupt mask until
-     * os_arch_elapsed_ticks_get() restores normal cadence and releases it, so a
-     * real tick can never fire against a half-reprogrammed register set. */
-    os_arch_sleep_mask_state          = os_arch_kernel_mask_save();
-    os_arch_sleep_mask_held           = true;
-    os_arch_planned_idle_ticks        = planned_ticks;
-    os_arch_suppressed_reload_cycles  = (uint32_t)suppressed_cycles64;
-    os_arch_suppressed_head_cycles    = remaining_cycles;
+    /* Single CSR read: it clears COUNTFLAG as a side effect, so it must be sampled once. */
+    csr = OS_ARCH_REG_SYST_CSR;
 
+    if ((csr & OS_ARCH_SYST_CSR_COUNTFLAG_MSK) != 0U)
+    {
+        /* Full window elapsed: a real SysTick exception is already pending in the NVIC (latched the
+         * instant the down-counter hit zero, independent of the interrupt mask still held here) -
+         * it supplies the final +1 once that mask is released, through the unmodified
+         * os_tick_handler() ISR. */
+        elapsed_ticks = planned_ticks - 1U;
+    }
+    else
+    {
+        /* Woke early: reconstruct how far CVR counted down from the reload actually programmed for
+         * this window. */
+        cvr            = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
+        elapsed_cycles = (os_arch_suppressed_reload_cycles - 1U) - cvr;
+
+        /* Boundaries, not a plain cycles-to-ticks conversion. The window did not begin on a tick
+         * boundary: the first one falls after os_arch_suppressed_head_cycles, and whole periods
+         * follow it. Dividing the raw elapsed cycles instead would report a tick before the first
+         * boundary was ever reached. */
+        if ((elapsed_cycles >= os_arch_suppressed_head_cycles) && (os_arch_tick_reload_cycles != 0U))
+        {
+            elapsed_ticks = 1U + ((elapsed_cycles - os_arch_suppressed_head_cycles) /
+                                  os_arch_tick_reload_cycles);
+        }
+
+        if (elapsed_ticks > (planned_ticks - 1U))
+        {
+            elapsed_ticks = planned_ticks - 1U;
+        }
+    }
+
+    /* Restore SysTick to its normal single-tick cadence (identical values os_arch_tick_init
+     * programs). Writing CVR clears COUNTFLAG and forces an immediate reload from the now-normal
+     * RVR on the next clock; it does not affect an already-latched pending exception in the NVIC,
+     * which is exactly the point of the COUNTFLAG branch above. */
     OS_ARCH_REG_SYST_CSR = 0U;
-    OS_ARCH_REG_SYST_RVR = os_arch_suppressed_reload_cycles - 1UL;
+    OS_ARCH_REG_SYST_RVR = os_arch_tick_reload_cycles - 1UL;
     OS_ARCH_REG_SYST_CVR = 0U;
     OS_ARCH_REG_SYST_CSR = OS_ARCH_SYST_CSR_CLKSOURCE_MSK |
                            OS_ARCH_SYST_CSR_TICKINT_MSK |
                            OS_ARCH_SYST_CSR_ENABLE_MSK;
-    }
-    }
-    }
+
+    return elapsed_ticks;
 }
 
 /******************************************************************************************************/
 /**
- * @brief Maximum ticks this port can suppress in a single tickless window (see
- *        os_arch_port_common.h for the full contract) - the planned_ticks value at which
- *        os_arch_sleep_prepare's own cap first binds.
+ * @brief Release the interrupt mask a self-armed window took.
  *
- * @return uint32_t  Maximum suppressible ticks, 0 if the normal tick was never set up.
+ * The open only masks once it commits; every early return, and every SoC-armed window, leaves it
+ * untaken. Hence the explicit ownership flag - restoring unconditionally would push a stale state
+ * onto a core that was never masked.
+ *
+ * @return None.
  */
-uint32_t os_arch_max_suppressed_ticks_get(void)
+static void os_arch_tickless_self_finish(void)
 {
-    /* No suppression without a cycle counter of its own.
-     *
-     * Where DWT CYCCNT is missing or gated, os_arch_cycle_count_get falls back to a counter
-     * SYNTHESIZED FROM SysTick: it accumulates whole periods in the tick interrupt and multiplies
-     * them by the reload it reads live. Suppressing the tick changes that reload, so periods
-     * counted against the old one get scaled by the new one and the value jumps - and that counter
-     * is what os_delay_us and the busy-wait half of os_delay_ms run on.
-     *
-     * DWT is independent of SysTick, so with it there is nothing to disturb. Without it, this port
-     * reports 0 and tickless degrades to a plain WFI, which is correct rather than merely safe:
-     * the alternative is a suppressed window that quietly breaks every microsecond delay. */
-    uint32_t suppressible = os_arch_tick_suppress_max_cb();
-
-    /* A package's own source answers first: it is not bounded by SysTick's 24 bits, and it is the
-     * only one that could survive a deep sleep. Zero means there is none, and the SysTick window
-     * below is what is left. */
-    if (suppressible != 0U)
+    if (os_arch_sleep_mask_held)
     {
-        /* Nothing more to work out. */
+        os_arch_sleep_mask_held = false;
+        os_arch_kernel_mask_restore(os_arch_sleep_mask_state);
     }
-    else if (os_arch_dwt_available)
-    {
-        uint64_t max_window_ticks = os_arch_max_window_ticks_get();
-
-        suppressible = (max_window_ticks == 0U) ? 0U : ((uint32_t)max_window_ticks + 1U);
-    }
-
-    return suppressible;
 }
 
-/******************************************************************************************************/
-/**
- * @brief Shortest window worth opening on this port (see os_arch_port_common.h for the contract).
- *
- * Nothing to add above what the package says: entering and leaving the sleep is a WFI, which costs
- * the same everywhere and is already well inside the two ticks the kernel insists on regardless.
- *
- * @return uint32_t  Floor on one window, in ticks; 0 when the package has no opinion.
- */
-uint32_t os_arch_min_suppressed_ticks_get(void)
-{
-    return os_arch_tick_suppress_min_cb();
-}
+/** This port has both mechanisms, so the shared file needs the five functions above. */
+#define OS_ARCH_TICKLESS_SELF_SUPPRESS  1
+
+#endif /* OS_CONFIG_TICKLESS_ENABLE */
+
+#include "os_arch_tickless.c"
 
 /*
  * ***********************************************************************************************************

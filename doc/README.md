@@ -80,6 +80,7 @@ points at the five pages below.
 | **[Using the kernel](api.md)** | Every API: tasks, priorities, mutexes, queues, notifications, atomics, timers, deferred calls, the heap, diagnostics and debugging |
 | **[How the kernel works](design.md)** | Boot, the scheduler, the context switch, the tick, blocking and waking, priority inheritance, where the RAM goes, and the source layout |
 | **[Platform support](porting.md)** | The callbacks a platform must supply, the clock, TrustZone, multi-core and tickless idle |
+| **[Tickless idle](tickless.md)** | The whole suppressed-tick contract on one page: who masks, who plans, who clamps, who measures, who may sleep, what each port and each SoC package does, and how to prove it on a board |
 | **[SoC packages](soc.md)** | The optional per-silicon layer under `soc/`: who owns which callback, the two configuration values that moved out of `os_config.h`, and how to write a package |
 | **[Testing and examples](testing.md)** | The self-test suite and the runnable examples |
 

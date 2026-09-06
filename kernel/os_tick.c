@@ -26,6 +26,33 @@
     ((((OS_CONFIG_TICKLESS_MIN_IDLE_MS * OS_CONFIG_TICK_HZ) + 999UL) / 1000UL) < 2UL ?             \
      2UL : (((OS_CONFIG_TICKLESS_MIN_IDLE_MS * OS_CONFIG_TICK_HZ) + 999UL) / 1000UL))
 
+/** The most one window may ever be planned for, whatever the workload and the port say.
+ *
+ * Not a policy and not configurable: it is a fact about a 32-bit tick counter.
+ *
+ * os_tickless_expected_idle_ticks_get() answers UINT32_MAX when there is genuinely nothing pending -
+ * no timer, no finite-delay sleeper - and that is the honest answer. A port whose wake source is 64
+ * bits wide reports no ceiling of its own for the same honest reason (soc/raspberrypi/rp235x_riscv
+ * returns UINT32_MAX: mtime cannot run out). Put together, those two truths would plan a window
+ * spanning the entire range of os_tick_count, and then:
+ *
+ *   - os_tick_announce() does os_tick_count += elapsed. At UINT32_MAX that lands one tick BELOW
+ *     where it started, so the clock runs backwards - the one thing a monotonic counter must not do.
+ *   - Every wrap-safe difference in the kernel - os_internal_wait_remaining(), the retry loop in
+ *     os_delay_ticks() - reads os_tick_get() - start as a forward elapsed. An unsigned difference
+ *     only says "forward" while the real elapsed is under half the range; past that it is
+ *     indistinguishable from a small step backwards.
+ *
+ * Half the range is therefore the bound, and staying strictly under it is what keeps every one of
+ * those reads unambiguous. At a 1 kHz tick it is close to 25 days, which is far past any window a
+ * real workload asks for - this exists to stop the degenerate case, not to shape ordinary ones.
+ *
+ * FreeRTOS bounds the same thing with xMaximumPossibleSuppressedTicks, derived in the PORT from the
+ * timer's width. This kernel already has that: os_arch_max_suppressed_ticks_get() is exactly it, and
+ * every port with a narrow timer answers from its register width. This constant is the other half of
+ * the same rule - the limit the KERNEL's own counter imposes once the hardware imposes none. */
+#define OS_TICKLESS_MAX_IDLE_TICKS   (UINT32_MAX / 2U)
+
 /*
  * ***********************************************************************************************************
  * Global variables
@@ -34,9 +61,20 @@
 
 static __IO uint32_t os_tick_count = 0U;
 
+#if (OS_CONFIG_TEST_ENABLE == 1U)
+/* Defined here rather than in test/os_test.c so the kernel library never depends on the test
+ * library to link. Declared in ahura.h, where the reason it exists is written out. */
+__IO uint32_t os_test_tick_isr_entries = 0U;
+#endif
+
 #if (OS_CONFIG_CPU_USAGE_ENABLE == 1U)
 /* CPU load sampling: every tick counts once, and additionally as idle when
- * it interrupted the idle task. os_cpu_usage_get consumes and resets both. */
+ * it interrupted the idle task. os_cpu_usage_get consumes and resets both.
+ *
+ * Written under the plain kernel mask, read under the full critical section. Safe because only
+ * core 0 writes them, so there is no cross-core write for the reader's spinlock to exclude. Worst
+ * case is one tick counted in the next sampling window; raising the writer would cost a spinlock
+ * on every tick interrupt to tidy an advisory percentage. */
 static __IO uint32_t os_tick_usage_total_ticks = 0U;
 static __IO uint32_t os_tick_usage_idle_ticks  = 0U;
 #endif
@@ -93,6 +131,12 @@ void os_tick_handler(void)
 
     if (owns_time_base)
     {
+#if (OS_CONFIG_TEST_ENABLE == 1U)
+        /* The self-test's only window into whether a tickless window actually stopped the tick.
+         * See os_test_tick_isr_entries in ahura.h; compiled out of every other build. */
+        os_test_tick_isr_entries++;
+#endif
+
         os_tick_count++;
 
 #if (OS_CONFIG_CPU_USAGE_ENABLE == 1U)
@@ -154,13 +198,20 @@ void os_tick_announce(uint32_t elapsed_ticks)
     os_tick_usage_idle_ticks  += elapsed_ticks;
 #endif
 
-    os_arch_kernel_mask_restore(mask_state);
+    /* The mask stays held across the three list updates: os_tick_count is the new time the moment
+     * it is written, while the lists still describe the old one, and a caller seeing that gap finds
+     * a deadline reported as passed before the task waiting on it is woken.
+     *
+     * Unreachable today only because the one caller holds an outer mask. Costs nothing - the three
+     * take their own masks anyway, and none of them runs application code. */
 
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
     os_timer_tick_process(elapsed_ticks);
 #endif
     os_task_tick_update(elapsed_ticks);
     os_task_slice_tick(elapsed_ticks);
+
+    os_arch_kernel_mask_restore(mask_state);
 
     if (os_kernel_is_running() && os_task_reschedule_possible())
     {
@@ -213,24 +264,38 @@ uint32_t os_cpu_usage_get(void)
 
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 
-/* Tickless idle is single-core only, for now.
+/* Tickless idle across cores: only core 0 ever suppresses, and the other cores nudge it.
  *
  * os_tick_handler above gives core 0 sole ownership of the kernel time base, so suppressing core
  * 0's tick stops delays and timers for EVERY core. os_tickless_idle_process masks interrupts before
  * it plans a window, which closes the race against this core's own ISRs and does nothing at all
  * about another core: core 1 keeps running tasks and can arm a timeout inside a window core 0 has
- * already committed to sleeping through. The four-worker SMP soak shows it as workers that never
- * finish, not as anything that looks like a clock problem.
+ * already committed to sleeping through.
  *
- * Asking whether the other cores are idle does not fix it - a core can take work the instant after
- * it answers. What does is the core creating the nearer deadline nudging core 0 out of its window,
- * which is a change to the delay-insert path and not yet written.
+ * Asking whether the other cores are idle would not fix it - a core can take work the instant after
+ * it answers. What does is the core CREATING the nearer deadline nudging core 0 out of its window,
+ * and that is os_tickless_deadline_armed() below, called from every path that puts a new expiry on
+ * a kernel time source. os_tickless_window_open is the flag it reads; the ordering that makes the
+ * pair airtight is spelled out where the flag is raised.
  *
- * A compile error rather than a silent degrade, for the same reason the sleep hooks are a link
- * error: a build that enables tickless and quietly gets nothing is the outcome worth preventing. */
+ * That leaves ONE thing this file cannot check for itself: the nudge is an IPI, and
+ * os_arch_core_ipi_request_cb has a weak default in the SoC layer that does nothing at all. A
+ * package without a real one is fine for ordinary preemption - the target core picks the task up at
+ * its next tick - and is NOT fine here, because a suppressed window is precisely the absence of a
+ * next tick. template/soc_cb.c therefore withdraws its empty default for this exact combination, so
+ * an unpackaged multi-core target that enables tickless fails to LINK rather than to keep time. */
 /** Tick at which a window was last planned, so the idle loop walks the deadline lists once per
  *  tick rather than once per pass. */
 static __IO uint32_t os_tickless_last_plan_tick = 0U;
+
+/** Bumped whenever a new expiry joins a kernel time source. A hint, not a guarantee: written from
+ *  any core, read without a lock, and nothing rests on it being current - a stale read costs one
+ *  idle pass. It only lets the guard below tell "nothing changed" from "re-planning could now
+ *  answer differently". */
+static __IO uint32_t os_tickless_plan_generation = 0U;
+
+/** The value of the above as of the last planning pass. */
+static __IO uint32_t os_tickless_last_plan_generation = 0U;
 
 #if (OS_CONFIG_CORE_COUNT > 1U)
 /** Raised by core 0 from the moment it starts planning a window until that window has closed.
@@ -301,9 +366,12 @@ uint32_t os_tickless_max_suppressed_ticks_get(void)
  * @brief Execute tickless idle flow.
  *
  * Suppresses ticking for the planned idle duration, sleeps, then announces the real elapsed
- * time on wake. Not yet called by the idle task (see doc/porting.md "Tickless idle" section) -
- * public in ahura.h so it can be exercised directly (e.g. by the self-test suite) ahead of
- * that wiring.
+ * time on wake. Called by the idle task on every pass (os_task_idle_entry); also public in
+ * ahura.h so the self-test suite can exercise it directly.
+ *
+ * Does nothing at all on a core other than 0. On core 0 it plans once per tick, plus once more for
+ * each expiry armed inside that tick - see the two guards at the top of the body for why each is
+ * there.
  *
  * @return None.
  */
@@ -328,23 +396,22 @@ void os_tickless_idle_process(void)
     owns_time_base = (os_arch_core_id_get() == 0U);
 #endif
 
-    /* At most one planning pass per tick, and this is not an optimisation - it is what keeps the
-     * idle loop from starving the other core.
+    /* One planning pass per tick, plus one per deadline armed inside that tick.
      *
-     * os_tickless_expected_idle_ticks_get walks the delay list and the timer list, both under the
-     * cross-core spinlock. The idle task calls this every time round, and a WFE returns as soon as
-     * anything is pending, which on a busy second core is immediately and forever. Without this
-     * guard core 0's idle becomes a spin loop holding and releasing the very lock the other core's
-     * tasks need, and they crawl.
-     *
-     * Twice in one tick cannot answer differently: every deadline those walks read is counted in
-     * ticks. A window that does open moves the clock far past this guard on its own. */
+     * The tick test stops core 0's idle loop taking the cross-core spinlock on every pass and
+     * starving core 1. The generation test puts back the one re-plan that would answer differently
+     * - a task blocking for 500 ticks inside the current tick otherwise waits for the next SysTick
+     * before anyone may look, losing a tick of sleep per event. Both are needed. */
     if (owns_time_base)
     {
         uint32_t now = os_tick_get();
+        uint32_t generation = os_tickless_plan_generation;
 
-        owns_time_base = (now != os_tickless_last_plan_tick);
-        os_tickless_last_plan_tick = now;
+        owns_time_base = (now != os_tickless_last_plan_tick) ||
+                         (generation != os_tickless_last_plan_generation);
+
+        os_tickless_last_plan_tick       = now;
+        os_tickless_last_plan_generation = generation;
     }
 
     if (owns_time_base)
@@ -374,14 +441,23 @@ void os_tickless_idle_process(void)
         planned_idle_ticks = os_tickless_expected_idle_ticks_get();
 
         /* The port's own ceiling, applied here rather than inside the expected-idle calculation.
-         * Only when it is non-zero: a port that answers 0 cannot suppress anything, but it still
-         * gets the whole pass below - deadlines honoured, the application's sleep hooks called,
-         * and a plain WFI for the sleep. Clamping to 0 would skip all of that. */
+         * Only clamped when it is non-zero, because 0 does not mean "a window of no ticks" - it
+         * means this port cannot suppress at all, which the test below treats as its own case
+         * rather than as a very short window. */
         suppress_ceiling = os_arch_max_suppressed_ticks_get();
 
         if ((suppress_ceiling != 0U) && (planned_idle_ticks > suppress_ceiling))
         {
             planned_idle_ticks = suppress_ceiling;
+        }
+
+        /* And the kernel's own ceiling, which no port can raise: see OS_TICKLESS_MAX_IDLE_TICKS for
+         * why a 32-bit tick counter cannot be asked to jump further than this in one announcement.
+         * Applied after the port's, because either can be the binding one - a narrow timer clamps
+         * first on most parts, and this clamps first on a part whose timer never runs out. */
+        if (planned_idle_ticks > OS_TICKLESS_MAX_IDLE_TICKS)
+        {
+            planned_idle_ticks = OS_TICKLESS_MAX_IDLE_TICKS;
         }
 
         /* Two floors, and the higher one wins. OS_TICKLESS_MIN_IDLE_TICKS is what the
@@ -399,7 +475,26 @@ void os_tickless_idle_process(void)
             suppress_floor = OS_TICKLESS_MIN_IDLE_TICKS;
         }
 
-        if (planned_idle_ticks >= suppress_floor)
+        /* suppress_ceiling is part of the condition, not just of the clamp above it: a port that
+         * answers 0 can arm nothing, so there is no window here to open, to measure, or to describe
+         * to the sleep hooks - and above all none to SLEEP through.
+         *
+         * That last part is what makes this a correctness test rather than an optimisation.
+         * OS_ARCH_SLEEP() ends in os_arch_soc_sleep_cb(), which a package is entitled to define as
+         * its deepest mode: on an STM32 under OS_CONFIG_SLEEP_MODE_DEEP it is a Stop entry. Entered
+         * with no wake source armed it also stops SysTick, so the core waits on whatever unrelated
+         * interrupt happens along, and os_arch_elapsed_ticks_get() - correctly, having armed nothing
+         * - reports 0. The whole sleep is then missing from os_tick_count, and every delay, timeout
+         * and software timer overruns by it with nothing anywhere to say so. That is what a v7m
+         * target with an STM32 DEEP build did before this test existed.
+         *
+         * Nothing replaces the sleep here, deliberately. os_task_idle_entry calls
+         * os_arch_soc_idle_cb() on the very next line, OUTSIDE this mask, which is where an ordinary
+         * idle belongs - and it is the call the packages define as WFE rather than WFI where that
+         * matters (a core another core must be able to wake). Doing it from in here instead would
+         * put a latching WFE inside a masked region, and would call the sleep hooks around a window
+         * that does not exist. */
+        if ((suppress_ceiling != 0U) && (planned_idle_ticks >= suppress_floor))
         {
             os_tickless_pre_sleep_cb();
 
@@ -433,7 +528,8 @@ void os_tickless_idle_process(void)
 
 /******************************************************************************************************/
 /**
- * @brief Tell core 0 that a deadline nearer than its suppressed window has just been armed.
+ * @brief A new expiry has joined a kernel time source: re-open the planning guard, and on a
+ *        multi-core build tell core 0 if it is already asleep past it.
  *
  * Called from every path that puts a new expiry on a kernel time source: a task joining the delay
  * list, a timer joining the running list. On a single-core build there is no window anyone else
@@ -443,13 +539,18 @@ void os_tickless_idle_process(void)
  * held, so core 0 leaves the sleep, measures what actually elapsed and announces it. That is the
  * same path an ordinary early wake takes, so nothing new has to be correct for this to work.
  *
- * Cheap where it does not apply: one flag read on a path that is already inside a critical
- * section, and an IPI only while a window is genuinely open somewhere else.
+ * Cheap where it does not apply: one increment and one flag read on a path that is already inside
+ * a critical section, and an IPI only while a window is genuinely open somewhere else.
  *
  * @return None.
  */
 void os_tickless_deadline_armed(void)
 {
+    /* Tells the guard in os_tickless_idle_process that the deadline lists moved, so a window
+     * planned before this expiry can be re-planned without waiting for the next tick. Every build;
+     * the IPI below is the multi-core half. */
+    os_tickless_plan_generation++;
+
 #if (OS_CONFIG_CORE_COUNT > 1U)
     if (os_tickless_window_open && (os_arch_core_id_get() != 0U))
     {

@@ -372,6 +372,12 @@ typedef struct
  * the instruction stream, which is what an ISB is for. Both are mapped so shared kernel code reads
  * the same on either architecture. */
 #define OS_ARCH_DSB()                     __asm volatile("fence" ::: "memory")
+
+/* Data Memory Barrier. RISC-V has one fence instruction rather than the Arm DSB/DMB pair, so both
+ * spell the same thing here - the distinction the Arm ports draw (order versus completion) has no
+ * separate encoding on this architecture. Named to match so the shared code above can ask for the
+ * cheaper one without knowing which port it is on. */
+#define OS_ARCH_DMB()                     __asm volatile("fence" ::: "memory")
 #define OS_ARCH_ISB()                     __asm volatile("fence.i" ::: "memory")
 
 #define OS_ARCH_IRQ_DISABLE()             OS_ARCH_CSR_CLEAR(mstatus, OS_ARCH_MSTATUS_MIE_MSK)

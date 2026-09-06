@@ -74,3 +74,9 @@ if(NOT PICO_PLATFORM MATCHES "riscv")
 		"This package is the Hazard3 RISC-V side of the RP235x. Build with PICO_PLATFORM=rp2350-riscv, "
 		"or use raspberrypi/rp235x_arm for the Cortex-M33 side.")
 endif()
+
+# Forces soc_cb.c into the link. Every symbol it defines has a weak default somewhere, so nothing
+# in the link is ever UNDEFINED and pointing here - the linker then leaves the object in the archive
+# and the whole package loses to those defaults, silently. On this part that is the mtimecmp tick
+# and the tickless wake source. See the anchor in soc_cb.c.
+set(AHURA_SOC_LINK_OPTIONS -u soc_rp235x_riscv_anchor)

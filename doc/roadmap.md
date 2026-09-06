@@ -12,18 +12,15 @@
 
 Tracked deliberately, and stated here rather than discovered later:
 
-- **Tickless idle is not wired into the idle task.** It is implemented for the
-  ARMv8-M mainline port, but the ARMv6-M and ARMv7-M ports still need the same
-  change, and the idle task still runs a plain `WFI` loop. An application-owned
-  tick (`OS_CONFIG_TICK_SOURCE_EXTERNAL`) currently degrades to a plain WFI too,
-  because the callback pair cannot yet express suppressing a timer the kernel
-  does not own.
-- **Tickless idle is not finished.** Tick suppression is implemented on the
-  ARMv8-M mainline port, but the v6m and v7m ports still need the same change
-  and the idle task does not yet call into any of it, so the switch changes
-  nothing at run time today.
-- **Mutex priority inheritance is single-level.** It does not propagate through
-  a chain of nested mutexes held by different tasks.
+- **An application-owned tick suppresses nothing.** Tickless idle itself is
+  finished on all four ports and all four SoC packages - see [Tickless
+  idle](tickless.md) - but with `OS_CONFIG_TICK_SOURCE_EXTERNAL` the timer
+  belongs to the application, and the callback pair cannot yet express
+  suppressing a timer the kernel does not own. Such a build still runs the whole
+  tickless pass and still honours every deadline; the sleep is a plain `WFI`.
+- **Priority inheritance does not reposition a queued task.** The boost itself is
+  transitive and immediate, but a task already queued on some *other* object -
+  a semaphore, a queue - keeps the place it had until it is woken.
 - **IAR EWARM is not supported.** The port layer needs GCC-style inline
   assembly; the portable `kernel/` tree would build anywhere, so this is a
   contained piece of work confined to four files.

@@ -121,7 +121,7 @@ feature off shows exactly which values stop mattering. PART 3 is the platform.
 | `OS_CONFIG_MAIN_TASK_PRIORITY` | `OS_TASK_PRIO_1` | Priority of `tsk_main` |
 | `OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY` | `0U` | `0` = mask everything with PRIMASK; nonzero = BASEPRI, see [The three barriers](design.md#the-three-barriers) |
 | **PART 2 - features** | | |
-| `OS_CONFIG_MUTEX_ENABLE` | `1U` | Mutexes, always with single-level priority inheritance |
+| `OS_CONFIG_MUTEX_ENABLE` | `1U` | Mutexes, always with transitive priority inheritance |
 | `OS_CONFIG_SEM_ENABLE` | `1U` | Counting semaphores |
 | `OS_CONFIG_QUEUE_ENABLE` | `1U` | Fixed-item-size queues |
 | `OS_CONFIG_MSG_ENABLE` | `1U` | Variable-length message buffers. Independent of the queue switch |

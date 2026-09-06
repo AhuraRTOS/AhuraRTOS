@@ -642,11 +642,23 @@ application routes to `os_tick_handler()`.
   three ports. It is one file rather than a copy per port because its own split
   - `LDREX`/`STREX` loops or a critical section, see [Atomics](api.md#atomics) - runs
   along the instruction set, not along `v6m`/`v7m`/`v8m`.
-- The five files under `common/` are **textual includes**, pulled in by the
-  per-core wrappers below. Never add them to a build as separate compilation
-  units. The three port files each carry a `#error` guard against being compiled
-  for the wrong architecture profile; the other two are pulled in by whichever
-  port includes them.
+- `common/os_arch_tickless.c` is the tickless-idle implementation for the two
+  ports that must not touch SysTick's reload: v6m, which has no DWT at all, and
+  v7m, where moving the reload would corrupt the cycle counter above. It masks
+  SysTick's *interrupt* for the window and lets a SoC timer end it. The v8m port
+  does not include it - where DWT CYCCNT is available it reprograms the reload
+  itself, which needs no second timer. See [Tickless idle](tickless.md).
+- The six files under `common/` are **textual includes**, pulled in by the
+  per-core wrappers below, and none of them is a translation unit: they have no
+  include guards and they define statics the including file goes on to use, so
+  compiling one on its own would give duplicate symbols at link time.
+
+  They say so themselves rather than relying on a file extension. Each wrapper
+  defines `OS_ARCH_PORT_TRANSLATION_UNIT` before its `#include`, and each shared
+  file opens with an `#error` naming the wrapper to compile instead, so a
+  `file(GLOB *.c)` that sweeps them in fails with a sentence rather than a pile
+  of duplicate symbols. The three port files carry a second `#error` against
+  being built for the wrong architecture profile.
 - `cortex_m0/`, `cortex_m0plus/`, and `cortex_m23/` are thin wrappers over the
   v6m port.
 - `cortex_m3/`, `cortex_m4/`, and `cortex_m7/` are thin wrappers over the v7m
@@ -673,6 +685,86 @@ application routes to `os_tick_handler()`.
   `OS_CONFIG_TRUSTZONE`. See [TrustZone](porting.md#trustzone).
 - Not covered yet: PAC/BTI (`-mbranch-protection` on the M85).
 
+### The delay and timer lists
+
+Both are **delta lists**: kept in wake-up order, with each entry holding the ticks
+it waits *after* the one in front of it rather than the ticks it waits from now.
+Only the head is ever measured against the present.
+
+That is what makes the tick cheap. It used to walk every sleeping task and
+decrement each one - O(sleepers) on every single tick, inside the kernel mask and
+the cross-core spinlock. At a 1 kHz tick with twenty sleepers that is twenty
+thousand node visits a second to discover that nothing is due. A delta list
+decrements **one** entry, and touches a second only when the first has actually
+expired. `os_task_next_delay_ticks_get()` and `os_timer_next_expiry_ticks_get()`
+become a single head read, which is what tickless idle asks for on every idle
+pass.
+
+The cost moves to the insert, which walks to find its place. That is the right
+trade: a task blocks once per wait, and the tick fires a thousand times a second.
+
+**Deltas rather than absolute wake-up times.** Absolute deadlines are the other
+classic answer, and they need every comparison to be wrap-safe - which caps any
+single delay at half the counter's range and needs a second "overflow" list to
+get that back. (FreeRTOS carries exactly that.) Deltas never compare two times at
+all, so a wait of any length a `uint32_t` can express works, and there is no wrap
+to handle anywhere.
+
+The timer list works the same way, with one extra rule: removing an entry hands
+its remaining delta to its successor, so the entries behind it keep their
+absolute deadlines. The tick detaches the whole due prefix into a local list
+before running anything, which is what stops a periodic timer re-arming into the
+list still being walked.
+
+Measured on a NUCLEO-G431RB, the combined deadline scan the tickless path runs
+every idle pass went from **262 cycles to 108**.
+
+### The SysTick-derived cycle counter
+
+`arch/arm/common/os_arch_cycle_systick.c` synthesizes a cycle counter from
+SysTick for devices where DWT CYCCNT is unavailable - always on ARMv6-M, and on
+any v7m/v8m part where CYCCNT is unimplemented, gated behind debug power, or
+locked. Three details in it are not obvious, and each of them was a real bug.
+
+**Whole periods are counted in the tick interrupt, not polled.** The down-counter
+alone gives a position inside one period; something has to count the periods. An
+earlier version watched `COUNTFLAG` on every call, which looks right and passes
+short tests: the flag only says *"it wrapped since you last looked"*. A period
+that elapses while nobody calls the function is never credited, so two reads a
+few milliseconds apart could report less than one period of elapsed time - or,
+when the second read landed after a wrap, a value **lower** than the first. On
+the RP2040 that showed up as a counter running at 1/100 of the CPU clock and as
+negative intervals wrapping to nearly 2^32. `os_arch_cycle_tick()` now counts
+them from the tick interrupt on every core: nothing can be missed, because
+nothing has to be caught.
+
+**The count is per core.** Each core runs its own SysTick, started when that core
+entered the scheduler, so their periods share no phase - while `os_tick_count`
+belongs to core 0 alone. Pairing core 0's tick with core 1's down-counter gives
+the right average rate with a sawtooth of up to a whole period on top, which is
+exactly the kind of number that looks plausible and is not.
+
+**The wrap-to-interrupt lag is closed with `ICSR.PENDSTSET`, never `COUNTFLAG`.**
+Between the hardware wrap and the interrupt that records it, the tick count is
+one period behind while the down-counter has already restarted at the top, so a
+straight read is a whole period too low. `COUNTFLAG` cannot fix it: it is cleared
+by *reading* `SYST_CSR`, not by the handler running, so it stays set long after
+the tick was counted. Using it added a period that had already been counted, and
+the next call - finding the flag cleared, because the previous call consumed it -
+dropped it again, stepping the counter **backwards** on alternating reads.
+`PENDSTSET` is set by the wrap and cleared when the handler is *entered*, so it
+reads as "a tick is owed and has not been counted", and reading it changes
+nothing.
+
+A **bounded** monotonic clamp sits on top of all that: a backwards step smaller
+than two periods is held at the previous value, and anything larger is taken at
+face value. The bound is the point - a signed test alone reads any step over 2^31
+as backwards, and that is an ordinary *forward* step over a long gap (17 seconds
+at 125 MHz). Without the bound the clamp pinned itself to a stale value, every
+interval measured 0, and the one read that finally escaped measured two billion
+cycles.
+
+
 ### Notes and constraints
 
 - The kernel owns exactly one exception vector, PendSV, and needs exactly one
@@ -696,8 +788,10 @@ application routes to `os_tick_handler()`.
   event must arrive - see [Deferred calls](api.md#deferred-calls).
 - Mutexes are task-only and non-recursive. See [Mutexes and priority
   inheritance](api.md#mutexes-and-priority-inheritance).
-- Mutex priority inheritance is single-level: it does not propagate through a
-  chain of nested mutexes held by different tasks.
+- Mutex priority inheritance is transitive: it propagates along a chain of
+  nested mutexes held by different tasks, bounded by
+  `OS_TASK_DEADLOCK_MAX_DEPTH`. What it does not do is reposition an
+  already-queued task within an unrelated object's wait queue.
 - With a nonzero `OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY`, ISRs above that priority
   must not call any kernel API - they are never masked, so the kernel cannot
   protect its own state against them.

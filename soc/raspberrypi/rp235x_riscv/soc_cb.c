@@ -285,6 +285,22 @@ static void soc_tick_isr(void)
     os_tick_handler();
 }
 
+/** Referenced by nothing, and that is its entire job.
+ *
+ *  A static archive gives up an object only while the link still has an undefined symbol it
+ *  defines. Nothing here qualifies: every callback this package supplies has a weak default in the
+ *  kernel or the port, so the linker has no reason to extract the object and the whole package
+ *  loses to those defaults - silently. On this part that costs the mtimecmp tick and the tickless
+ *  wake source together.
+ *
+ *  It stayed hidden here for the same reason it did in soc/st/stm32: os_tick.c references
+ *  os_tickless_pre_sleep_cb, the kernel ships no default for it, and that one undefined symbol
+ *  dragged the object in by accident on every build that happened to enable tickless.
+ *
+ *  soc.cmake names this in a -u link option, which is what forces the extraction. Unconditional on
+ *  purpose: a symbol behind the same #if as the things it rescues would disappear with them. */
+const uint32_t soc_rp235x_riscv_anchor = 0U;
+
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 
 /*
@@ -343,11 +359,15 @@ uint32_t os_arch_tick_suppress_max_cb(void)
 {
     /* An unprogrammed tick has no grid to suppress against.
      *
-     * Otherwise no ceiling of this timer's own: mtime and mtimecmp are 64 bits, the deadline is
-     * absolute, and ticks * soc_tick_interval cannot approach that width for any interval a
-     * kernel tick could have. What bounds a window here is the kernel's own 32-bit tick count,
-     * which is what this reports. The 24-bit answer this used to give came from the config, and
-     * was SysTick's limit on a part that has no SysTick. */
+     * Otherwise no ceiling of this timer's own, and that is not a shrug: mtime and mtimecmp are 64
+     * bits, the deadline is absolute, and ticks * soc_tick_interval cannot approach that width for
+     * any interval a kernel tick could have. UINT32_MAX is this callback's way of saying "the
+     * hardware imposes nothing" - the kernel then applies the limit its own 32-bit tick counter
+     * imposes, OS_TICKLESS_MAX_IDLE_TICKS in os_tick.c, which is where that rule belongs. Reporting
+     * the kernel's number from here would only duplicate it, and duplicated limits drift apart.
+     *
+     * The 24-bit answer this used to give came from the config, and was SysTick's limit on a part
+     * that has no SysTick. */
     return (soc_tick_interval != 0U) ? UINT32_MAX : 0U;
 }
 

@@ -1783,6 +1783,31 @@ void os_log_output_cb(const uint8_t *data, size_t length);
  *        os_main().
  */
 void os_test(void);
+
+/******************************************************************************************************/
+/**
+ * @brief The self-test suite body that has to run in INTERRUPT context, so the ISR-safe APIs are
+ *        exercised from a real ISR rather than from a task pretending to be one.
+ *
+ * Call this from the SVC handler when the application owns that vector and the suite therefore does
+ * not (OS_CONFIG_TEST_SVC_VECTOR set to 0). With the default of 1 the suite installs its own vector
+ * and nothing here needs calling. See the option in test/os_test.c for why both routes exist.
+ */
+void os_test_isr_entry(void);
+
+/**
+ * @brief Entries into os_tick_handler() on the core that owns the time base, counted so the suite
+ *        can prove a tickless window really SUPPRESSED the tick rather than merely arriving at the
+ *        right answer.
+ *
+ * Compiled only with OS_CONFIG_TEST_ENABLE. Nothing in the kernel reads it, and no behaviour
+ * depends on it - it exists because "the clock ended up correct" and "the tick stopped firing" are
+ * different claims, and only the second one distinguishes a suppressed window from a plain WFI
+ * that happened to be woken by the tick it was supposed to skip. Write to it freely; the suite
+ * samples it around a window of known length and expects roughly one entry rather than one per
+ * tick.
+ */
+extern __IO uint32_t os_test_tick_isr_entries;
 #endif /* OS_CONFIG_TEST_ENABLE */
 
 /*

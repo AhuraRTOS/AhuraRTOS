@@ -46,8 +46,8 @@ would build anywhere. Everything else the kernel relies on -
 `__attribute__((weak))`, `__builtin_clz`/`__builtin_ctz`, the `__ARM_ARCH_*` and
 `__ARM_FP` predefined macros - is common to those three compilers.
 
-An IAR port is a contained piece of work: `os_arch_port_common.h` plus the three
-files under `arch/arm/common/`. Nothing in `kernel/` would change.
+An IAR port is a contained piece of work: `os_arch_port_common.h` plus the six
+shared files under `arch/arm/common/`. Nothing in `kernel/` would change.
 
 ### Application callbacks
 
@@ -218,20 +218,19 @@ Cortex-M33 pair, the same chip's Hazard3 pair, and the RP2040's Cortex-M0+ pair
 new multi-core port as experimental until it has run that suite on silicon
 itself.
 
-### Tickless idle (unfinished)
+### Tickless idle
 
-Config options: `OS_CONFIG_TICKLESS_ENABLE` (default 0),
-`OS_CONFIG_TICKLESS_MIN_IDLE` (the shortest idle worth sleeping for), and
-`OS_CONFIG_MAX_SUPPRESSED_TICKS`.
+**The full contract is [Tickless idle](tickless.md)** - who masks, who plans, who
+clamps, who measures, who may sleep, what each of the four ports does and what
+each of the four SoC packages supplies. This section is only what a *port author*
+has to write.
 
-**Interaction with `OS_CONFIG_TICK_SOURCE`.** Real tick suppression works by
-reprogramming the tick timer's reload, which the port can only do for a timer it
-owns. With `OS_CONFIG_TICK_SOURCE_EXTERNAL` the timer belongs to the
-application, so `os_arch_max_suppressed_ticks_get()` reports 0 and idle degrades
-to a plain WFI - correct, and no worse than the v6m/v7m ports do today, but not
-power-optimal. Suppressing an application-owned tick means suppressing it in
-`os_tickless_pre_sleep_cb()` and reporting the real elapsed time afterwards,
-which the current callback pair does not yet express.
+Two config options, both in `os_config.h`:
+
+```c
+#define OS_CONFIG_TICKLESS_ENABLE       1U
+#define OS_CONFIG_TICKLESS_MIN_IDLE_MS  2U
+```
 
 The whole group compiles away with the option, like every other feature in PART
 2 of `ahura.h`: with `OS_CONFIG_TICKLESS_ENABLE` at 0 the three control
@@ -239,22 +238,43 @@ functions are neither declared nor defined, so calling one is a compile error
 naming it rather than a call that silently does nothing. Guard your own call
 sites the same way the self-test suite does if they must build both ways.
 
-Two application callbacks bracket the sleep window, with prototypes in
-`ahura.h`. Both are **mandatory** whenever `OS_CONFIG_TICKLESS_ENABLE` is 1: the
-kernel declares them and defines neither, so a missing one is a link error
-naming the function rather than a hook that quietly does nothing. Write them in
-the application's callback file. Callbacks the application provides carry the
-`_cb` suffix by convention:
+**What a port implements.** Five functions, and almost certainly none of them
+from scratch: `arch/common/os_arch_tickless.c` already holds the contract, and
+a port specialises it by answering three questions -
+`OS_ARCH_TICKLESS_TICK_SILENCE()`/`_RESTORE()`, `OS_ARCH_TICKLESS_CYCLE_FROM_TICK`
+and `OS_ARCH_TICKLESS_SELF_SUPPRESS`. `arch/arm/common/os_arch_tickless.c` is
+the Cortex-M answer in 80 lines and is the model to copy; `os_arch_port_rv32.c`
+takes every default and is the other extreme.
+
+| | |
+|---|---|
+| `os_arch_max_suppressed_ticks_get()` | Ceiling on one window, in ticks. **0 means this port cannot suppress at all**, and the kernel then skips the sleep entirely rather than entering one nothing can end |
+| `os_arch_min_suppressed_ticks_get()` | Floor: what arming and leaving a window costs on this chip. The kernel takes whichever of this and `OS_CONFIG_TICKLESS_MIN_IDLE_MS` is larger |
+| `os_arch_sleep_prepare(ticks)` | Open the window |
+| `os_arch_elapsed_ticks_get()` | Close it, and report **whole ticks only, never more than the window was promised** |
+| `os_arch_sleep_finish()` | Release anything the open took |
+
+The ceiling and the arming path must agree exactly. A ceiling above what the
+arming path honours means the kernel plans windows the port silently shortens; a
+ceiling below it wastes the difference. Derive both from the same expression.
+
+**Interaction with `OS_CONFIG_TICK_SOURCE`.** Suppressing a tick by
+reprogramming the tick timer's reload is only possible for a timer the port
+owns. With `OS_CONFIG_TICK_SOURCE_EXTERNAL` that timer belongs to the SoC
+package, which is why the package - not the port - answers the four
+`os_arch_tick_suppress_*_cb` callbacks. A package that implements none of them
+reports a 0 ceiling and idle degrades to a plain `WFI`: correct, and honest
+about saving nothing.
+
+**Application hooks.** `os_tickless_pre_sleep_cb()` and
+`os_tickless_post_sleep_cb()` bracket the sleep. They are **optional** - the SoC
+package supplies weak defaults, and an application defining either one strongly
+displaces that package's default for that hook alone:
 
 ```c
-void os_tickless_pre_sleep_cb(void)   { /* select sleep mode (e.g. SLEEPDEEP), gate clocks */ }
-void os_tickless_post_sleep_cb(void)  { /* clear SLEEPDEEP, restore clocks */ }
+void os_tickless_pre_sleep_cb(void)   { /* flush a UART, park a peripheral */ }
+void os_tickless_post_sleep_cb(void)  { /* bring it back */ }
 ```
-
-The reason they are required rather than defaulted is the paragraph below: an
-empty pre-sleep hook on a part whose HAL runs its own tick source shortens every
-suppressed sleep to that source's period, which presents as tickless idle simply
-not saving any power.
 
 **What the post-sleep hook may assume.** It runs with the kernel's interrupts
 still masked and **before** the sleep has been announced, so `os_tick_get()` is
@@ -282,45 +302,23 @@ registered in that window would be slept straight past. A WFI still wakes on a
 pending interrupt while masked, so anything arriving after that point shortens
 the sleep rather than being missed.
 
-**Suspend every other periodic interrupt source here too, not just SysTick.**
-WFI wakes on any pending interrupt regardless of masking, so anything else
-firing more often than the planned sleep will cut every suppressed sleep short
-at its own period, no matter how long SysTick itself was reprogrammed for. A
-common example is a HAL library's own tick redirected to a spare timer,
-precisely so the RTOS can have SysTick to itself. On STM32, `HAL_SuspendTick()`
-and `HAL_ResumeTick()` are the standard hook for this. A periodic ADC or comms
-timer has the same effect. `os_tickless_pre_sleep_cb` and
-`os_tickless_post_sleep_cb` are exactly where to pause and resume those sources.
+**Suspend every other periodic interrupt source too, not just the tick.** WFI
+wakes on any pending interrupt regardless of masking, so anything else firing
+more often than the planned sleep will cut every suppressed sleep short at its
+own period, no matter how long the tick was reprogrammed for. A common example
+is a HAL library's own tick redirected to a spare timer, precisely so the RTOS
+can have SysTick to itself. On STM32, `HAL_SuspendTick()` and `HAL_ResumeTick()`
+are the standard hook for this, and the `st/stm32` package already calls them
+from its own weak defaults. A periodic ADC or comms timer has the same effect.
 
-**Status.** `os_tickless_expected_idle_ticks_get()` already bounds the planned
-sleep by the earliest of the next software-timer expiry, the next ready work
-item, and the next finite-delay task sleeper, so `os_delay_ms` waiters are
-covered and not just timers.
-
-On the ARMv8-M mainline port (`os_arch_port_v8m.c`, covering the M33, M35P, M52,
-M55, and M85), `os_arch_sleep_prepare` and `os_arch_elapsed_ticks_get` now
-really suppress SysTick for the sleep window. They reprogram its reload one tick
-short of the plan, so the real final tick still fires normally and supplies the
-last tick's accounting through the ordinary `os_tick_handler` path. This is the
-same technique FreeRTOS's tickless idle uses. They also measure the real elapsed
-time from SysTick itself rather than the DWT cycle counter, which is not
-reliable across an actual sleep on most implementations.
-
-Remaining work:
-
-- The ARMv6-M and ARMv7-M/E-M ports (`os_arch_port_v6m.c`,
-  `os_arch_port_v7m.c`) still need the identical fix. Same register layout, not
-  yet ported over.
-- The idle task still runs a plain `WFI` loop and does not yet call
-  `os_tickless_idle_process()`. That function is exposed in `ahura.h` and
-  exercised directly by the self-test suite through `test_tickless_sleep()`,
-  ahead of the wiring landing.
-- A deeper-sleep path, such as STOP mode where SysTick itself stops, would need
-  an always-running wake and measurement source instead.
-  The clock rate of that source is a property of the board rather than of the
-  kernel, so it belongs to a SoC package's `soc_config.h` when the path lands.
-  `OS_CONFIG_LPTIM_CLOCK_HZ` used to sit in `os_config.h` reserved for it and
-  has been removed: the kernel demanded a value it never read, and named it
-  after one vendor's peripheral in a configuration that names no vendor.
-
+**Status.** Implemented on all four ports and all four SoC packages, and every
+mechanism the shared file has is proven on silicon: the SoC wake source on
+**v7m** (NUCLEO-G431RB, LPTIM + Stop 1) and on **rv32** (Pico 2 RISC-V,
+`mtimecmp`, dual-core), and SysTick self-suppression on **v8m** (NUCLEO-H503RB).
+The self-test counts tick-interrupt entries across a window of known length, so
+"the tick stopped" is measured rather than inferred - 1 entry against 40 on the
+Pico 2, 0 against 40 on the G431, 1 against 33 on the H503. The RP2040 (v6m)
+package takes the same shared path and is due a re-run. The idle task calls
+`os_tickless_idle_process()` itself; the suite drives the same entry point
+directly, so a failure names the mechanism rather than the workload.
 ---

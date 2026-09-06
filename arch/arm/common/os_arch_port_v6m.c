@@ -14,6 +14,11 @@
  *            See LICENSE in the project root for the full license text.
  */
 
+#ifndef OS_ARCH_PORT_TRANSLATION_UNIT
+#error "os_arch_port_v6m.c is a textual include, not a translation unit. Compile arch/<family>/<core>/os_arch_port.c instead - it defines OS_ARCH_PORT_TRANSLATION_UNIT and includes this. See doc/installation.md."
+#endif
+
+
 /*
  * ***********************************************************************************************************
  * Includes

@@ -51,6 +51,32 @@ if(NOT AHURA_SOC STREQUAL "")
 	# AHURA_SOC_LINK_LIBRARIES and AHURA_SOC_COMPILE_DEFINITIONS. See doc/soc.md.
 	include("${_os_soc_dir}/soc.cmake")
 
+	# Every package MUST name an anchor symbol here, and this refuses to build one that does not.
+	#
+	# The reason is worth spelling out, because the requirement looks like ceremony until it bites.
+	# A static archive gives up a member only when the link still has an UNDEFINED symbol that member
+	# defines. A SoC package typically has none: its interrupt vectors are already defined weakly by
+	# the startup file, and every callback it supplies has a weak default in the kernel. So the
+	# linker has no reason to extract the object at all, and the whole package loses to those
+	# defaults - silently, with no warning and no missing symbol to chase.
+	#
+	# That is not hypothetical. It cost the raspberrypi packages their wake source on single-core
+	# builds, and then cost st/stm32 its SysTick vector on any build without tickless: the first tick
+	# branched into the startup file's Default_Handler, which is an infinite loop, and the board
+	# stopped dead with os_tick_count still 0 and nothing anywhere to say why.
+	#
+	# One -u option fixes it and a comment in soc.cmake explained it - to whoever read that file.
+	# This makes the next package that forgets fail at configure time instead.
+	if(NOT DEFINED AHURA_SOC_LINK_OPTIONS)
+		message(FATAL_ERROR
+			"SoC package '${AHURA_SOC}' sets no AHURA_SOC_LINK_OPTIONS.\n"
+			"Every package must force its own object into the link with an anchor symbol, or the "
+			"linker drops it and every callback in it silently loses to a weak default. Define an "
+			"unconditional 'const uint32_t soc_<name>_anchor = 0U;' in its soc_cb.c and add\n"
+			"    set(AHURA_SOC_LINK_OPTIONS -u soc_<name>_anchor)\n"
+			"to ${_os_soc_dir}/soc.cmake. See doc/soc.md.")
+	endif()
+
 	message(STATUS "Ahura SoC package: ${AHURA_SOC} (${AHURA_SOC_NAME})")
 else()
 	message(STATUS "Ahura SoC package: none - the application supplies soc_cb.c itself")

@@ -218,6 +218,10 @@ static os_task_t *os_test_bench_task_fill[TEST_BENCH_TASK_FILL] = {
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
 static void test_bench_timer_cb(void *context, uint32_t value);
 
+/* Sits in the delay list for the whole deadline-scan measurement, then leaves. */
+static void test_bench_sleeper_entry(void *context);
+
+
 /* A minute long, so it can be armed and cancelled 2000 times over without ever expiring: the
  * measurement sees the arm/cancel path alone, never a delivery. */
 OS_TIMER_DEFINE_ONESHOT(os_test_bench_timer, 60000U, test_bench_timer_cb);
@@ -416,6 +420,30 @@ typedef struct
 } test_inherit2_ctx_t;
 
 static test_inherit2_ctx_t os_test_inherit2_ctx[2];
+/* A CHAIN of mutex ownership: HIGH waits on MED, MED waits on LOW, and SPIN sits between them
+ * holding nothing - see test_mutex_transitive_inheritance(). */
+OS_TASK_DEFINE(os_test_inherit3_low_task,  512U);
+OS_TASK_DEFINE(os_test_inherit3_med_task,  512U);
+OS_TASK_DEFINE(os_test_inherit3_spin_task, 512U);
+OS_TASK_DEFINE(os_test_inherit3_high_task, 512U);
+static os_mutex_t        os_test_inherit3_mutex_high;  /* held by MED, wanted by HIGH */
+static os_mutex_t        os_test_inherit3_mutex_low;   /* held by LOW, wanted by MED */
+static __IO bool     os_test_inherit3_low_holds;
+static __IO bool     os_test_inherit3_med_holds;
+static __IO bool     os_test_inherit3_med_done;
+static __IO bool     os_test_inherit3_high_done;
+static __IO uint32_t os_test_inherit3_low_counter;
+static __IO uint32_t os_test_inherit3_spin_counter;
+static __IO uint32_t os_test_inherit3_spin_at_grant;
+
+/* Two waiters queued on one mutex, so one of them can be re-prioritised while it sits there -
+ * see test_priority_requeue(). */
+OS_TASK_DEFINE(os_test_requeue_a, 512U);
+OS_TASK_DEFINE(os_test_requeue_b, 512U);
+static os_mutex_t        os_test_requeue_mutex;
+static __IO uint32_t os_test_requeue_order;  /* waiters granted the mutex, in order */
+static __IO uint32_t os_test_requeue_first;  /* the context tag of whichever got it first */
+
 static os_mutex_t          os_test_inherit2_mutex_a;
 static os_mutex_t          os_test_inherit2_mutex_b;
 static __IO uint32_t   os_test_inherit2_done_mask;
@@ -548,6 +576,11 @@ static void test_tickless_hooks(void);
 static void test_tickless_sleep(void);
 static void test_tickless_bounds(void);
 static void test_tickless_drift(void);
+static void test_tickless_suppression(void);
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+static void test_priority_requeue(void);
+static void test_requeue_entry(void *context);
+#endif
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U) && (OS_CONFIG_TIMER_ENABLE == 1U)
 static void test_tickless_sleeper_entry(void *context);
 #endif
@@ -2622,8 +2655,11 @@ static void test_isr_defer_cb(void *context, uint32_t value)
 /**
  * @brief The interrupt under test: it does nothing but call the timer API and record what came
  *        back. Reached with "svc #0" from the test task below.
+ *
+ * Separated from the vector below so the suite can be reached from an SVC handler the APPLICATION
+ * owns, rather than insisting on owning the vector itself. See OS_CONFIG_TEST_SVC_VECTOR.
  */
-void OS_CONFIG_ARCH_SVC_HANDLER(void)
+void os_test_isr_entry(void)
 {
     os_test_isr_entered++;
     os_test_isr_was_isr = os_arch_in_isr();
@@ -2641,6 +2677,45 @@ void OS_CONFIG_ARCH_SVC_HANDLER(void)
         os_test_isr_stop_status = os_timer_stop(&os_test_isr_timer);
     }
 }
+
+/* Whether this suite claims the SVC vector for itself (1, the default) or leaves it to the
+ * application (0).
+ *
+ * The kernel never uses SVC and says so - it folds starting the first task into PendSV precisely to
+ * leave SVC alone. The SUITE is the only part that wants it, and only to reach interrupt context so
+ * the ISR-safe APIs can be tested from a real ISR rather than from a task pretending to be one.
+ *
+ * Claiming it has to be a STRONG definition: CMSIS-Pack startup files declare SVC_Handler weak and
+ * alias it to Default_Handler, and between two weak definitions the linker keeps the startup file's -
+ * so a weak one here would leave `svc #0` branching into an infinite loop. That is the same
+ * mechanism that cost the ST package its SysTick vector.
+ *
+ * But strong collides with an application that generates its own SVC_Handler, which CubeMX does by
+ * default - and it collides as a bare "multiple definition of SVC_Handler" from the linker, which
+ * says nothing about why a test suite wants that symbol. Making the application delete a handler it
+ * owns, on every regeneration, to accommodate a test, is the wrong way round.
+ *
+ * So: leave this at 1 and the suite works out of the box on a project with no SVC handler of its own
+ * (the Pico SDK, a CubeMX project with SVC unticked). Set it to 0 when the application owns SVC, and
+ * call os_test_isr_entry() from that handler instead - one line, and on CubeMX it goes in a USER CODE
+ * block, which survives regeneration. Nothing is deleted and nothing collides.
+ *
+ * Same convention, and the same spelling, as SOC_CONFIG_SYSTICK_VECTOR in the ST package. Defaulted
+ * here rather than required in os_config.h so that existing projects keep building untouched. */
+#ifndef OS_CONFIG_TEST_SVC_VECTOR
+#define OS_CONFIG_TEST_SVC_VECTOR       1U
+#endif
+
+#if (OS_CONFIG_TEST_SVC_VECTOR != 0U)
+/******************************************************************************************************/
+/**
+ * @brief The SVC vector, when the suite owns it. Strong, for the reason above.
+ */
+void OS_CONFIG_ARCH_SVC_HANDLER(void)
+{
+    os_test_isr_entry();
+}
+#endif
 
 /*
  * ***********************************************************************************************************
@@ -2829,6 +2904,7 @@ static void test_timer_isr(void)
      * OS_CONFIG_ARCH_SVC_HANDLER is what fixes it, and a SoC package sets it. Skipping loudly is
      * the right behaviour when it is wrong: a suite that stops dead tells you less than one that
      * says which vector to name. */
+#if (OS_CONFIG_TEST_SVC_VECTOR != 0U)
     {
         const uint32_t *vector_table = (const uint32_t *)(uintptr_t)OS_ARCH_REG_VTOR;
         uint32_t        installed    = vector_table[OS_ARCH_VECTOR_SVC] & ~(uint32_t)1U;
@@ -2845,6 +2921,31 @@ static void test_timer_isr(void)
             return;
         }
     }
+#else
+    /* The application owns the vector (OS_CONFIG_TEST_SVC_VECTOR 0), so its address says nothing
+     * about whether it reaches this suite. Ask the only question that matters instead: does one
+     * `svc` actually arrive? It is safe to try - the application would not have taken this option
+     * without a handler of its own - and a handler that forgot the one line it owes us returns
+     * harmlessly, leaving the counter untouched and this a SKIP rather than a hang. */
+    {
+        uint32_t probe = os_test_isr_entered;
+
+        os_test_isr_action = TEST_ISR_ACTION_STOP;
+        __asm volatile("svc #0" ::: "memory");
+
+        if (os_test_isr_entered == probe)
+        {
+            printf("  [SKIP] SVC arrives, but not here: OS_CONFIG_TEST_SVC_VECTOR is 0, so this\r\n");
+            printf("         suite does not own the vector and your handler has to pass it on.\r\n");
+            printf("         Add os_test_isr_entry(); to your SVC_Handler - on CubeMX, inside a\r\n");
+            printf("         USER CODE block so it survives regeneration.\r\n");
+            return;
+        }
+
+        os_test_isr_entered     = probe;
+        os_test_isr_stop_status = OS_ERR_NONE;
+    }
+#endif
 
     *shpr2 = (*shpr2 & 0x00FFFFFFUL) | 0xFF000000UL;
 
@@ -4307,6 +4408,188 @@ static void test_mutex_multi_inheritance(void)
     AHURA_TEST_CHECK(os_test_inherit_medium_counter == TEST_BURST_ITERATIONS,
                       "medium task ran to completion once every boost was released (count=%lu)",
                       (unsigned long)os_test_inherit_medium_counter);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief The chain a two-mutex test still cannot reach: the owner a high-priority task is waiting
+ *        for is ITSELF waiting for somebody else.
+ *
+ * Four tasks and two mutexes, and the whole point is the task at the bottom:
+ *
+ *     LOW (3)     holds m2, is resumed later and then works
+ *     MED (4)     holds m1, blocked on m2          <- the link
+ *     HIGH (6)    blocked on m1
+ *     SPIN (5)    runnable, holds nothing, sits BETWEEN med and high
+ *
+ * HIGH boosts MED, which is what a single-level inheritance does and is not enough: MED cannot run
+ * either, because it is waiting for LOW. Unless the boost travels one more link, LOW stays at 3,
+ * SPIN at 5 preempts it, and HIGH - the highest-priority task in the system - waits behind a task
+ * two priorities below the one blocking it. That is unbounded priority inversion, and it is the
+ * failure the Mars Pathfinder is remembered for.
+ *
+ * The measurement is taken by HIGH itself, at the only instant that settles it: how much CPU SPIN
+ * had managed to take by the time HIGH finally held m1. Boosted along the chain, LOW outranks SPIN
+ * throughout and the answer is zero. Unboosted, SPIN runs its whole loop first.
+ *
+ * Every loop here is bounded, so a kernel WITHOUT the chain still finishes the test and reports a
+ * failure rather than hanging the board - which matters, since that is the state this test was
+ * written against.
+ */
+static void test_inherit3_low_entry(void *context)
+{
+    __IO uint32_t i;
+
+    (void)context;
+
+    (void)os_mutex_lock(&os_test_inherit3_mutex_low, OS_WAIT_FOREVER);
+
+    /* Park while the rest of the chain is built above us. Suspending is the gate here because it
+     * needs no other primitive - this suite runs in builds with the semaphores and queues compiled
+     * out. The resume is what starts the measurement. */
+    os_test_inherit3_low_holds = true;
+    (void)os_task_pause(NULL);
+
+    /* Resumed. SPIN is started from HERE rather than from the test task, and that is not
+     * incidental: the test task runs below every task in the chain, so once LOW is runnable again
+     * it would never get the CPU back to start anything. Starting SPIN from inside LOW puts the two
+     * of them in the ready list at the same moment, which is exactly the race the boost has to
+     * win. */
+    (void)os_task_start(&os_test_inherit3_spin_task);
+
+    for (i = 0U; i < TEST_BURST_ITERATIONS; i++)
+    {
+        os_test_inherit3_low_counter++;
+    }
+
+    (void)os_mutex_unlock(&os_test_inherit3_mutex_low);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief The middle link: takes the mutex HIGH wants, then blocks on the one LOW holds.
+ */
+static void test_inherit3_med_entry(void *context)
+{
+    (void)context;
+
+    (void)os_mutex_lock(&os_test_inherit3_mutex_high, OS_WAIT_FOREVER);
+    os_test_inherit3_med_holds = true;
+
+    (void)os_mutex_lock(&os_test_inherit3_mutex_low, OS_WAIT_FOREVER);
+
+    (void)os_mutex_unlock(&os_test_inherit3_mutex_low);
+    (void)os_mutex_unlock(&os_test_inherit3_mutex_high);
+    os_test_inherit3_med_done = true;
+}
+
+/******************************************************************************************************/
+/**
+ * @brief The top of the chain. Its acquisition is the moment the whole test turns on.
+ */
+static void test_inherit3_high_entry(void *context)
+{
+    (void)context;
+
+    (void)os_mutex_lock(&os_test_inherit3_mutex_high, OS_WAIT_FOREVER);
+
+    /* The measurement: what SPIN managed to do while this task waited. */
+    os_test_inherit3_spin_at_grant = os_test_inherit3_spin_counter;
+    os_test_inherit3_high_done     = true;
+
+    (void)os_mutex_unlock(&os_test_inherit3_mutex_high);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Holds nothing, wants nothing, and sits between MED and HIGH. Its only job is to be
+ *        runnable, so that a LOW which was not boosted loses the CPU to it.
+ */
+static void test_inherit3_spin_entry(void *context)
+{
+    __IO uint32_t i;
+
+    (void)context;
+
+    for (i = 0U; i < TEST_BURST_ITERATIONS; i++)
+    {
+        os_test_inherit3_spin_counter++;
+    }
+}
+
+/******************************************************************************************************/
+static void test_mutex_transitive_inheritance(void)
+{
+    os_err_t status;
+
+    test_print_section("Combined: Mutex Priority Inheritance along a CHAIN (transitive)");
+
+    AHURA_TEST_CHECK(os_mutex_init(&os_test_inherit3_mutex_high) == OS_ERR_NONE, "chain mutex HIGH-side initialized");
+    AHURA_TEST_CHECK(os_mutex_init(&os_test_inherit3_mutex_low) == OS_ERR_NONE, "chain mutex LOW-side initialized");
+
+    os_test_inherit3_low_holds     = false;
+    os_test_inherit3_med_holds     = false;
+    os_test_inherit3_med_done      = false;
+    os_test_inherit3_high_done     = false;
+    os_test_inherit3_low_counter   = 0U;
+    os_test_inherit3_spin_counter  = 0U;
+    os_test_inherit3_spin_at_grant = 0xFFFFFFFFUL;
+
+    /* LOW first: it takes the mutex the middle of the chain will want, then parks. */
+    status = os_task_create(&os_test_inherit3_low_task,
+                            TEST_TASK_CONFIG(test_inherit3_low_entry, NULL, (OS_CONFIG_TEST_PRIORITY + 1U)));
+    AHURA_TEST_CHECK(status == OS_ERR_NONE, "chain LOW task created (priority %u)", (unsigned)(OS_CONFIG_TEST_PRIORITY + 1U));
+    AHURA_TEST_CHECK(os_task_start(&os_test_inherit3_low_task) == OS_ERR_NONE, "chain LOW started");
+    AHURA_TEST_CHECK(os_test_inherit3_low_holds, "LOW holds its mutex and has parked");
+
+    /* SPIN is created now but deliberately NOT started - LOW starts it, see the entry above. */
+    status = os_task_create(&os_test_inherit3_spin_task,
+                            TEST_TASK_CONFIG(test_inherit3_spin_entry, NULL, (OS_CONFIG_TEST_PRIORITY + 3U)));
+    AHURA_TEST_CHECK(status == OS_ERR_NONE, "SPIN task created between the two (priority %u), not yet started",
+                      (unsigned)(OS_CONFIG_TEST_PRIORITY + 3U));
+
+    /* MED takes the mutex HIGH wants, then blocks on LOW's. */
+    status = os_task_create(&os_test_inherit3_med_task,
+                            TEST_TASK_CONFIG(test_inherit3_med_entry, NULL, (OS_CONFIG_TEST_PRIORITY + 2U)));
+    AHURA_TEST_CHECK(status == OS_ERR_NONE, "chain MED task created (priority %u)", (unsigned)(OS_CONFIG_TEST_PRIORITY + 2U));
+    AHURA_TEST_CHECK(os_task_start(&os_test_inherit3_med_task) == OS_ERR_NONE, "chain MED started");
+    AHURA_TEST_CHECK(os_test_inherit3_med_holds && !os_test_inherit3_med_done,
+                      "MED holds one mutex and is blocked on the other - the chain has a middle");
+
+    /* HIGH closes the chain and boosts it. */
+    status = os_task_create(&os_test_inherit3_high_task,
+                            TEST_TASK_CONFIG(test_inherit3_high_entry, NULL, (OS_CONFIG_TEST_PRIORITY + 4U)));
+    AHURA_TEST_CHECK(status == OS_ERR_NONE, "chain HIGH task created (priority %u)", (unsigned)(OS_CONFIG_TEST_PRIORITY + 4U));
+    AHURA_TEST_CHECK(os_task_start(&os_test_inherit3_high_task) == OS_ERR_NONE, "chain HIGH started");
+    AHURA_TEST_CHECK(!os_test_inherit3_high_done, "HIGH is blocked behind MED, which is blocked behind LOW");
+
+    /* Release the bottom of the chain and let the whole thing unwind. */
+    AHURA_TEST_CHECK(os_task_start(&os_test_inherit3_low_task) == OS_ERR_NONE,
+                      "LOW resumed - from here the boost either reached it or it did not");
+
+    os_delay_ms(400U);
+
+    AHURA_TEST_CHECK(os_test_inherit3_high_done, "HIGH eventually acquired the mutex");
+    AHURA_TEST_CHECK(os_test_inherit3_med_done, "MED completed and released both mutexes");
+
+    /* THE CHECK. Zero means the boost travelled the whole chain: LOW outranked SPIN from the moment
+     * it became runnable until it let go of the mutex. Anything else means it did not, and SPIN -
+     * two priorities below the task at the top of the chain - ran first. */
+    AHURA_TEST_CHECK(os_test_inherit3_spin_at_grant == 0U,
+                      "SPIN got ZERO cpu before HIGH was granted the mutex (got %lu of %lu) - the boost "
+                      "reached the far end of the chain",
+                      (unsigned long)os_test_inherit3_spin_at_grant,
+                      (unsigned long)TEST_BURST_ITERATIONS);
+
+    AHURA_TEST_CHECK(os_test_inherit3_low_counter == TEST_BURST_ITERATIONS,
+                      "LOW finished its own work (%lu of %lu)",
+                      (unsigned long)os_test_inherit3_low_counter, (unsigned long)TEST_BURST_ITERATIONS);
+
+    os_delay_ms(400U);
+
+    AHURA_TEST_CHECK(os_test_inherit3_spin_counter == TEST_BURST_ITERATIONS,
+                      "and SPIN ran to completion once the chain released it (%lu of %lu)",
+                      (unsigned long)os_test_inherit3_spin_counter, (unsigned long)TEST_BURST_ITERATIONS);
 }
 #endif /* OS_CONFIG_MUTEX_ENABLE */
 
@@ -5852,8 +6135,10 @@ static void test_context_switch_timing(void)
  * @brief Exercises os_tickless_pre_sleep_cb()/os_tickless_post_sleep_cb() directly, in isolation
  *        from the idle task and tick accounting.
  *
- * os_tickless_idle_process() is not yet invoked by the idle task (see doc/porting.md "Tickless
- * idle") - the idle task still just does a plain WFI - so OS_CONFIG_TICKLESS_ENABLE currently has
+ * The idle task DOES drive os_tickless_idle_process() itself, and the end-to-end sleep is covered
+ * by test_tickless_sleep() below. What this one checks is narrower and still worth having: that the
+ * two hooks return promptly and compose back-to-back, measured without a sleep in between so the
+ * number is the hooks\' own. OS_CONFIG_TICKLESS_ENABLE therefore has
  * no other observable runtime effect. This only proves the two hooks themselves run safely and
  * quickly and compose correctly back-to-back; it is not an end-to-end tickless sleep test.
  */
@@ -6217,6 +6502,145 @@ static void test_tickless_sleep(void)
 
     (void)os_timer_stop(&os_test_churn_timer);
 }
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/**
+ * @brief The tick really STOPS, and a refused window really is a no-op.
+ *
+ * The rest of the tickless group is passed unchanged by a port that suppresses NOTHING and is woken
+ * by the very tick it should have skipped - which is what v7m did before A1. So this one counts
+ * tick-interrupt entries (os_test_tick_isr_entries) across a window of known length.
+ *
+ * The reference is measured by SPINNING, not delaying: a delay would let the idle task run, and the
+ * idle task suppresses ticks itself, so the baseline would be suppressed too.
+ */
+static void test_tickless_suppression(void)
+{
+    uint32_t max_suppressed;
+    uint32_t horizon;
+    uint32_t tick0;
+    uint32_t entries0;
+    uint32_t baseline;
+    uint32_t suppressed;
+    uint32_t slept;
+    uint32_t declined_before;
+    uint32_t declined_after;
+    uint32_t cycles0;
+    uint32_t clock_hz;
+    uint32_t budget;
+    bool     timed_out;
+
+    test_print_section("Tickless Suppression (the tick stops, and a refused window is a no-op)");
+
+    /* A deadline one tick out is below every floor, so this call must hand its mask straight back
+     * rather than sleep. Not an optimisation: OS_ARCH_SLEEP() ends in the package's deepest mode,
+     * and entering that with no wake source armed waits on an unrelated interrupt while correctly
+     * reporting 0 elapsed - A1 and A8 in one line. */
+    os_test_oneshot_fired = 0U;
+    (void)os_timer_period_set(&os_test_timer_oneshot, 1U);
+    (void)os_timer_start(&os_test_timer_oneshot, NULL, 0U);
+
+    declined_before = os_tick_get();
+    os_tickless_idle_process();
+    declined_after  = os_tick_get();
+
+    AHURA_TEST_CHECK((declined_after - declined_before) <= 1U,
+                      "a window bounded one tick out is refused, not slept through (%lu -> %lu)",
+                      (unsigned long)declined_before, (unsigned long)declined_after);
+
+    os_delay_ms(5U);
+    (void)os_timer_stop(&os_test_timer_oneshot);
+
+    max_suppressed = os_tickless_max_suppressed_ticks_get();
+
+    if (max_suppressed < 8U)
+    {
+        printf("  [SKIP] os_tickless_max_suppressed_ticks_get() = %lu: this port suppresses\r\n"
+               "         nothing, so there is no tick to count the absence of.\r\n",
+               (unsigned long)max_suppressed);
+        return;
+    }
+
+    horizon = max_suppressed / 2U;
+    if (horizon < 8U)
+    {
+        horizon = 8U;
+    }
+    if (horizon > 40U)
+    {
+        horizon = 40U;
+    }
+
+    /* Baseline: this task stays on the CPU, so every tick fires. Bounded by cycles as well as by
+     * ticks - if the tick ever stopped advancing, an unbounded spin would park the whole suite with
+     * no output. Four times the expected cycles, so reaching it means something is wrong. */
+    tick0     = os_tick_get();
+    entries0  = os_test_tick_isr_entries;
+    cycles0   = os_arch_cycle_count_get();
+    clock_hz  = os_arch_clock_hz_get();
+    budget    = (clock_hz != 0U) ? ((clock_hz / OS_CONFIG_TICK_HZ) * horizon * 4U) : UINT32_MAX;
+    timed_out = false;
+
+    while ((os_tick_get() - tick0) < horizon)
+    {
+        if ((os_arch_cycle_count_get() - cycles0) > budget)
+        {
+            timed_out = true;
+            break;
+        }
+    }
+
+    baseline = os_test_tick_isr_entries - entries0;
+
+    AHURA_TEST_CHECK(!timed_out,
+                      "the kernel tick advanced at all: %lu ticks seen in %lu cycles",
+                      (unsigned long)(os_tick_get() - tick0),
+                      (unsigned long)(os_arch_cycle_count_get() - cycles0));
+
+    /* The same length of time, this time slept through. Armed silently and sampled immediately -
+     * a printf between the two would block on a polled UART and count ticks of its own. */
+    os_test_oneshot_fired = 0U;
+    (void)os_timer_period_set(&os_test_timer_oneshot, horizon);
+    (void)os_timer_start(&os_test_timer_oneshot, NULL, 0U);
+
+    tick0    = os_tick_get();
+    entries0 = os_test_tick_isr_entries;
+
+    os_tickless_idle_process();
+
+    suppressed = os_test_tick_isr_entries - entries0;
+    slept      = os_tick_get() - tick0;
+
+    AHURA_TEST_CHECK(baseline >= (horizon - 2U),
+                      "the reference window really was ticking: %lu entries over %lu ticks",
+                      (unsigned long)baseline, (unsigned long)horizon);
+
+    /* Measured against what was actually slept, not what was planned: a window ending early is the
+     * mechanism working - on SMP a deadline armed elsewhere IPIs this core awake on purpose. A
+     * quarter is deliberately loose; the claim is "the tick stopped", and what it catches is a
+     * whole window of unsuppressed ticks. */
+    if (slept < 4U)
+    {
+        printf("  [SKIP] the window ended after %lu ticks of the %lu planned, too short to say\r\n"
+               "         anything about the tick rate inside it - re-run to get a longer one.\r\n",
+               (unsigned long)slept, (unsigned long)horizon);
+    }
+    else
+    {
+        AHURA_TEST_CHECK((suppressed * 4U) < slept,
+                          "and it stopped the tick while it did: %lu entries over %lu ticks slept "
+                          "(%lu over %lu awake)",
+                          (unsigned long)suppressed, (unsigned long)slept,
+                          (unsigned long)baseline, (unsigned long)horizon);
+    }
+
+    /* The whole horizon, not a fixed 5 ms: a window cut short leaves the timer still running. */
+    os_delay_ms(horizon + 10U);
+    AHURA_TEST_CHECK(os_test_oneshot_fired == 1U,
+                      "the timer bounding the suppressed window fired exactly once (fired=%lu)",
+                      (unsigned long)os_test_oneshot_fired);
+}
 #else
 /******************************************************************************************************/
 static void test_tickless_sleep(void)
@@ -6238,6 +6662,13 @@ static void test_tickless_drift(void)
     test_print_section("Tickless Drift (many windows against a counter that never stops)");
     printf("  [SKIP] requires OS_CONFIG_TICKLESS_ENABLE=1 and OS_CONFIG_TIMER_ENABLE=1\r\n");
 }
+
+/******************************************************************************************************/
+static void test_tickless_suppression(void)
+{
+    test_print_section("Tickless Suppression (the tick stops, and a refused window is a no-op)");
+    printf("  [SKIP] requires OS_CONFIG_TICKLESS_ENABLE=1 and OS_CONFIG_TIMER_ENABLE=1\r\n");
+}
 #endif /* OS_CONFIG_TICKLESS_ENABLE && OS_CONFIG_TIMER_ENABLE */
 
 /*
@@ -6251,6 +6682,13 @@ static void test_tickless_drift(void)
 /**
  * @brief Never actually reached - the benchmark timer's period outlives the measurement.
  */
+static void test_bench_sleeper_entry(void *context)
+{
+    (void)context;
+
+    os_delay_ms(5000U);
+}
+
 static void test_bench_timer_cb(void *context, uint32_t value)
 {
     (void)context;
@@ -6303,14 +6741,14 @@ static void test_bench_row(const char *name, uint32_t best, uint32_t worst, uint
         uint64_t best_ns  = ((uint64_t)best  * 1000000000ULL) / (uint64_t)clock_hz;
         uint64_t worst_ns = ((uint64_t)worst * 1000000000ULL) / (uint64_t)clock_hz;
 
-        printf("  %-40s %5lu (%6lu ns) %5lu (%6lu ns)\r\n", name,
+        printf("  %-48s %5lu (%6lu ns) %5lu (%6lu ns)\r\n", name,
                (unsigned long)best,  (unsigned long)best_ns,
                (unsigned long)worst, (unsigned long)worst_ns);
     }
     else
     {
         /* No clock to convert with - say so rather than printing a zero that reads as a time. */
-        printf("  %-40s %5lu (   n/a   ) %5lu (   n/a   )\r\n", name,
+        printf("  %-48s %5lu (   n/a   ) %5lu (   n/a   )\r\n", name,
                (unsigned long)best, (unsigned long)worst);
     }
 }
@@ -6501,8 +6939,8 @@ static void test_benchmarks(void)
     }
 
     printf("\r\n");
-    printf("  %-40s %17s %17s\r\n", "Operation (each sampled alone)", "best", "worst");
-    printf("  ----------------------------------------------------------------------------\r\n");
+    printf("  %-48s %17s %17s\r\n", "Operation (each sampled alone)", "best", "worst");
+    printf("  ------------------------------------------------------------------------------------\r\n");
 
     /* Cost of the measurement itself: two counter reads with nothing between them. Subtracted
      * from every row, so a row shows the operation's own cycles and nothing else. */
@@ -6683,6 +7121,40 @@ static void test_benchmarks(void)
         test_bench_row("  ^ same, with 8 other timers running", TEST_BENCH_SUB(best, overhead),
                    TEST_BENCH_SUB(worst, overhead), clock_hz);
 
+        /* Kept RUNNING across the deadline-scan row below, which is measuring exactly this. */
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+        {
+            uint32_t started = 0U;
+
+            /* Put real sleepers in the delay list, then time the scan the tickless planner makes
+             * on every idle pass: the earliest software-timer expiry and the earliest finite-delay
+             * sleeper. Deterministic, unlike reading it out of the WORST column, and it is the one
+             * measurement that shows what the delay and timer lists cost to QUERY rather than to
+             * use - which is where an O(n) walk on the idle path hides. */
+            for (fill = 0U; fill < TEST_BENCH_TASK_FILL; fill++)
+            {
+                if (os_task_create(os_test_bench_task_fill[fill],
+                                   TEST_TASK_CONFIG(test_bench_sleeper_entry, NULL, TEST_PRIO_LOW)) == OS_ERR_NONE)
+                {
+                    (void)os_task_start(os_test_bench_task_fill[fill]);
+                    started++;
+                }
+            }
+
+            os_delay_ms(10U);   /* let them all reach their delay */
+
+            TEST_BENCH_CYCLES(best, worst, TEST_BENCH_SAMPLES,
+                                  (void)os_tickless_expected_idle_ticks_get());
+            test_bench_row("    ^ deadline scan alone (4 sleepers, 8 timers)", TEST_BENCH_SUB(best, overhead),
+                       TEST_BENCH_SUB(worst, overhead), clock_hz);
+
+            for (fill = 0U; fill < started; fill++)
+            {
+                (void)os_task_delete(os_test_bench_task_fill[fill]);
+            }
+        }
+#endif
+
         for (fill = 0U; fill < TEST_BENCH_TIMER_FILL; fill++)
         {
             (void)os_timer_stop(os_test_bench_fill[fill]);
@@ -6810,7 +7282,7 @@ static void test_benchmarks(void)
     test_bench_row("os_task_create + os_task_delete", TEST_BENCH_SUB(best, overhead),
                    TEST_BENCH_SUB(worst, overhead), clock_hz);
 
-    printf("  ----------------------------------------------------------------------------\r\n");
+    printf("  ------------------------------------------------------------------------------------\r\n");
     (void)sink;
 }
 
@@ -8614,6 +9086,98 @@ static void test_priority_api(void)
     (void)test_wait_inactive(&worker, 300U);
 }
 
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief What a waiter does: block on the mutex, record the order it was granted, release, exit.
+ */
+static void test_requeue_entry(void *context)
+{
+    if (os_mutex_lock(&os_test_requeue_mutex, OS_WAIT_FOREVER) == OS_ERR_NONE)
+    {
+        os_test_requeue_order++;
+
+        if (os_test_requeue_order == 1U)
+        {
+            os_test_requeue_first = (uint32_t)(uintptr_t)context;
+        }
+
+        (void)os_mutex_unlock(&os_test_requeue_mutex);
+    }
+
+    (void)os_task_delete(NULL);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief A waiter re-prioritised while it is ALREADY QUEUED gets its new place in the queue.
+ *
+ * Reaches the remove-and-reinsert branch of os_task_effective_priority_set(), which nothing else in
+ * the suite does - every other test re-prioritises a task that is running or ready. It matters
+ * because the head of a mutex's waiter list is what priority inheritance boosts the owner to, so a
+ * stale order feeds a wrong priority back into inheritance.
+ *
+ * This task holds the mutex; two higher-priority waiters queue behind it; the lower of the two is
+ * raised above the other; the unlock must go to the one that was raised.
+ */
+static void test_priority_requeue(void)
+{
+    os_err_t create_a;
+    os_err_t create_b;
+    os_err_t lock_status;
+    os_err_t raise_status;
+
+    test_print_section("Waiter Requeue (a priority raised while already queued)");
+
+    os_test_requeue_order = 0U;
+    os_test_requeue_first = 0U;
+
+    (void)os_mutex_init(&os_test_requeue_mutex);
+
+    lock_status = os_mutex_lock(&os_test_requeue_mutex, OS_WAIT_FOREVER);
+    AHURA_TEST_CHECK(lock_status == OS_ERR_NONE, "this task holds the mutex the waiters will queue on");
+
+    /* Both outrank this task, so each blocks on the mutex before control returns here. B is the
+     * higher, so the queue is B then A - the order this test inverts. */
+    create_a = os_task_create(&os_test_requeue_a,
+                              TEST_TASK_CONFIG(test_requeue_entry, (void *)(uintptr_t)1U,
+                                               TEST_PRIO_HIGH));
+    create_b = os_task_create(&os_test_requeue_b,
+                              TEST_TASK_CONFIG(test_requeue_entry, (void *)(uintptr_t)2U,
+                                               TEST_PRIO_HIGH + 1U));
+
+    AHURA_TEST_CHECK((create_a == OS_ERR_NONE) && (create_b == OS_ERR_NONE),
+                      "two waiters created, A below B");
+
+    if ((create_a == OS_ERR_NONE) && (create_b == OS_ERR_NONE))
+    {
+        (void)os_task_start(&os_test_requeue_a);
+        (void)os_task_start(&os_test_requeue_b);
+
+        AHURA_TEST_CHECK(os_test_requeue_order == 0U,
+                          "neither waiter has the mutex yet (both are queued behind this task)");
+
+        /* The re-sort branch. A is queued BEHIND B; this puts it in front. */
+        raise_status = os_task_priority_set(&os_test_requeue_a, TEST_PRIO_HIGH + 2U);
+        AHURA_TEST_CHECK(raise_status == OS_ERR_NONE, "the queued waiter A is raised above B");
+
+        (void)os_mutex_unlock(&os_test_requeue_mutex);
+
+        os_delay_ms(20U);
+
+        AHURA_TEST_CHECK(os_test_requeue_order == 2U, "both waiters ran (order=%lu)",
+                          (unsigned long)os_test_requeue_order);
+        AHURA_TEST_CHECK(os_test_requeue_first == 1U,
+                          "the mutex went to A, the waiter raised while queued (first=%lu)",
+                          (unsigned long)os_test_requeue_first);
+    }
+    else
+    {
+        (void)os_mutex_unlock(&os_test_requeue_mutex);
+    }
+}
+#endif /* OS_CONFIG_MUTEX_ENABLE */
+
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
 /******************************************************************************************************/
 /**
@@ -8888,6 +9452,7 @@ void os_test(void)
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
     test_mutex_priority_inheritance();
     test_mutex_multi_inheritance();
+    test_mutex_transitive_inheritance();
 #endif
 #if (OS_CONFIG_QUEUE_ENABLE == 1U) && (OS_CONFIG_EVENT_ENABLE == 1U)
     test_event_queue_fanin();
@@ -8939,8 +9504,12 @@ void os_test(void)
     test_tickless_bounds();
     test_tickless_sleep();
     test_tickless_drift();
+    test_tickless_suppression();
     test_list();
     test_priority_api();
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+    test_priority_requeue();
+#endif
 #if (OS_CONFIG_QUEUE_ENABLE == 1U)
     test_queue_accounting();
 #endif

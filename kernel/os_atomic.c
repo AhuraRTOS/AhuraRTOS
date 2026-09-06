@@ -30,6 +30,52 @@
 
 #include "os_internal.h"
 
+/*
+ * ***********************************************************************************************************
+ * Ordering
+ * ***********************************************************************************************************
+ *
+ * Atomicity and ORDER are two different guarantees, and this file used to give only the first.
+ *
+ * Every operation below is indivisible - the LDREX/STREX pair in os_arch_atomic.c sees to that,
+ * and the self-test proves it across cores: 80000 of 80000 increments survive two cores
+ * contending. What was missing is the other half. The asm carries a "memory" clobber, which is a
+ * COMPILER barrier: it stops the compiler moving accesses across the operation. It says nothing
+ * to the hardware, and on a multi-core part the hardware is free to make the other core see
+ * these accesses in a different order from the one written.
+ *
+ * That does not bother the kernel, which never uses these to publish data - its own cross-core
+ * ordering comes from the spinlock, and that has always carried a full DSB on both edges. It
+ * bothers an APPLICATION, which is what this layer is for, and in the most natural way anyone
+ * would use it:
+ *
+ *     shared.payload = value;              on core 0
+ *     os_atomic_set(&ready, 1);
+ *
+ *     if (os_atomic_get(&ready) == 1)      on core 1
+ *     {
+ *         use(shared.payload);             <- may be the OLD payload
+ *     }
+ *
+ * The flag is set atomically and the payload write is not reordered by the compiler, and the
+ * reader can still see the flag before the payload. That is the classic publish/consume bug, and
+ * "the atomics are atomic" is exactly the reasoning that walks into it.
+ *
+ * So each operation is now bracketed by a barrier: release before it, acquire after. A DMB
+ * rather than the spinlock's DSB, because the requirement here is order and not completion.
+ *
+ * Single-core builds pay nothing: with one observer there is no order for anyone to disagree
+ * about, and both macros compile away. That matters - the measured cost of os_atomic_add on an
+ * RP2350 is 25 cycles against 15 for the raw arch call, and this layer is thin on purpose.
+ */
+#if (OS_CONFIG_CORE_COUNT > 1U)
+#define OS_ATOMIC_ORDER_BEFORE()   OS_ARCH_DMB()
+#define OS_ATOMIC_ORDER_AFTER()    OS_ARCH_DMB()
+#else
+#define OS_ATOMIC_ORDER_BEFORE()   do { } while (0)
+#define OS_ATOMIC_ORDER_AFTER()    do { } while (0)
+#endif
+
 #if (OS_CONFIG_ATOMIC_ENABLE == 1U)
 
 /*
@@ -65,7 +111,9 @@ int32_t os_atomic_get(const os_atomic_t *target)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         value = os_arch_atomic_load((const __IO int32_t *)target);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return value;
@@ -87,7 +135,9 @@ int32_t os_atomic_set(os_atomic_t *target, int32_t value)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_exchange((__IO int32_t *)target, value);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -108,7 +158,9 @@ int32_t os_atomic_clear(os_atomic_t *target)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_exchange((__IO int32_t *)target, 0);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -130,7 +182,9 @@ int32_t os_atomic_add(os_atomic_t *target, int32_t value)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_add((__IO int32_t *)target, value);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -152,7 +206,9 @@ int32_t os_atomic_sub(os_atomic_t *target, int32_t value)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_sub((__IO int32_t *)target, value);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -173,7 +229,9 @@ int32_t os_atomic_inc(os_atomic_t *target)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_add((__IO int32_t *)target, 1);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -194,7 +252,9 @@ int32_t os_atomic_dec(os_atomic_t *target)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_sub((__IO int32_t *)target, 1);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -216,7 +276,9 @@ int32_t os_atomic_or(os_atomic_t *target, int32_t value)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_or((__IO int32_t *)target, value);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -238,7 +300,9 @@ int32_t os_atomic_and(os_atomic_t *target, int32_t value)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_and((__IO int32_t *)target, value);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -260,7 +324,9 @@ int32_t os_atomic_xor(os_atomic_t *target, int32_t value)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_xor((__IO int32_t *)target, value);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -282,7 +348,9 @@ int32_t os_atomic_nand(os_atomic_t *target, int32_t value)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         previous = os_arch_atomic_nand((__IO int32_t *)target, value);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return previous;
@@ -311,7 +379,9 @@ bool os_atomic_cas(os_atomic_t *target, int32_t expected, int32_t desired)
 
     if (target != NULL)
     {
+        OS_ATOMIC_ORDER_BEFORE();
         swapped = os_arch_atomic_cas((__IO int32_t *)target, expected, desired);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return swapped;
@@ -335,7 +405,9 @@ bool os_atomic_test_bit(const os_atomic_t *target, uint32_t bit)
     {
         int32_t mask = (int32_t)(1UL << bit);
 
+        OS_ATOMIC_ORDER_BEFORE();
         is_set = ((os_arch_atomic_load((const __IO int32_t *)target) & mask) != 0);
+        OS_ATOMIC_ORDER_AFTER();
     }
 
     return is_set;
@@ -359,8 +431,9 @@ bool os_atomic_test_and_set_bit(os_atomic_t *target, uint32_t bit)
     if ((target != NULL) && (bit < OS_ATOMIC_BITS))
     {
         int32_t mask     = (int32_t)(1UL << bit);
+        OS_ATOMIC_ORDER_BEFORE();
         int32_t previous = os_arch_atomic_or((__IO int32_t *)target, mask);
-
+        OS_ATOMIC_ORDER_AFTER();
         was_set = ((previous & mask) != 0);
     }
 
@@ -385,8 +458,9 @@ bool os_atomic_test_and_clear_bit(os_atomic_t *target, uint32_t bit)
     if ((target != NULL) && (bit < OS_ATOMIC_BITS))
     {
         int32_t mask     = (int32_t)(1UL << bit);
+        OS_ATOMIC_ORDER_BEFORE();
         int32_t previous = os_arch_atomic_and((__IO int32_t *)target, (int32_t)(~mask));
-
+        OS_ATOMIC_ORDER_AFTER();
         was_set = ((previous & mask) != 0);
     }
 
@@ -408,7 +482,9 @@ void os_atomic_set_bit(os_atomic_t *target, uint32_t bit)
 
     if ((target != NULL) && (bit < OS_ATOMIC_BITS))
     {
+        OS_ATOMIC_ORDER_BEFORE();
         (void)os_arch_atomic_or((__IO int32_t *)target, (int32_t)(1UL << bit));
+        OS_ATOMIC_ORDER_AFTER();
     }
 }
 
@@ -427,7 +503,9 @@ void os_atomic_clear_bit(os_atomic_t *target, uint32_t bit)
 
     if ((target != NULL) && (bit < OS_ATOMIC_BITS))
     {
+        OS_ATOMIC_ORDER_BEFORE();
         (void)os_arch_atomic_and((__IO int32_t *)target, (int32_t)(~(1UL << bit)));
+        OS_ATOMIC_ORDER_AFTER();
     }
 }
 
@@ -449,6 +527,8 @@ void os_atomic_set_bit_to(os_atomic_t *target, uint32_t bit, bool value)
     {
         int32_t mask = (int32_t)(1UL << bit);
 
+        OS_ATOMIC_ORDER_BEFORE();
+
         if (value)
         {
             (void)os_arch_atomic_or((__IO int32_t *)target, mask);
@@ -457,6 +537,8 @@ void os_atomic_set_bit_to(os_atomic_t *target, uint32_t bit, bool value)
         {
             (void)os_arch_atomic_and((__IO int32_t *)target, (int32_t)(~mask));
         }
+
+        OS_ATOMIC_ORDER_AFTER();
     }
 }
 
