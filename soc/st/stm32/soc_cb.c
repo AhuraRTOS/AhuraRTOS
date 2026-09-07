@@ -53,10 +53,17 @@
 
 /* Reject an incomplete configuration rather than filling the gap: a missing option reads as 0 in
  * an #if, silently turning off the clock refresh or the timebase handling. */
-#if !defined(SOC_CONFIG_HAL_HEADER) || !defined(SOC_CONFIG_CLOCK_AUTO_UPDATE) ||     \
-    !defined(SOC_CONFIG_TICKLESS_HAL_TICK) || !defined(SOC_CONFIG_SYSTICK_VECTOR) || \
-    !defined(SOC_CONFIG_SLEEP_MODE)
+#if !defined(SOC_CONFIG_CLOCK_AUTO_UPDATE) || !defined(SOC_CONFIG_SYSTICK_VECTOR)
 #error "soc_config.h is incomplete: it must define every option listed in soc/st/stm32/template/soc_config.h."
+#endif
+
+/* The tickless half is asked for only when there is tickless idle to configure. Undefined, both
+ * read as 0 in the #if tests below - which is LIGHT and "do not touch the HAL tick", exactly what
+ * a build without tickless wants. */
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+#if !defined(SOC_CONFIG_TICKLESS_HAL_TICK) || !defined(SOC_CONFIG_SLEEP_MODE)
+#error "soc_config.h is incomplete: OS_CONFIG_TICKLESS_ENABLE is 1, so SOC_CONFIG_TICKLESS_HAL_TICK and SOC_CONFIG_SLEEP_MODE are required too."
+#endif
 #endif
 
 /* How many cores this package supports scheduling on. The STM32 range is overwhelmingly
@@ -69,11 +76,13 @@
 #error "OS_CONFIG_CORE_COUNT is above 1, which the st/stm32 package does not support: STM32 dual-core parts are asymmetric (M7+M4), not the SMP model the kernel's core count describes."
 #endif
 
-/* A bare-CMSIS project with no HAL is a perfectly good STM32 project, so the HAL is opt-in rather
- * than assumed - but it is the application that says so, in soc_config.h, not the build guessing
- * from whether a header happens to be reachable. With it off, the clock refresh and the timebase
- * handling below compile away and the kernel behaves as it does with no package at all. */
-#include SOC_CONFIG_HAL_HEADER
+/* CubeMX generates main.h for every project, and it includes that family's HAL header itself -
+ * so one name is right across the whole STM32 range. It sits in Core/Inc, which is already on the
+ * kernel's include path because os_config.h lives there.
+ *
+ * Whether the HAL is USED is still the application's call: SOC_CONFIG_CLOCK_AUTO_UPDATE and
+ * SOC_CONFIG_TICKLESS_HAL_TICK compile the two HAL-touching bodies away when they are 0. */
+#include "main.h"
 
 
 /*
@@ -196,7 +205,8 @@ const uint32_t soc_stm32_anchor = 0U;
  * expensive to find. A refused build naming the settings that disagree costs nothing to read.
 */
 
-#if (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U) &&                       \
+    (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) &&   \
     (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_DEEP)
 #error "SOC_CONFIG_SLEEP_MODE must be OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP."
 #endif

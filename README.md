@@ -132,11 +132,21 @@ a real part that has run the full suite to completion:
 | **Raspberry Pi Pico 2** | 2 × Cortex-M33 (RP2350) | ✅ | ✅ |
 | **Raspberry Pi Pico 2** | 2 × Hazard3 RV32 (RP2350) | ✅ | ✅ |
 | **Raspberry Pi Pico** | 2 × Cortex-M0+ (RP2040) | ✅ | ✅ |
+| **NUCLEO-H743ZI** | Cortex-M7 (STM32H7) | ✅ | single-core part |
 | **NUCLEO-H503RB** | Cortex-M33 (STM32H5) | ✅ | single-core part |
+| **NUCLEO-G431RB** | Cortex-M4 (STM32G4) | ✅ | single-core part |
 
-Not yet run on silicon: **TrustZone** (builds, callbacks wired, never exercised
-on a part with the Security Extension) and **tickless idle** (implemented on the
-ARMv8-M port, not yet wired into the idle task). Both are listed in the
+That covers every port the kernel has - ARMv6-M, ARMv7-M, ARMv8-M and RV32 - and
+both dual-core models, Arm and RISC-V.
+
+**Tickless idle** runs on all six, driven by the idle task, and the suite measures
+it rather than assuming it: it counts tick-interrupt entries across a window of
+known length and reads 0 or 1 against 40. Deep sleep with an LPTIM is proven on
+the G431 and H503; the other boards use a SoC wake source or SysTick's own
+reload.
+
+Not yet run on silicon: **TrustZone** - it builds and its callbacks are wired,
+but no part with the Security Extension has run it. It is on the
 [roadmap](doc/roadmap.md) rather than claimed here.
 
 ## Install it

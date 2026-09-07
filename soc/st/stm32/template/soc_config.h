@@ -23,27 +23,6 @@
 
 /*
  * ***********************************************************************************************************
- * Vendor headers
- * ***********************************************************************************************************
-*/
-
-/**
- * The header that brings in this device's CMSIS and HAL declarations.
- *
- * There is no one name to hardcode: it is stm32h5xx_hal.h on an H5, stm32f4xx_hal.h on an F4, and
- * so on for every family. "main.h" is the default because CubeMX generates it for every project
- * and it includes the right family header itself, so one value is correct across the whole STM32
- * range. It also sits in Core/Inc, which is already on the kernel's include path - that is where
- * os_config.h lives.
- *
- * Point it at the family header directly (for instance "stm32h5xx_hal.h") on a project that has
- * no main.h, or one whose main.h drags in more than the SoC layer should see.
- *
- */
-#define SOC_CONFIG_HAL_HEADER               "main.h"
-
-/*
- * ***********************************************************************************************************
  * Tick vector
  * ***********************************************************************************************************
 */
@@ -94,9 +73,17 @@
 
 /*
  * ***********************************************************************************************************
- * Tickless idle (OS_CONFIG_TICKLESS_ENABLE only)
+ * Tickless idle
  * ***********************************************************************************************************
+ *
+ * Everything from here to the end of the file belongs to tickless idle, so it exists only when
+ * tickless does: a build with OS_CONFIG_TICKLESS_ENABLE at 0 needs none of it, and is not asked
+ * for any of it.
+ *
+ * Testing another config file's option works here because soc_cb.c includes ahura.h before it
+ * includes this file.
 */
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 
 /**
  * Whether the tickless sleep hooks suspend and resume the HAL timebase (1 = yes, the default).
@@ -122,7 +109,7 @@
 
 /*
  * ***********************************************************************************************************
- * Tickless wake source (OS_CONFIG_TICKLESS_ENABLE only)
+ * Tickless wake source
  * ***********************************************************************************************************
  *
  * There is nothing to pick: what ends a suppressed window follows from how deep the core sleeps,
@@ -211,5 +198,7 @@
  * Values: one HAL call with its arguments, no trailing semicolon. Left at the H5's - correct for
  * exactly one series, not for yours. */
 #define SOC_CONFIG_DEEP_SLEEP()             HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI)
+
+#endif /* OS_CONFIG_TICKLESS_ENABLE */
 
 #endif /* SOC_CONFIG_H */

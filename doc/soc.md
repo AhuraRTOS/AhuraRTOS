@@ -207,7 +207,7 @@ an assembler error, because nothing had ever asked a compiler to look at it.
 | [`raspberrypi/rp235x_arm`](raspberry-pi.md#the-rp2350-arm-package) | RP2350, RP2354 - Arm cores (Pico 2) | `isr_pendsv`, `isr_systick`, `SystemCoreClock`, core id, doorbell IPI, SIO spinlocks. Verified on silicon, single-core and dual-core SMP |
 | [`raspberrypi/rp235x_riscv`](raspberry-pi.md#the-rp2350-risc-v-package) | RP2350, RP2354 - Hazard3 RISC-V cores | The same chip, the other core: the machine software interrupt instead of PendSV, the tick off `SIO_MTIMECMP`, SIO spinlocks, and the context-switch handler placed in RAM - a link-time requirement on this part, not a preference. Verified on silicon, single-core and dual-core SMP |
 | [`raspberrypi/rp2040`](raspberry-pi.md#the-rp2040-package) | RP2040 (Pico, Pico W) | The same group, with the IPI on the SIO FIFO. Verified on silicon, single-core and dual-core SMP |
-| [`st/stm32`](stm32.md#the-soc-package) | Every STM32 | CMSIS-Pack startup already gives the kernel its vector, clock and tick, so the package is small: a `SystemCoreClock` refresh at start-up and tickless HAL hooks. Verified on a NUCLEO-H503RB |
+| [`st/stm32`](stm32.md#the-soc-package) | Every STM32 | CMSIS-Pack startup already gives the kernel its vector, clock and tick, so the package is small: a `SystemCoreClock` refresh at start-up and tickless HAL hooks. Verified on the NUCLEO-H743ZI (M7), H503RB (M33) and G431RB (M4) |
 
 Every one of these has the same three install routes - one command, offline, or
 by hand. **[Installing AhuraRTOS](installation.md#pick-your-chip)** is the table

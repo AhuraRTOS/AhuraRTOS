@@ -17,7 +17,8 @@ pick one:**
 | **B** | **[Offline](#offline---no-internet-on-the-machine)** - one command, no network | The same project on a machine with no route out: an air-gapped lab, a locked-down corporate network, a CI agent |
 | **C** | **[Manual](#manual---step-by-step)** - eight steps by hand | CubeIDE projects, non-CMake builds, or when you want to make every edit yourself |
 
-All three end in the same place. Verified end to end on a **NUCLEO-H503RB**
+All three end in the same place. Verified end to end on a **NUCLEO-H743ZI**,
+**NUCLEO-H503RB** and **NUCLEO-G431RB**
 (Cortex-M33) and a **NUCLEO-G431RB** (Cortex-M4), built with `arm-none-eabi-gcc`
 from the STM32Cube toolchain; the only board-specific names below are the
 `stm32h5xx_*` file names and `TIM7`.
@@ -615,11 +616,11 @@ so a value here could only be wrong.
 | **IPI** | Not needed - single-core parts |
 | **Spinlock** | Not needed - the kernel's own backend is correct on one core |
 | **Tickless hooks** | `os_tickless_pre_sleep_cb()` / `os_tickless_post_sleep_cb()` suspend and resume the HAL timebase, so a suppressed sleep is not cut short at that timer's period. `SOC_CONFIG_TICKLESS_HAL_TICK 0` turns that off |
-| **HAL include path** | The kernel library compiles `soc_cb.c`, which reaches the HAL through `SOC_CONFIG_HAL_HEADER`. The package links CubeMX's `stm32cubemx` INTERFACE target when it exists, so the kernel sees the same HAL tree the application does |
+| **HAL include path** | The kernel library compiles `soc_cb.c`, which includes `main.h` - CubeMX generates one for every project and it pulls in that family's HAL header itself. The package links CubeMX's `stm32cubemx` INTERFACE target when it exists, so the kernel sees the same HAL tree the application does |
 
 Everything here degrades to nothing when the HAL is absent, which is what makes
-the package safe on a hand-written project. `SOC_CONFIG_HAL_HEADER` is the
-option to check first; on a CubeMX project it is `"main.h"`.
+the package safe on a hand-written project: `SOC_CONFIG_CLOCK_AUTO_UPDATE` and
+`SOC_CONFIG_TICKLESS_HAL_TICK` at `0` compile both HAL-touching bodies away.
 
 **Why it exists at all**, given how little it contributes:
 
@@ -636,7 +637,9 @@ option to check first; on a CubeMX project it is `"main.h"`.
    and bare-metal - not the shared ready lists `OS_CONFIG_CORE_COUNT` describes,
    so that needs a design decision before it needs code.
 
-**Status** - verified end to end on a **NUCLEO-H503RB**: the full self-test
+**Status** - verified end to end on three boards, one per core the range uses:
+**NUCLEO-H743ZI** (Cortex-M7), **NUCLEO-H503RB** (M33) and **NUCLEO-G431RB**
+(M4). The full self-test
 passes on silicon, both from the one-command installer and from the manual
 route. Single-core only. The tickless hooks are wired but share the kernel's
 overall tickless status - implemented, not yet driven by the idle task.
