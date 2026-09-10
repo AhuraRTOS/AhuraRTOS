@@ -77,10 +77,16 @@ void os_critical_enter(void)
     {
         os_arch_spinlock_acquire(&os_critical_kernel_lock);
 #if (OS_CONFIG_CORE_COUNT > 1U) && (OS_CONFIG_TICKLESS_ENABLE == 1U)
-        while (os_tickless_remote_window_wait(core))
+        /* Tested inline, not asked for: this runs on every outermost kernel entry and the flag is
+         * down almost always, so the common case must be a load and a branch rather than a call
+         * into os_tick.c. The call below only happens once a window really is outstanding. */
+        if (os_tickless_window_open && (core != 0U))
         {
-            os_arch_spinlock_release(&os_critical_kernel_lock);
-            os_arch_spinlock_acquire(&os_critical_kernel_lock);
+            while (os_tickless_remote_window_wait(core))
+            {
+                os_arch_spinlock_release(&os_critical_kernel_lock);
+                os_arch_spinlock_acquire(&os_critical_kernel_lock);
+            }
         }
 #endif
 
@@ -138,12 +144,17 @@ void os_critical_multicore_lock(void)
 {
     os_arch_spinlock_acquire(&os_critical_kernel_lock);
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
-    uint32_t core = os_arch_core_id_get();
-
-    while (os_tickless_remote_window_wait(core))
+    /* Same inline test as os_critical_enter, and the core id is only worth fetching once the
+     * flag says there is something to wait for. */
+    if (os_tickless_window_open)
     {
-        os_arch_spinlock_release(&os_critical_kernel_lock);
-        os_arch_spinlock_acquire(&os_critical_kernel_lock);
+        uint32_t core = os_arch_core_id_get();
+
+        while (os_tickless_remote_window_wait(core))
+        {
+            os_arch_spinlock_release(&os_critical_kernel_lock);
+            os_arch_spinlock_acquire(&os_critical_kernel_lock);
+        }
     }
 #endif
 }

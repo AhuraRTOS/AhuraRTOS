@@ -226,9 +226,15 @@ uint32_t os_task_next_delay_ticks_get(void);
 void os_tickless_deadline_armed(void);
 
 #if (OS_CONFIG_CORE_COUNT > 1U)
-/* Called with the kernel spinlock held. True means release/retry while core 0 closes its window.
- * The caller passes its own core id: it already fetched it on this path, and the spinlock is held,
- * so re-reading the SoC CPUID here would be pure overhead on the hottest path in the kernel. */
+/* Raised by core 0 for as long as a suppressed window is outstanding. Read directly, like
+ * os_kernel_lock_count above: os_critical_enter asks on every outermost entry and the answer is
+ * almost always false, so the question has to be a load rather than a call. */
+extern __IO bool os_tickless_window_open;
+
+/* The slow path, entered only once that flag is actually up. Called with the kernel spinlock held.
+ * True means release/retry while core 0 closes its window. The caller passes its own core id: it
+ * already fetched it on this path, and the spinlock is held, so re-reading the SoC CPUID here
+ * would be pure overhead on the hottest path in the kernel. */
 bool os_tickless_remote_window_wait(uint32_t core);
 #endif
 

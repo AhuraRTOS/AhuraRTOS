@@ -431,6 +431,15 @@ OS_WEAK uint32_t os_arch_core_id_get_cb(void)
     return (uint32_t)get_core_num();
 }
 
+#if defined(OS_ARCH_CORE_ID_REG)
+/* soc.cmake publishes that address so os_arch_core_id_get() can load it instead of calling here,
+ * which makes the literal a second copy of a fact the SDK already owns. This is the only file that
+ * can see both, so this is where the two are held together: a chip that moved the register would
+ * otherwise read garbage as a core index and misbehave in ways nothing would point at. */
+OS_STATIC_ASSERT(OS_ARCH_CORE_ID_REG == (uint32_t)(uintptr_t)&sio_hw->cpuid,
+                 "OS_ARCH_CORE_ID_REG in soc.cmake no longer matches the SDK's sio_hw->cpuid");
+#endif
+
 #endif /* OS_CONFIG_CORE_COUNT > 1U */
 
 #if (OS_ARCH_SPINLOCK_USE_CB)

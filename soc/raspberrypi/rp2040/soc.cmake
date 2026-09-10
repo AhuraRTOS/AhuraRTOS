@@ -83,3 +83,9 @@ endif()
 # This package supplies an IRQ-independent reference timer for LIGHT SysTick
 # boundary accounting. The runtime callback declines modes which gate clk_sys.
 list(APPEND AHURA_SOC_COMPILE_DEFINITIONS OS_ARCH_TICKLESS_REFERENCE_CLOCK=1)
+
+list(APPEND AHURA_SOC_COMPILE_DEFINITIONS
+	# SIO CPUID: lets the kernel read the core index with a load instead of a call.
+	# soc_common.c pins this literal against the SDK's own sio_hw->cpuid.
+	OS_ARCH_CORE_ID_REG=0xd0000000u
+)

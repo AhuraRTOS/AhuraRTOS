@@ -80,8 +80,12 @@ static __IO uint32_t os_tick_usage_idle_ticks  = 0U;
  *
  *  Read by the other cores, which is the whole point: core 0 cannot know about a deadline that
  *  does not exist yet, so whoever creates one has to say so. Defined up here rather than beside
- *  the rest of the tickless state because os_tick_get() below is now one of its readers. */
-static __IO bool os_tickless_window_open = false;
+ *  the rest of the tickless state because os_tick_get() below is now one of its readers.
+ *
+ *  Not static, and declared in os_internal.h, for the same reason os_kernel_lock_count is not:
+ *  os_critical_enter tests it on EVERY outermost kernel entry, and a cross-module call to ask
+ *  costs far more than the load. os_tickless_remote_window_wait stays as the slow path. */
+__IO bool os_tickless_window_open = false;
 #endif
 
 /*

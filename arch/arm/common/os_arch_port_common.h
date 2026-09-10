@@ -1319,10 +1319,22 @@ typedef struct
  */
 OS_INLINE uint32_t os_arch_core_id_get(void)
 {
-#if (OS_CONFIG_CORE_COUNT > 1U)
-    return os_arch_core_id_get_cb();
-#else
+#if (OS_CONFIG_CORE_COUNT == 1U)
     return 0U;
+#elif defined(OS_ARCH_CORE_ID_REG)
+    /* One load instead of a call. The callback below is a WEAK symbol in another translation unit,
+     * so the compiler must emit a bl for it - a link-time override is allowed - and the body it
+     * reaches is three instructions. That trade is fine anywhere except here: this is the most
+     * called function in an SMP build, twice per os_critical_enter/exit pair alone.
+     *
+     * A package whose core index is readable from a single register publishes its address through
+     * AHURA_SOC_COMPILE_DEFINITIONS and gets the load. Everything else keeps the callback, so
+     * nothing is required of a port that cannot do this. The package is expected to pin the
+     * address it published against its own SDK with a static assert, because a literal here and
+     * the real register are two copies of one fact. */
+    return *(volatile uint32_t *)(OS_ARCH_CORE_ID_REG);
+#else
+    return os_arch_core_id_get_cb();
 #endif
 }
 
