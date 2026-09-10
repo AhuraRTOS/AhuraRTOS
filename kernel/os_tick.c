@@ -316,9 +316,9 @@ static __IO uint32_t os_tickless_last_plan_generation = 0U;
 /* Called with the kernel spinlock held and local scheduling excluded. The
  * caller releases the lock before retrying, allowing core 0 to announce and
  * close. Checking under the lock closes the open-versus-remote-entry race. */
-bool os_tickless_remote_window_wait(void)
+bool os_tickless_remote_window_wait(uint32_t core)
 {
-    bool wait = os_tickless_window_open && (os_arch_core_id_get() != 0U);
+    bool wait = os_tickless_window_open && (core != 0U);
     if (wait)
     {
         os_arch_core_ipi_request_cb(0U);

@@ -48,7 +48,13 @@
  *         use(shared.payload);             <- may be the OLD payload
  *     }
  *
- * So every operation is bracketed by a DMB - order, not completion, so not the spinlock's DSB.
+ * So every read-modify-write is bracketed by a DMB - order, not completion, so not the spinlock's
+ * DSB. The two operations that only READ - os_atomic_get and os_atomic_test_bit - take the AFTER
+ * half alone, which is the standard mapping for a load: the barrier after it is what gives acquire
+ * ordering, while the one before is release ordering and orders prior writes against a following
+ * store that a pure load does not have. Every other entry point here exchanges, adds or compares,
+ * so all of them keep both.
+ *
  * Single-core builds pay nothing: both macros compile away, which matters in a layer this thin.
  */
 #if (OS_CONFIG_CORE_COUNT > 1U)
@@ -94,7 +100,9 @@ int32_t os_atomic_get(const os_atomic_t *target)
 
     if (target != NULL)
     {
-        OS_ATOMIC_ORDER_BEFORE();
+        /* A load only needs the acquire half of the fence pair: the barrier AFTER the read stops
+         * later accesses moving before it. The barrier BEFORE it is release ordering, which orders
+         * prior writes against a following STORE and does nothing for a pure load. */
         value = os_arch_atomic_load((const __IO int32_t *)target);
         OS_ATOMIC_ORDER_AFTER();
     }
@@ -387,8 +395,10 @@ bool os_atomic_test_bit(const os_atomic_t *target, uint32_t bit)
     {
         int32_t mask = (int32_t)(1UL << bit);
 
-        OS_ATOMIC_ORDER_BEFORE();
-
+        /* The acquire half only, for the same reason as os_atomic_get: this reads and never
+         * writes, and the barrier BEFORE a pure load orders prior writes against a following
+         * STORE that does not exist here. The one AFTER is what stops the payload being read
+         * before the bit that advertises it. */
         is_set = ((os_arch_atomic_load((const __IO int32_t *)target) & mask) != 0);
 
         OS_ATOMIC_ORDER_AFTER();

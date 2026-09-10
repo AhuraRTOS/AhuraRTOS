@@ -226,8 +226,10 @@ uint32_t os_task_next_delay_ticks_get(void);
 void os_tickless_deadline_armed(void);
 
 #if (OS_CONFIG_CORE_COUNT > 1U)
-/* Called with the kernel spinlock held. True means release/retry while core 0 closes its window. */
-bool os_tickless_remote_window_wait(void);
+/* Called with the kernel spinlock held. True means release/retry while core 0 closes its window.
+ * The caller passes its own core id: it already fetched it on this path, and the spinlock is held,
+ * so re-reading the SoC CPUID here would be pure overhead on the hottest path in the kernel. */
+bool os_tickless_remote_window_wait(uint32_t core);
 #endif
 
 #endif
