@@ -109,7 +109,7 @@ os_err_t os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
     {
         uint32_t self_id         = os_task_current_id_get();
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
-        uint32_t start_tick      = os_tick_get();
+        uint32_t start_tick      = os_internal_wait_origin();
         uint32_t remaining_ticks = budget_ticks;
         bool     waiting         = true;
 

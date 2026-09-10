@@ -112,19 +112,6 @@ POWMAN timer cannot express a window. Use a slower tick, or light sleep."
 /** Timer reading when the open window started, in milliseconds. */
 static uint64_t soc_powman_entry_ms = 0U;
 
-/** Whether soc_powman_entry_ms describes a window that is actually running.
- *
- * The kernel raises its own os_tickless_window_open BEFORE it plans, and only calls
- * os_arch_tick_suppress_cb afterwards - and not at all when the plan comes out too short to sleep.
- * So "the kernel says a window is open" is NOT the same as "this timer has an entry stamp", and a
- * peek in that gap would subtract the PREVIOUS window's stamp and report an arbitrarily large
- * elapsed time. That is a clock that races, not one that lags.
- *
- * Written by the time-base owner only, read by any core. Raised after the stamp and lowered before
- * the close touches the accumulator, so a peer that sees it true is looking at a whole,
- * still-running window. */
-static __IO bool soc_powman_window_armed = false;
-
 /** Time measured but not yet announced, in milliseconds x OS_CONFIG_TICK_HZ.
  *
  * A window's last, incomplete tick used to be dropped: elapsed was a truncating division and the
@@ -279,10 +266,6 @@ void os_arch_tick_suppress_cb(uint32_t ticks)
         powman_clear_alarm();
         irq_set_enabled(POWMAN_IRQ_TIMER, true);
         powman_timer_enable_alarm_at_ms(soc_powman_entry_ms + wanted_ms);
-
-        /* Last, and after a barrier: from here a peer's peek may read the stamp above. */
-        OS_ARCH_DMB();
-        soc_powman_window_armed = true;
     }
 }
 
@@ -303,11 +286,6 @@ uint32_t os_arch_tick_resume_cb(void)
     /* Disarmed first: a window that ran its length leaves the alarm fired, and one cut short
      * leaves it armed for a moment nobody will wait for. Either way it must not survive into the
      * next window. */
-    /* First: a peek from here on answers 0 and the caller falls back to the announced tick, which
-     * is behind but never ahead. Nothing below is safe to read from another core. */
-    soc_powman_window_armed = false;
-    OS_ARCH_DMB();
-
     powman_timer_disable_alarm();
     powman_clear_alarm();
     irq_set_enabled(POWMAN_IRQ_TIMER, false);
@@ -322,39 +300,6 @@ uint32_t os_arch_tick_resume_cb(void)
     elapsed_ticks = (uint32_t)(soc_powman_accum_ms_hz / 1000ULL);
 
     soc_powman_accum_ms_hz -= (uint64_t)elapsed_ticks * 1000ULL;
-
-    return elapsed_ticks;
-}
-
-/******************************************************************************************************/
-/**
- * @brief How much of the open window has already elapsed, for a core that is not the owner.
- *
- * Deliberately ignores soc_powman_accum_ms_hz, and that is the whole design rather than an
- * oversight. The accumulator is the one piece of state os_arch_tick_resume_cb WRITES, so reading it
- * from another core races the close: a torn 64-bit read would be worth up to a whole tick, and a
- * tick read that comes out too HIGH makes the kernel clock step backwards when the owner finally
- * announces.
- *
- * Dropping it can only under-report - floor(elapsed) instead of floor(carry + elapsed) - so this
- * never exceeds what the announce will produce. The clock may lag by at most one tick during a
- * window and never runs ahead of itself. Everything it does read (the entry stamp, the hardware
- * timer) is fixed for the life of the window.
- *
- * @return uint32_t  Whole tick periods elapsed so far, never more than the close will report.
- */
-uint32_t os_arch_tick_elapsed_peek_cb(void)
-{
-    uint32_t elapsed_ticks = 0U;
-
-    OS_ARCH_DMB();
-
-    if (soc_powman_window_armed)
-    {
-        uint64_t elapsed_ms = powman_timer_get_ms() - soc_powman_entry_ms;
-
-        elapsed_ticks = (uint32_t)((elapsed_ms * (uint64_t)OS_CONFIG_TICK_HZ) / 1000ULL);
-    }
 
     return elapsed_ticks;
 }
@@ -641,62 +586,65 @@ void os_arch_soc_sleep_cb(void)
             (soc_sleep_abort != soc_sleep_request);
 #endif
     ready = ready && soc_deep_peripherals_ready() && soc_deep_sleep_allowed_cb();
+    /* MISRA C:2012 Rule 15.5 - the declined path takes the else arm rather than returning from
+     * the middle, so this function still has its single exit at the end. */
     if (!ready)
     {
         __wfi();
-        return;
     }
-
-    uint32_t pll_cs   = pll_sys_hw->cs;
-    uint32_t pll_fb   = pll_sys_hw->fbdiv_int;
-    uint32_t pll_prim = pll_sys_hw->prim;
-    uint32_t pll_pwr  = pll_sys_hw->pwr;
-    uint32_t sys_ctrl = clocks_hw->clk[clk_sys].ctrl;
-    uint32_t sys_div  = clocks_hw->clk[clk_sys].div;
-    uint32_t sys_selected = clocks_hw->clk[clk_sys].selected;
-    uint32_t scr = scb_hw->scr;
-
-    /* Off the PLL first, and glitchlessly: clk_sys back to clk_ref, which is still running from
-     * whatever the application put it on. Only once nothing is fed from the PLL may it be stopped -
-     * pulling it out from under a running clk_sys stops the core where it stands. */
-    clocks_hw->clk[clk_sys].ctrl = sys_ctrl & ~CLOCKS_CLK_SYS_CTRL_SRC_BITS;
-
-    while ((clocks_hw->clk[clk_sys].selected & 1U) == 0U)
+    else
     {
-    }
+        uint32_t pll_cs   = pll_sys_hw->cs;
+        uint32_t pll_fb   = pll_sys_hw->fbdiv_int;
+        uint32_t pll_prim = pll_sys_hw->prim;
+        uint32_t pll_pwr  = pll_sys_hw->pwr;
+        uint32_t sys_ctrl = clocks_hw->clk[clk_sys].ctrl;
+        uint32_t sys_div  = clocks_hw->clk[clk_sys].div;
+        uint32_t sys_selected = clocks_hw->clk[clk_sys].selected;
+        uint32_t scr = scb_hw->scr;
 
-    pll_sys_hw->pwr = PLL_PWR_BITS;   /* every block powered down */
+        /* Off the PLL first, and glitchlessly: clk_sys back to clk_ref, which is still running from
+         * whatever the application put it on. Only once nothing is fed from the PLL may it be stopped -
+         * pulling it out from under a running clk_sys stops the core where it stands. */
+        clocks_hw->clk[clk_sys].ctrl = sys_ctrl & ~CLOCKS_CLK_SYS_CTRL_SRC_BITS;
 
-    scb_hw->scr = scr | M33_SCR_SLEEPDEEP_BITS;
+        while ((clocks_hw->clk[clk_sys].selected & 1U) == 0U)
+        {
+        }
+
+        pll_sys_hw->pwr = PLL_PWR_BITS;   /* every block powered down */
+
+        scb_hw->scr = scr | M33_SCR_SLEEPDEEP_BITS;
 
 #if (OS_CONFIG_TEST_ENABLE == 1U)
-    soc_sleep_deep_entries++;
+        soc_sleep_deep_entries++;
 #endif
-    OS_ARCH_DSB();
-    __wfi();
-    OS_ARCH_ISB();
+        OS_ARCH_DSB();
+        __wfi();
+        OS_ARCH_ISB();
 
-    scb_hw->scr = scr;
+        scb_hw->scr = scr;
 
-    /* Back up in the order it came down: the PLL has to be locked before anything is fed from it. */
-    pll_sys_hw->cs        = pll_cs;
-    pll_sys_hw->fbdiv_int = pll_fb;
-    pll_sys_hw->prim      = pll_prim;
-    pll_sys_hw->pwr       = pll_pwr | PLL_PWR_POSTDIVPD_BITS;
+        /* Back up in the order it came down: the PLL has to be locked before anything is fed from it. */
+        pll_sys_hw->cs        = pll_cs;
+        pll_sys_hw->fbdiv_int = pll_fb;
+        pll_sys_hw->prim      = pll_prim;
+        pll_sys_hw->pwr       = pll_pwr | PLL_PWR_POSTDIVPD_BITS;
 
-    while ((pll_sys_hw->cs & PLL_CS_LOCK_BITS) == 0U)
-    {
+        while ((pll_sys_hw->cs & PLL_CS_LOCK_BITS) == 0U)
+        {
+        }
+
+        pll_sys_hw->pwr = pll_pwr;
+
+        clocks_hw->clk[clk_sys].div  = sys_div;
+        clocks_hw->clk[clk_sys].ctrl = sys_ctrl;
+        while (clocks_hw->clk[clk_sys].selected != sys_selected)
+        {
+        }
+        OS_ARCH_DSB();
+        OS_ARCH_ISB();
     }
-
-    pll_sys_hw->pwr = pll_pwr;
-
-    clocks_hw->clk[clk_sys].div  = sys_div;
-    clocks_hw->clk[clk_sys].ctrl = sys_ctrl;
-    while (clocks_hw->clk[clk_sys].selected != sys_selected)
-    {
-    }
-    OS_ARCH_DSB();
-    OS_ARCH_ISB();
 }
 
 #endif /* SOC_CONFIG_SLEEP_MODE_DEEP */

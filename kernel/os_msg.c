@@ -82,7 +82,7 @@ os_err_t os_msg_send(os_msg_t *msg, const void *data, size_t length, uint32_t ti
     {
         size_t   needed          = length + OS_MSG_HEADER_BYTES;
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
-        uint32_t start_tick      = os_tick_get();
+        uint32_t start_tick      = os_internal_wait_origin();
         uint32_t remaining_ticks = budget_ticks;
         bool     waiting         = true;
 
@@ -197,7 +197,7 @@ os_err_t os_msg_receive(os_msg_t *msg, void *data, size_t data_size, size_t *len
     if ((msg != NULL) && (data != NULL) && (length_out != NULL))
     {
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
-        uint32_t start_tick      = os_tick_get();
+        uint32_t start_tick      = os_internal_wait_origin();
         uint32_t remaining_ticks = budget_ticks;
         bool     waiting         = true;
 

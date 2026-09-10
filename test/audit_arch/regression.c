@@ -191,15 +191,6 @@ void audit_sleep(uint32_t ticks)
     test_sleep_phase = 3U;
     test_sleep_calls++;
 }
-/* What the wake source would report mid-window. The remote reader uses this instead of
- * waking the owner, so a test drives it directly. */
-static uint32_t test_peek;
-
-uint32_t os_arch_elapsed_ticks_peek(void)
-{
-    return test_peek;
-}
-
 void os_arch_core_ipi_request_cb(uint32_t core)
 {
     CHECK(test_locked && test_core == 1U && core == 0U);
@@ -249,31 +240,21 @@ uint32_t test_remote_time_origin(void)
     test_core = 1U;
     os_tick_count = 100U;
     os_tickless_window_open = true;
-    test_peek = 50U;
     test_reconcile = true;
-    uint32_t start = os_tick_get();
 
-    /* The property under test is the time ORIGIN: a remote reader must see the window's elapsed
-     * time, or the timeout loops that difference two of these reads charge the whole window to a
-     * wait that had not started. */
-    CHECK(start == 150U);
-    CHECK(os_internal_wait_remaining(start, 10U) == 10U);
-
-    /* And it must get there without the owner. No lock taken, no IPI sent, no announce forced,
-     * and the window left exactly as it was - this used to wake core 0 and wait for it. */
+    /* A bare tick read is deliberately allowed to be behind while a window is outstanding: making
+     * it current cost 147 cycles through the lock and 454 through the wake source, both measured. */
+    CHECK(os_tick_get() == 100U);
     CHECK(!test_locked && test_ipis == 0U && test_updated == 0U);
-    CHECK(os_tickless_window_open);
 
-    /* Never ahead of what the close will announce, or the clock steps backwards at the announce.
-     * Closed the way the owner closes it: on core 0, which is the only core that announces. */
-    test_reconcile = false;
-    test_peek = 0U;
-    test_core = 0U;
-    os_tick_announce(50U);
-    os_tickless_window_open = false;
-    test_core = 1U;
+    /* The ORIGIN a timeout is measured from is the one read that may not be behind, because the
+     * later reads happen inside a critical section where the window has been reconciled. Taking it
+     * closes the window first, so the two ends of the difference share one time base. */
+    uint32_t start = os_internal_wait_origin();
 
-    CHECK(os_tick_count == 150U && os_tick_get() == start);
+    CHECK(start == 150U && test_updated == 50U && test_ipis == 1U);
+    CHECK(!test_locked && !os_tickless_window_open);
+    CHECK(os_internal_wait_remaining(10U, start) == 10U);
     return test_failure;
 }
 

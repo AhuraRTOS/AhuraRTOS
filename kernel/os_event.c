@@ -183,7 +183,7 @@ os_err_t os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, boo
     if ((event != NULL) && (matched_bits != NULL) && (bits != 0U))
     {
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
-        uint32_t start_tick      = os_tick_get();
+        uint32_t start_tick      = os_internal_wait_origin();
         uint32_t remaining_ticks = budget_ticks;
         uint32_t wait_flags      = (wait_all ? OS_EVENT_WAIT_ALL_FLAG : 0U) |
                                    (clear_on_exit ? OS_EVENT_CLEAR_ON_EXIT_FLAG : 0U);

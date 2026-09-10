@@ -61,7 +61,7 @@ os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
     if ((queue != NULL) && (item != NULL))
     {
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
-        uint32_t start_tick      = os_tick_get();
+        uint32_t start_tick      = os_internal_wait_origin();
         uint32_t remaining_ticks = budget_ticks;
         bool     waiting         = true;
 
@@ -187,7 +187,7 @@ os_err_t os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_ms
     if ((queue != NULL) && (item_out != NULL))
     {
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
-        uint32_t start_tick      = os_tick_get();
+        uint32_t start_tick      = os_internal_wait_origin();
         uint32_t remaining_ticks = budget_ticks;
         bool     waiting         = true;
 

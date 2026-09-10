@@ -117,7 +117,7 @@ os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms)
     if (semaphore != NULL)
     {
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
-        uint32_t start_tick      = os_tick_get();
+        uint32_t start_tick      = os_internal_wait_origin();
         uint32_t remaining_ticks = budget_ticks;
         bool     waiting         = true;
 

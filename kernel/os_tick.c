@@ -114,24 +114,18 @@ void os_tick_init(void)
  */
 uint32_t os_tick_get(void)
 {
-    uint32_t ticks = os_tick_count;
-
-#if (OS_CONFIG_CORE_COUNT > 1U) && (OS_CONFIG_TICKLESS_ENABLE == 1U)
-    /* Inside a suppressed window os_tick_count is behind by however much of the window has run,
-     * and the timeout loops in os_sem/os_msg/os_queue/os_mutex all difference two of these reads -
-     * so a stale one charges the whole window to a wait that had not started yet.
+    /* A plain load, deliberately. os_tick_count is a single aligned word, so no core can see half
+     * of one, and nothing here waits for another core.
      *
-     * Reading the wake source directly is what keeps that correct WITHOUT the global lock this
-     * used to take: the owner is asleep, not mid-update, and the peek is defined never to exceed
-     * what the owner will announce. No lock, no IPI, and nothing here waits for another core.
-     * With no window open - the common case by far - it costs one flag read. */
-    if (os_tickless_window_open)
-    {
-        ticks += os_arch_elapsed_ticks_peek();
-    }
-#endif
-
-    return ticks;
+     * It CAN be behind while core 0 has a suppressed window outstanding, and two attempts to close
+     * that were tried and removed. Taking the kernel lock here cost 147 cycles on an RP2350 - more
+     * than an entire critical section - for the most called function in the kernel. Reading the
+     * wake source instead cost 454, because the only clock that survives the window on that part
+     * is in the always-on domain and needs a 64-bit divide to convert.
+     *
+     * What actually needs a current time is the ORIGIN a timeout is measured from, and that is one
+     * read per blocking call rather than every read: see os_internal_wait_origin(). */
+    return os_tick_count;
 }
 
 /******************************************************************************************************/

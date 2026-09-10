@@ -423,6 +423,44 @@ OS_INLINE uint32_t os_internal_timeout_to_ticks(uint32_t timeout_ms)
 
 /******************************************************************************************************/
 /**
+ * @brief The tick a timeout is measured FROM. Current even while a suppressed window is open.
+ *
+ * os_tick_get() is a plain load and can sit behind by an outstanding window - see the note on it.
+ * Everywhere that costs nothing, because os_internal_wait_remaining() below is called from inside
+ * a critical section, where the window has already been reconciled. The ORIGIN is the exception:
+ * taken outside one, it would be short by the part of the window that had already passed, and the
+ * difference against a later, current read then charges that time to a wait which had not started.
+ * A timeout expiring early is a real fault, not a rounding error.
+ *
+ * The flag test costs one load, and the reconcile costs a critical section only while a window is
+ * genuinely open - which is the same critical section the caller takes on its very next line, so
+ * on the path that pays, nothing new is woken.
+ */
+OS_INLINE uint32_t os_internal_wait_origin(void)
+{
+    uint32_t origin;
+
+#if (OS_CONFIG_CORE_COUNT > 1U) && (OS_CONFIG_TICKLESS_ENABLE == 1U)
+    if (os_tickless_window_open)
+    {
+        /* The interlock inside it is what waits for core 0 to announce and close. */
+        os_critical_enter();
+        origin = os_tick_get();
+        os_critical_exit();
+    }
+    else
+    {
+        origin = os_tick_get();
+    }
+#else
+    origin = os_tick_get();
+#endif
+
+    return origin;
+}
+
+/******************************************************************************************************/
+/**
  * @brief Remaining wait budget measured against the wall clock: budget minus ticks elapsed
  *        since start_tick (wrap-safe), never below 0, OS_WAIT_FOREVER passed through.
  *

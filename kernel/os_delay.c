@@ -175,7 +175,7 @@ static void os_delay_ticks(uint32_t ticks)
          * while its handler delays) must not cut the delay short. */
         if (os_internal_can_block())
         {
-            uint32_t start_tick = os_tick_get();
+            uint32_t start_tick = os_internal_wait_origin();
             uint32_t elapsed    = 0U;
 
             while (elapsed < wait_ticks)

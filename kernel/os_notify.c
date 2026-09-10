@@ -133,7 +133,7 @@ os_err_t os_notify_wait(uint32_t timeout_ms, uint32_t *value_out)
     else
     {
         uint32_t budget_ticks    = os_internal_timeout_to_ticks(timeout_ms);
-        uint32_t start_tick      = os_tick_get();
+        uint32_t start_tick      = os_internal_wait_origin();
         uint32_t remaining_ticks = budget_ticks;
         bool     waiting         = true;
 
