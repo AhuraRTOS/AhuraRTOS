@@ -7,11 +7,18 @@
  * or change a peripheral's configuration. An ineligible window keeps clocks running.
  *
  * @copyright (c) 2026 Ahura Project Contributors
- * SPDX-License-Identifier: GPL-3.0-or-later
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
 
 #ifndef SOC_RP235X_ARM_SLEEP_H
 #define SOC_RP235X_ARM_SLEEP_H
+
+/*
+ * ***********************************************************************************************************
+ * Includes
+ * ***********************************************************************************************************
+*/
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -27,9 +34,28 @@
 #include "hardware/structs/uart.h"
 #include "hardware/structs/usb.h"
 
-/* UART BUSY describes transmission, not an asynchronous receiver. Keep an armed
- * receive wake source at its configured baud rate by declining DEEP. Polling-only
- * input cannot be inferred here; the board veto must cover that use case. */
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+/*
+ * ***********************************************************************************************************
+ * Private function implementations
+ * ***********************************************************************************************************
+*/
+
+/******************************************************************************************************/
+/**
+ * @brief Whether a UART can lose clk_peri for the duration of a window.
+ *
+ * BUSY describes transmission, not an asynchronous receiver, so an armed receive wake source
+ * keeps its configured baud rate by declining DEEP. Polling-only input cannot be inferred from
+ * registers at all; soc_deep_sleep_allowed_cb is the board's way to cover that.
+ *
+ * @param[in] uart  UART block to inspect, never NULL.
+ * @return bool  True when nothing on this UART needs the normal clocks.
+ */
 static inline bool soc_deep_uart_ready(const uart_hw_t *uart)
 {
     uint32_t control = uart->cr;
@@ -52,6 +78,16 @@ static inline bool soc_deep_uart_ready(const uart_hw_t *uart)
     return ready;
 }
 
+/******************************************************************************************************/
+/**
+ * @brief Whether an SPI block can lose clk_peri for the duration of a window.
+ *
+ * A slave-mode block is refused outright: an external master can start a transaction after this
+ * read and there is no way to see it coming.
+ *
+ * @param[in] spi  SPI block to inspect, never NULL.
+ * @return bool  True when nothing on this SPI needs the normal clocks.
+ */
 static inline bool soc_deep_spi_ready(const spi_hw_t *spi)
 {
     uint32_t control = spi->cr1;
@@ -70,6 +106,13 @@ static inline bool soc_deep_spi_ready(const spi_hw_t *spi)
     return ready;
 }
 
+/******************************************************************************************************/
+/**
+ * @brief Whether an I2C block can lose its clock for the duration of a window.
+ *
+ * @param[in] i2c  I2C block to inspect, never NULL.
+ * @return bool  True when the block is idle and cannot be addressed as a slave.
+ */
 static inline bool soc_deep_i2c_ready(const i2c_hw_t *i2c)
 {
     bool ready = true;
@@ -84,6 +127,16 @@ static inline bool soc_deep_i2c_ready(const i2c_hw_t *i2c)
     return ready;
 }
 
+/******************************************************************************************************/
+/**
+ * @brief Whether the whole chip tolerates clk_sys dropping to clk_ref with PLL_SYS stopped.
+ *
+ * Walks everything that either drives traffic of its own or would lose its source with the PLL:
+ * the clock tree itself, every DMA channel, USB, PIO, PWM, HSTX, the I2C blocks, and the
+ * clk_peri/clk_hstx consumers when those follow clk_sys. Any single no keeps the window LIGHT.
+ *
+ * @return bool  True when the shared clocks may be slowed.
+ */
 static inline bool soc_deep_peripherals_ready(void)
 {
     uint32_t sys_ctrl = clocks_hw->clk[clk_sys].ctrl;
@@ -173,5 +226,9 @@ static inline bool soc_deep_peripherals_ready(void)
 
     return ready;
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* SOC_RP235X_ARM_SLEEP_H */

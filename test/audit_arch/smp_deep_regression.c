@@ -1,19 +1,61 @@
-/* Execute the production SoC handshake against controlled register/peer interleavings.
- * SPDX-License-Identifier: GPL-3.0-or-later */
+/**
+ * @file smp_deep_regression.c
+ * @brief Executes the production RP235x Arm two-core sleep handshake.
+ *
+ * Drives the real soc_cb.c against controlled register and peer interleavings, including the
+ * abort and rendezvous-timeout paths a board run cannot schedule on demand.
+ *
+ * @copyright (c) 2026 Ahura Project Contributors
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
+ */
+/*
+ * ***********************************************************************************************************
+ * Includes
+ * ***********************************************************************************************************
+*/
+
 #include "../../soc/raspberrypi/rp235x_arm/soc_cb.c"
 
 volatile uint32_t audit_idle = 1U;
 volatile uint32_t audit_time_us;
 volatile uint32_t audit_board_allowed = 1U;
 
-bool os_task_current_is_idle(void) { return audit_idle != 0U; }
-uint64_t time_us_64(void) { return audit_time_us++; }
+/*
+ * ***********************************************************************************************************
+ * Function implementations
+ * ***********************************************************************************************************
+*/
 
-uint32_t audit_prepare(void) { return os_arch_soc_sleep_prepare_cb() ? 1U : 0U; }
-void audit_finish(void) { os_arch_soc_sleep_finish_cb(); }
-void audit_peer(void) { soc_sleep_peer_park(); }
-void audit_sleep(void) { os_arch_soc_sleep_cb(); }
-uint32_t audit_eligible(void) { return soc_deep_peripherals_ready() ? 1U : 0U; }
+bool os_task_current_is_idle(void)
+{
+    return audit_idle != 0U;
+}
+uint64_t time_us_64(void)
+{
+    return audit_time_us++;
+}
+
+uint32_t audit_prepare(void)
+{
+    return os_arch_soc_sleep_prepare_cb() ? 1U : 0U;
+}
+void audit_finish(void)
+{
+    os_arch_soc_sleep_finish_cb();
+}
+void audit_peer(void)
+{
+    soc_sleep_peer_park();
+}
+void audit_sleep(void)
+{
+    os_arch_soc_sleep_cb();
+}
+uint32_t audit_eligible(void)
+{
+    return soc_deep_peripherals_ready() ? 1U : 0U;
+}
 
 /* Values come from the installed SDK headers used by the firmware build. */
 const uint32_t audit_registers[] = {

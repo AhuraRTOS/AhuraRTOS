@@ -2,10 +2,22 @@
  * @file os_arch_port.h
  * @brief Deterministic test port; only used by the standalone audit regression runner.
  * @copyright (c) 2026 Ahura Project Contributors
- * SPDX-License-Identifier: GPL-3.0-or-later
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
 #ifndef OS_ARCH_PORT_H
 #define OS_ARCH_PORT_H
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+/*
+ * ***********************************************************************************************************
+ * Includes
+ * ***********************************************************************************************************
+*/
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -54,5 +66,9 @@ void os_arch_config_fault_trap(void);
 void os_arch_core_ipi_request_cb(uint32_t core);
 void os_arch_core_launch_cb(uint32_t core);
 void os_arch_soc_idle_cb(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

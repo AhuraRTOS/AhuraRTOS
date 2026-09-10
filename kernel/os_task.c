@@ -1700,7 +1700,8 @@ os_err_t os_task_idle_create(void)
             os_task_stack_guard_set(os_task_idle_stack[core]);
 #endif
 
-            stack_ptr = os_arch_task_stack_initialize(os_task_idle_stack[core], sizeof(os_task_idle_stack[core]),
+            stack_ptr = os_arch_task_stack_initialize(os_task_idle_stack[core],
+                                                      sizeof(os_task_idle_stack[core]),
                                                       os_task_idle_entry, NULL);
             if (stack_ptr == NULL)
             {

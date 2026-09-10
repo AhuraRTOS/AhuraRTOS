@@ -2,8 +2,15 @@
  * @file regression.c
  * @brief Executes real task, inheritance, mutex and kernel code against a deterministic port.
  * @copyright (c) 2026 Ahura Project Contributors
- * SPDX-License-Identifier: GPL-3.0-or-later
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
+/*
+ * ***********************************************************************************************************
+ * Includes
+ * ***********************************************************************************************************
+*/
+
 #include "../../kernel/os_task.c"
 #include "../../kernel/os_task_mutex.c"
 #include "../../kernel/os_list.c"
@@ -40,6 +47,12 @@ __attribute__((noinline)) void audit_stop(void)
 
 #define AUDIT_CHECK(condition) do { if (!(condition)) { audit_result = __LINE__; audit_stop(); } } while (0)
 
+/*
+ * ***********************************************************************************************************
+ * Function implementations
+ * ***********************************************************************************************************
+*/
+
 static void audit_migrate(void)
 {
     os_task_tcb_t *previous = os_task_current[0];
@@ -62,7 +75,10 @@ uint32_t os_arch_kernel_mask_save(void)
     return previous;
 }
 
-void os_arch_kernel_mask_restore(uint32_t mask) { audit_mask = mask; }
+void os_arch_kernel_mask_restore(uint32_t mask)
+{
+    audit_mask = mask;
+}
 
 uint32_t os_arch_core_id_get(void)
 {
@@ -75,16 +91,46 @@ uint32_t os_arch_core_id_get(void)
     return result;
 }
 
-bool os_arch_in_isr(void) { return false; }
-uint32_t os_arch_highest_bit_get(uint32_t bits) { return 31U - (uint32_t)__builtin_clz(bits); }
-uint32_t os_arch_lowest_bit_get(uint32_t bits) { return (uint32_t)__builtin_ctz(bits); }
-void os_arch_init(void) { }
-void os_arch_tick_init(void) { }
-void os_arch_core_ipi_request_cb(uint32_t core) { (void)core; }
-void os_arch_core_launch_cb(uint32_t core) { (void)core; }
-void os_main(void) { }
-uint32_t os_tick_get(void) { return 0U; }
-void os_tick_init(void) { audit_tick_init_calls++; }
+bool os_arch_in_isr(void)
+{
+    return false;
+}
+uint32_t os_arch_highest_bit_get(uint32_t bits)
+{
+    return 31U - (uint32_t)__builtin_clz(bits);
+}
+uint32_t os_arch_lowest_bit_get(uint32_t bits)
+{
+    return (uint32_t)__builtin_ctz(bits);
+}
+void os_arch_init(void)
+{
+     
+}
+void os_arch_tick_init(void)
+{
+     
+}
+void os_arch_core_ipi_request_cb(uint32_t core)
+{
+    (void)core;
+}
+void os_arch_core_launch_cb(uint32_t core)
+{
+    (void)core;
+}
+void os_main(void)
+{
+     
+}
+uint32_t os_tick_get(void)
+{
+    return 0U;
+}
+void os_tick_init(void)
+{
+    audit_tick_init_calls++;
+}
 
 void os_arch_config_fault_trap(void)
 {
@@ -129,10 +175,19 @@ void os_critical_exit(void)
     if (audit_nesting == 0U) { os_arch_kernel_mask_restore(audit_saved_mask); }
 }
 
-void os_critical_multicore_lock(void) { AUDIT_CHECK(audit_mask != 0U); }
-void os_critical_multicore_unlock(void) { AUDIT_CHECK(audit_mask != 0U); }
+void os_critical_multicore_lock(void)
+{
+    AUDIT_CHECK(audit_mask != 0U);
+}
+void os_critical_multicore_unlock(void)
+{
+    AUDIT_CHECK(audit_mask != 0U);
+}
 
-static void audit_entry(void *context) { (void)context; }
+static void audit_entry(void *context)
+{
+    (void)context;
+}
 
 static os_task_tcb_t *audit_create(os_task_t *handle, uint32_t priority)
 {
@@ -299,8 +354,14 @@ static void audit_owner_transition(bool reprioritize)
     audit_stop();
 }
 
-void audit_new_owner_inheritance(void) { audit_owner_transition(false); }
-void audit_new_owner_departure(void) { audit_owner_transition(true); }
+void audit_new_owner_inheritance(void)
+{
+    audit_owner_transition(false);
+}
+void audit_new_owner_departure(void)
+{
+    audit_owner_transition(true);
+}
 
 void audit_idle_partial(void)
 {
@@ -316,8 +377,23 @@ void audit_idle_partial(void)
     audit_stop();
 }
 
-void audit_boot_success(void) { audit_expect_start = true; os_init(); os_start(); }
-void audit_boot_idle_failure(void) { audit_expect_trap = true; audit_fail_stack_call = 1U; os_init(); audit_result = __LINE__; audit_stop(); }
-void audit_boot_secondary_failure(void) { audit_expect_trap = true; audit_fail_stack_call = 2U; os_init(); audit_result = __LINE__; audit_stop(); }
-void audit_boot_main_failure(void) { audit_expect_trap = true; audit_fail_stack_call = 3U; os_init(); audit_result = __LINE__; audit_stop(); }
-void audit_start_before_init(void) { audit_expect_trap = true; os_start(); audit_result = __LINE__; audit_stop(); }
+void audit_boot_success(void)
+{
+    audit_expect_start = true; os_init(); os_start();
+}
+void audit_boot_idle_failure(void)
+{
+    audit_expect_trap = true; audit_fail_stack_call = 1U; os_init(); audit_result = __LINE__; audit_stop();
+}
+void audit_boot_secondary_failure(void)
+{
+    audit_expect_trap = true; audit_fail_stack_call = 2U; os_init(); audit_result = __LINE__; audit_stop();
+}
+void audit_boot_main_failure(void)
+{
+    audit_expect_trap = true; audit_fail_stack_call = 3U; os_init(); audit_result = __LINE__; audit_stop();
+}
+void audit_start_before_init(void)
+{
+    audit_expect_trap = true; os_start(); audit_result = __LINE__; audit_stop();
+}

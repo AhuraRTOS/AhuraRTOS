@@ -253,7 +253,6 @@ void os_task_mutex_priority_recompute(os_task_tcb_t *task)
     }
 }
 
-
 /*
  * ***********************************************************************************************************
  * Private function implementations
@@ -295,7 +294,6 @@ static void os_task_mutex_effective_recompute(os_task_tcb_t *owner)
 
     os_task_effective_priority_set(owner, new_priority);
 }
-
 
 #endif /* OS_CONFIG_MUTEX_ENABLE */
 

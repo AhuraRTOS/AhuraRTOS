@@ -1,12 +1,32 @@
-/** Execute the actual v8-M self-SysTick path against modeled MMIO registers.
- * The runner checks the first reload written at enable, and subsequent LOAD.
- * SPDX-License-Identifier: GPL-3.0-or-later */
+/**
+ * @file port_regression.c
+ * @brief Drives the real ARMv8-M self-SysTick tickless path against modeled MMIO registers.
+ *
+ * The runner checks the first reload written at enable and the LOAD that follows it, which is
+ * where an early wake loses its fractional tick phase if the close is wrong.
+ *
+ * @copyright (c) 2026 Ahura Project Contributors
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
+ */
+/*
+ * ***********************************************************************************************************
+ * Includes
+ * ***********************************************************************************************************
+*/
+
 #include "../../arch/arm/cortex_m33/os_arch_port.c"
 
 volatile uint32_t test_failure;
 uint32_t SystemCoreClock = 1000000U;
 uint32_t expected_reload;
 #define CHECK(c) do { if (!(c)) { test_failure = __LINE__; __asm volatile("bkpt #0"); } } while (0)
+
+/*
+ * ***********************************************************************************************************
+ * Function implementations
+ * ***********************************************************************************************************
+*/
 
 static void setup(void)
 {

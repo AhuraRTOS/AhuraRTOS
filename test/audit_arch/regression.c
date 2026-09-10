@@ -1,5 +1,20 @@
-/** Real kernel timing/critical/delay source tests with a deterministic port.
- * SPDX-License-Identifier: GPL-3.0-or-later */
+/**
+ * @file regression.c
+ * @brief Kernel timing, critical-section and delay-source tests against a deterministic port.
+ *
+ * Compiles the real os_tick.c, os_critical.c and os_delay.c, so a failure names kernel code
+ * rather than a model of it.
+ *
+ * @copyright (c) 2026 Ahura Project Contributors
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
+ */
+/*
+ * ***********************************************************************************************************
+ * Includes
+ * ***********************************************************************************************************
+*/
+
 #include "../../kernel/os_tick.c"
 #include "../../kernel/os_critical.c"
 #include "../../kernel/os_delay.c"
@@ -29,7 +44,21 @@ static uint32_t test_sleep_phase;
 __IO bool os_kernel_running;
 __IO uint32_t os_kernel_lock_count[OS_CONFIG_CORE_COUNT];
 
-#define CHECK(condition) do { if (!(condition)) { test_failure = __LINE__; __asm volatile("bkpt #0"); } } while (0)
+#define CHECK(condition)                                    \
+    do                                                      \
+    {                                                       \
+        if (!(condition))                                   \
+        {                                                   \
+            test_failure = __LINE__;                        \
+            __asm volatile("bkpt #0");                      \
+        }                                                   \
+    } while (0)
+
+/*
+ * ***********************************************************************************************************
+ * Function implementations
+ * ***********************************************************************************************************
+*/
 
 uint32_t os_arch_kernel_mask_save(void)
 {
@@ -42,14 +71,38 @@ uint32_t os_arch_kernel_mask_save(void)
     test_masks[test_core] = 1U;
     return old;
 }
-void os_arch_kernel_mask_restore(uint32_t mask) { test_masks[test_core] = mask; }
-uint32_t os_arch_core_id_get(void) { return test_core; }
-bool os_arch_in_isr(void) { return true; }
-void os_arch_isr_priority_check(void) { }
-void os_arch_tick_init(void) { }
-void os_arch_cycle_tick(void) { }
-bool os_kernel_is_running(void) { return false; }
-bool os_task_reschedule_possible(void) { return false; }
+void os_arch_kernel_mask_restore(uint32_t mask)
+{
+    test_masks[test_core] = mask;
+}
+uint32_t os_arch_core_id_get(void)
+{
+    return test_core;
+}
+bool os_arch_in_isr(void)
+{
+    return true;
+}
+void os_arch_isr_priority_check(void)
+{
+     
+}
+void os_arch_tick_init(void)
+{
+     
+}
+void os_arch_cycle_tick(void)
+{
+     
+}
+bool os_kernel_is_running(void)
+{
+    return false;
+}
+bool os_task_reschedule_possible(void)
+{
+    return false;
+}
 void os_task_tick_update(uint32_t elapsed)
 {
     test_updated += elapsed;
@@ -59,8 +112,14 @@ void os_task_tick_update(uint32_t elapsed)
         test_sleep_phase = 6U;
     }
 }
-void os_task_slice_tick(uint32_t elapsed) { (void)elapsed; }
-void os_task_sleep_ticks(uint32_t ticks) { (void)ticks; CHECK(false); }
+void os_task_slice_tick(uint32_t elapsed)
+{
+    (void)elapsed;
+}
+void os_task_sleep_ticks(uint32_t ticks)
+{
+    (void)ticks; CHECK(false);
+}
 bool os_task_current_is_idle(void)
 {
     /* The previous writer did not take the lock: this assertion detects A17. */
@@ -68,9 +127,18 @@ bool os_task_current_is_idle(void)
     test_lock_checks++;
     return test_idle;
 }
-uint32_t os_task_next_delay_ticks_get(void) { return test_next_deadline; }
-uint32_t os_arch_max_suppressed_ticks_get(void) { return 100U; }
-uint32_t os_arch_min_suppressed_ticks_get(void) { return 2U; }
+uint32_t os_task_next_delay_ticks_get(void)
+{
+    return test_next_deadline;
+}
+uint32_t os_arch_max_suppressed_ticks_get(void)
+{
+    return 100U;
+}
+uint32_t os_arch_min_suppressed_ticks_get(void)
+{
+    return 2U;
+}
 uint32_t os_arch_elapsed_ticks_get(void)
 {
     CHECK(test_sleep_phase == 3U);
@@ -153,8 +221,14 @@ void os_arch_spinlock_release(os_arch_spinlock_t *lock)
         test_core = 1U;
     }
 }
-uint32_t os_arch_delay_counter_hz_get(void) { return test_hz; }
-uint32_t os_arch_delay_counter_get(void) { return test_clock++; }
+uint32_t os_arch_delay_counter_hz_get(void)
+{
+    return test_hz;
+}
+uint32_t os_arch_delay_counter_get(void)
+{
+    return test_clock++;
+}
 void os_arch_config_fault_trap(void)
 {
     CHECK(test_fault_expected);

@@ -2,8 +2,15 @@
  * @file regression.c
  * @brief Execute message/log source with deterministic scheduler substitutions.
  * @copyright (c) 2026 Ahura Project Contributors
- * SPDX-License-Identifier: GPL-3.0-or-later
+ *            SPDX-License-Identifier: GPL-3.0-or-later
+ *            See LICENSE in the project root for the full license text.
  */
+/*
+ * ***********************************************************************************************************
+ * Includes
+ * ***********************************************************************************************************
+*/
+
 #include "kernel/os_internal.h"
 #include <string.h>
 
@@ -42,7 +49,20 @@ static uint8_t test_data[30];
 static uint32_t test_report_count;
 static bool test_inject_log_drop;
 
-#define TEST_CHECK(condition) do { if (!(condition) && (test_failure == 0U)) { test_failure = __LINE__; } } while (0)
+#define TEST_CHECK(condition)                               \
+    do                                                      \
+    {                                                       \
+        if (!(condition) && (test_failure == 0U))           \
+        {                                                   \
+            test_failure = __LINE__;                        \
+        }                                                   \
+    } while (0)
+
+/*
+ * ***********************************************************************************************************
+ * Function implementations
+ * ***********************************************************************************************************
+*/
 
 void os_critical_enter(void)
 {
