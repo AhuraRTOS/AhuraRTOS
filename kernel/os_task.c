@@ -1257,16 +1257,41 @@ void os_task_wait_begin(os_list_t *waiters, uint32_t timeout_ticks)
  */
 void os_task_wait_end(void)
 {
+    /* An interrupt has no wait of its own to close out. */
+    if (!os_arch_in_isr())
+    {
+        os_critical_enter();
+        os_task_wait_end_locked();
+        os_critical_exit();
+    }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief os_task_wait_end for a caller that already holds the critical section.
+ *
+ * Split out because almost every caller does. A blocking primitive that SUCCEEDS closes its wait
+ * inside the same critical section that saw the object free - the acquire and the close have to be
+ * one indivisible step - so the section os_task_wait_end takes for itself is a second, nested one
+ * on the hot path of every one of them. Nested is cheaper than outermost (no spinlock), but it is
+ * still a call and two mask operations per successful take, on both core counts.
+ *
+ * The timeout paths are the ones that genuinely need os_task_wait_end: they are reached after the
+ * critical section that started the wait has already been left. Same body either way.
+ *
+ * @return None.
+ */
+void os_task_wait_end_locked(void)
+{
     os_task_tcb_t *current;
 
     /* An interrupt has no wait of its own to close out. */
     if (!os_arch_in_isr())
     {
-        os_critical_enter();
         current = os_task_current[os_arch_core_id_get()];
 
-        /* The lock protects the core/current pair against migration and the mutex wait edge
-         * against a priority-inheritance walk on another core. */
+        /* The caller's lock is what protects the core/current pair against migration, and the
+         * mutex wait edge against a priority-inheritance walk on another core. */
         if (current != NULL)
         {
             current->wait_signaled = false;
@@ -1283,7 +1308,6 @@ void os_task_wait_end(void)
             current->blocked_forever  = false;
     #endif
         }
-        os_critical_exit();
     }
 }
 

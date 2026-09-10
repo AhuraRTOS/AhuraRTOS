@@ -124,7 +124,7 @@ os_err_t os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                 mutex->locked   = true;
                 mutex->owner_id = self_id;
                 os_task_mutex_owner_link(&mutex->owner_node);
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_NONE;
@@ -141,7 +141,7 @@ os_err_t os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                      * on a first pass that never blocked (nothing to release, and the call is a
                      * no-op), but also after one or more blocked retries that did boost. */
                     os_task_mutex_waiter_depart();
-                    os_task_wait_end();
+                    os_task_wait_end_locked();
                     os_critical_exit();
 
                     status  = OS_ERR_BUSY;
@@ -151,7 +151,7 @@ os_err_t os_mutex_lock(os_mutex_t *mutex, uint32_t timeout_ms)
                 {
                     /* The budget ran out across the retries; same debt to settle. */
                     os_task_mutex_waiter_depart();
-                    os_task_wait_end();
+                    os_task_wait_end_locked();
                     os_critical_exit();
 
                     status  = OS_ERR_TIMEOUT;

@@ -82,7 +82,7 @@ os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
                 /* An item arrived: release the highest-priority receiver. */
                 (void)os_task_waiters_wake_one(&queue->receive_waiters);
 
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_NONE;
@@ -114,7 +114,7 @@ os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
                  * drift apart. */
                 (void)os_task_waiters_wake_one(&queue->receive_waiters);
 
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_NONE;
@@ -122,7 +122,7 @@ os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_FULL;
@@ -130,7 +130,7 @@ os_err_t os_queue_send(os_queue_t *queue, const void *item, uint32_t timeout_ms)
             }
             else if (remaining_ticks == 0U)
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_TIMEOUT;
@@ -207,7 +207,7 @@ os_err_t os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_ms
                 /* A slot freed up: release the highest-priority sender. */
                 (void)os_task_waiters_wake_one(&queue->send_waiters);
 
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_NONE;
@@ -215,7 +215,7 @@ os_err_t os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_ms
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_EMPTY;
@@ -223,7 +223,7 @@ os_err_t os_queue_receive(os_queue_t *queue, void *item_out, uint32_t timeout_ms
             }
             else if (remaining_ticks == 0U)
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_TIMEOUT;

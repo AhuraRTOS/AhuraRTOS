@@ -131,7 +131,7 @@ os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms)
             if (semaphore->count > 0U)
             {
                 semaphore->count--;
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_NONE;
@@ -139,7 +139,7 @@ os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms)
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_EMPTY;
@@ -147,7 +147,7 @@ os_err_t os_sem_take(os_sem_t *semaphore, uint32_t timeout_ms)
             }
             else if (remaining_ticks == 0U)
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_TIMEOUT;

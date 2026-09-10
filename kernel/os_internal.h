@@ -125,6 +125,15 @@ void os_task_wait_end(void);
 
 /******************************************************************************************************/
 /**
+ * @brief os_task_wait_end for a caller that ALREADY holds the critical section (os_task.c).
+ *
+ * What every successful take uses: the acquire and the close of the wait happen inside one
+ * critical section, so the one os_task_wait_end takes for itself would be a nested second.
+ */
+void os_task_wait_end_locked(void);
+
+/******************************************************************************************************/
+/**
  * @brief After resuming from a wait: true = object signaled, false = timeout (os_task.c).
  */
 bool os_task_wait_signaled(void);

@@ -217,7 +217,7 @@ os_err_t os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, boo
                     event->flags &= ~bits;
                 }
 
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_NONE;
@@ -225,7 +225,7 @@ os_err_t os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, boo
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_BUSY;
@@ -233,7 +233,7 @@ os_err_t os_event_wait_bits(os_event_t *event, uint32_t bits, bool wait_all, boo
             }
             else if (remaining_ticks == 0U)
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_TIMEOUT;

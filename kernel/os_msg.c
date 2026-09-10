@@ -97,7 +97,7 @@ os_err_t os_msg_send(os_msg_t *msg, const void *data, size_t length, uint32_t ti
                 /* Not satisfiable by anything any receiver could do. Tested in here rather than
                  * once before the loop because capacity is also 0 on an object no storage was ever
                  * bound to, and that case has to answer the same way. */
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_INVALID_ARG;
@@ -114,7 +114,7 @@ os_err_t os_msg_send(os_msg_t *msg, const void *data, size_t length, uint32_t ti
                 /* A message arrived: release the highest-priority receiver. */
                 (void)os_task_waiters_wake_one(&msg->receive_waiters);
 
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_NONE;
@@ -122,7 +122,7 @@ os_err_t os_msg_send(os_msg_t *msg, const void *data, size_t length, uint32_t ti
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_FULL;
@@ -130,7 +130,7 @@ os_err_t os_msg_send(os_msg_t *msg, const void *data, size_t length, uint32_t ti
             }
             else if (remaining_ticks == 0U)
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_TIMEOUT;
@@ -243,14 +243,14 @@ os_err_t os_msg_receive(os_msg_t *msg, void *data, size_t data_size, size_t *len
                     (void)os_task_waiters_wake_one(&msg->receive_waiters);
                 }
 
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 waiting = false;
             }
             else if ((timeout_ms == OS_WAIT_NOTHING) || (!os_internal_can_block()))
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_EMPTY;
@@ -258,7 +258,7 @@ os_err_t os_msg_receive(os_msg_t *msg, void *data, size_t data_size, size_t *len
             }
             else if (remaining_ticks == 0U)
             {
-                os_task_wait_end();
+                os_task_wait_end_locked();
                 os_critical_exit();
 
                 status  = OS_ERR_TIMEOUT;

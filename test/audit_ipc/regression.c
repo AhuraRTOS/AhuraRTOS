@@ -117,6 +117,20 @@ void os_task_wait_end(void)
     waiter->signaled = false;
 }
 
+/* Same body: the split is about which caller already holds the critical
+ * section, and this harness substitutes the scheduler entirely. */
+void os_task_wait_end_locked(void)
+{
+    test_waiter_t *waiter = &test_waiters[test_current];
+    if (waiter->list != NULL)
+    {
+        /* An unsignaled resume models timeout expiry and removes the node. */
+        os_list_remove(waiter->list, &waiter->node);
+        waiter->list = NULL;
+    }
+    waiter->signaled = false;
+}
+
 bool os_task_wait_signaled(void)
 {
     return test_waiters[test_current].signaled;
