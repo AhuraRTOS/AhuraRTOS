@@ -304,6 +304,37 @@ uint32_t os_arch_tick_resume_cb(void)
     return elapsed_ticks;
 }
 
+/******************************************************************************************************/
+/**
+ * @brief How much of the open window has already elapsed, for a core that is not the owner.
+ *
+ * Deliberately ignores soc_powman_accum_ms_hz, and that is the whole design rather than an
+ * oversight. The accumulator is the one piece of state os_arch_tick_resume_cb WRITES, so reading it
+ * from another core races the close: a torn 64-bit read would be worth up to a whole tick, and a
+ * tick read that comes out too HIGH makes the kernel clock step backwards when the owner finally
+ * announces.
+ *
+ * Dropping it can only under-report - floor(elapsed) instead of floor(carry + elapsed) - so this
+ * never exceeds what the announce will produce. The clock may lag by at most one tick during a
+ * window and never runs ahead of itself. Everything it does read (the entry stamp, the hardware
+ * timer) is fixed for the life of the window.
+ *
+ * @return uint32_t  Whole tick periods elapsed so far, never more than the close will report.
+ */
+uint32_t os_arch_tick_elapsed_peek_cb(void)
+{
+    uint32_t elapsed_ticks = 0U;
+
+    if (soc_powman_ready_get())
+    {
+        uint64_t elapsed_ms = powman_timer_get_ms() - soc_powman_entry_ms;
+
+        elapsed_ticks = (uint32_t)((elapsed_ms * (uint64_t)OS_CONFIG_TICK_HZ) / 1000ULL);
+    }
+
+    return elapsed_ticks;
+}
+
 #if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
 
 #include "soc_sleep.h"

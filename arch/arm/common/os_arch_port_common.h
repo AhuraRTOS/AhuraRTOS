@@ -966,6 +966,23 @@ void os_arch_cycle_tick(void);
  */
 uint32_t os_arch_elapsed_ticks_get(void);
 
+/******************************************************************************************************/
+/**
+ * @brief Whole ticks elapsed so far in an OPEN suppressed window, without ending it.
+ *
+ * What lets a core that is not the time-base owner read the clock during a window instead of
+ * waking the owner and waiting for it to announce. Read-only: it disarms nothing, consumes no
+ * fractional carry, and may be called from any core while a window is open. Meaningless, and not
+ * called, when none is.
+ *
+ * Must never exceed what the eventual close reports, or the kernel clock steps backwards at the
+ * announce. Answering short is safe and is what the default does: 0, which leaves a port that
+ * cannot peek waiting for the owner exactly as before.
+ *
+ * @return uint32_t  Whole tick periods elapsed so far in the open window.
+ */
+uint32_t os_arch_tick_elapsed_peek_cb(void);
+
 /*
  * ***********************************************************************************************************
  * Atomics
@@ -1194,6 +1211,7 @@ void os_arch_tick_suppress_cb(uint32_t ticks);
  * @return uint32_t  Whole tick periods elapsed since os_arch_tick_suppress_cb.
  */
 uint32_t os_arch_tick_resume_cb(void);
+
 #endif /* OS_CONFIG_TICK_SOURCE_EXTERNAL */
 
 /*

@@ -76,6 +76,7 @@ void os_arch_cycle_tick(void);
 uint32_t os_arch_max_suppressed_ticks_get(void);
 uint32_t os_arch_min_suppressed_ticks_get(void);
 uint32_t os_arch_elapsed_ticks_get(void);
+uint32_t os_arch_tick_elapsed_peek_cb(void);
 void os_arch_sleep_finish(void);
 void audit_sleep(uint32_t ticks);
 #define OS_ARCH_SLEEP(ticks) audit_sleep(ticks)

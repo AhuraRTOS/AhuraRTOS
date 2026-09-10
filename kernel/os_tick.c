@@ -75,6 +75,15 @@ static __IO uint32_t os_tick_usage_total_ticks = 0U;
 static __IO uint32_t os_tick_usage_idle_ticks  = 0U;
 #endif
 
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U) && (OS_CONFIG_CORE_COUNT > 1U)
+/** Raised by core 0 from the moment it starts planning a window until that window has closed.
+ *
+ *  Read by the other cores, which is the whole point: core 0 cannot know about a deadline that
+ *  does not exist yet, so whoever creates one has to say so. Defined up here rather than beside
+ *  the rest of the tickless state because os_tick_get() below is now one of its readers. */
+static __IO bool os_tickless_window_open = false;
+#endif
+
 /*
  * ***********************************************************************************************************
  * Public function implementations
@@ -101,15 +110,23 @@ void os_tick_init(void)
  */
 uint32_t os_tick_get(void)
 {
-    uint32_t ticks;
+    uint32_t ticks = os_tick_count;
+
 #if (OS_CONFIG_CORE_COUNT > 1U) && (OS_CONFIG_TICKLESS_ENABLE == 1U)
-    /* A remote reader must first reconcile an outstanding suppressed window. */
-    os_critical_enter();
+    /* Inside a suppressed window os_tick_count is behind by however much of the window has run,
+     * and the timeout loops in os_sem/os_msg/os_queue/os_mutex all difference two of these reads -
+     * so a stale one charges the whole window to a wait that had not started yet.
+     *
+     * Reading the wake source directly is what keeps that correct WITHOUT the global lock this
+     * used to take: the owner is asleep, not mid-update, and the peek is defined never to exceed
+     * what the owner will announce. No lock, no IPI, and nothing here waits for another core.
+     * With no window open - the common case by far - it costs one flag read. */
+    if (os_tickless_window_open)
+    {
+        ticks += os_arch_tick_elapsed_peek_cb();
+    }
 #endif
-    ticks = os_tick_count;
-#if (OS_CONFIG_CORE_COUNT > 1U) && (OS_CONFIG_TICKLESS_ENABLE == 1U)
-    os_critical_exit();
-#endif
+
     return ticks;
 }
 
@@ -296,12 +313,6 @@ static __IO uint32_t os_tickless_plan_generation = 0U;
 static __IO uint32_t os_tickless_last_plan_generation = 0U;
 
 #if (OS_CONFIG_CORE_COUNT > 1U)
-/** Raised by core 0 from the moment it starts planning a window until that window has closed.
- *
- *  Read by the other cores, which is the whole point: core 0 cannot know about a deadline that
- *  does not exist yet, so whoever creates one has to say so. */
-static __IO bool os_tickless_window_open = false;
-
 /* Called with the kernel spinlock held and local scheduling excluded. The
  * caller releases the lock before retrying, allowing core 0 to announce and
  * close. Checking under the lock closes the open-versus-remote-entry race. */

@@ -59,11 +59,18 @@ void os_task_mutex_owner_link(os_list_node_t *owner_node)
 
     if ((current != NULL) && (current->id != 0U))
     {
+        const os_mutex_t *acquired = OS_MUTEX_FROM_OWNER_NODE(owner_node);
+
         os_list_push_back(&current->owned_mutexes, owner_node);
 
         /* Unlock wakes one waiter without reserving ownership. A different core can acquire
-         * first, while other waiters remain queued; they immediately boost this new owner. */
-        os_task_mutex_priority_recompute(current);
+         * first, while other waiters remain queued; they immediately boost this new owner.
+         * An uncontended acquire cannot: the effective priority is the max over the waiters of
+         * every owned mutex, and a mutex with none of its own leaves that max where it was. */
+        if (!os_list_is_empty(&acquired->waiters))
+        {
+            os_task_mutex_priority_recompute(current);
+        }
     }
 }
 

@@ -137,6 +137,20 @@ OS_WEAK uint32_t os_arch_tick_resume_cb(void)
     return 0U;
 }
 
+/******************************************************************************************************/
+/**
+ * @brief Weak default: this package cannot be asked mid-window, so nothing is readable yet.
+ *
+ * Answering 0 is what keeps a package without a peek correct rather than fast: a remote core sees
+ * no progress, so it falls back to waking the owner and waiting, exactly as it did before.
+ *
+ * @return uint32_t  0.
+ */
+OS_WEAK uint32_t os_arch_tick_elapsed_peek_cb(void)
+{
+    return 0U;
+}
+
 /*
  * ***********************************************************************************************************
  * Public function implementations
