@@ -1296,11 +1296,11 @@ void os_task_wait_end(void)
  */
 bool os_task_wait_signaled(void)
 {
-    uint32_t       mask_state = os_arch_kernel_mask_save();
+    uint32_t       mask_state = os_internal_migration_lock();
     os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
     bool           signaled = (current != NULL) ? current->wait_signaled : false;
 
-    os_arch_kernel_mask_restore(mask_state);
+    os_internal_migration_unlock(mask_state);
 
     return signaled;
 }
@@ -1336,11 +1336,11 @@ void os_task_wait_data_set(uint32_t data0, uint32_t data1)
  */
 uint32_t os_task_wait_result_get(void)
 {
-    uint32_t       mask_state = os_arch_kernel_mask_save();
+    uint32_t       mask_state = os_internal_migration_lock();
     os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
     uint32_t       result = (current != NULL) ? current->wait_result : 0U;
 
-    os_arch_kernel_mask_restore(mask_state);
+    os_internal_migration_unlock(mask_state);
 
     return result;
 }
@@ -1449,13 +1449,13 @@ void os_task_waiters_wake_all(os_list_t *waiters)
  */
 uint32_t os_task_current_id_get(void)
 {
-    uint32_t       mask_state = os_arch_kernel_mask_save();
+    uint32_t       mask_state = os_internal_migration_lock();
     os_task_tcb_t *tcb = os_task_current[os_arch_core_id_get()];
     uint32_t       id = (tcb == NULL) ? 0U : tcb->id;
 
     /* A core identity is only valid while this task cannot migrate to another core. Read both
      * the pointer and its identity before restoring the mask; returning a pointer is not enough. */
-    os_arch_kernel_mask_restore(mask_state);
+    os_internal_migration_unlock(mask_state);
 
     return id;
 }
@@ -1468,11 +1468,11 @@ uint32_t os_task_current_id_get(void)
  */
 bool os_task_current_is_idle(void)
 {
-    uint32_t mask_state = os_arch_kernel_mask_save();
+    uint32_t mask_state = os_internal_migration_lock();
     uint32_t core = os_arch_core_id_get();
     bool     idle = (os_task_current[core] == &os_task_idle_tcb[core]);
 
-    os_arch_kernel_mask_restore(mask_state);
+    os_internal_migration_unlock(mask_state);
 
     return idle;
 }
@@ -2505,7 +2505,7 @@ static void os_task_wait_node_insert(os_list_t *waiters, os_task_tcb_t *tcb)
  */
 static void os_task_switch_request(void)
 {
-    uint32_t mask_state = os_arch_kernel_mask_save();
+    uint32_t mask_state = os_internal_migration_lock();
     uint32_t core = os_arch_core_id_get();
 
     /* A locked scheduler remembers the request rather than taking it: os_kernel_unlock
@@ -2519,7 +2519,7 @@ static void os_task_switch_request(void)
         OS_ARCH_CONTEXT_SWITCH_REQUEST();
     }
 
-    os_arch_kernel_mask_restore(mask_state);
+    os_internal_migration_unlock(mask_state);
 }
 
 /******************************************************************************************************/

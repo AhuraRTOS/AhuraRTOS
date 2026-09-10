@@ -123,7 +123,7 @@ uint32_t os_tick_get(void)
      * With no window open - the common case by far - it costs one flag read. */
     if (os_tickless_window_open)
     {
-        ticks += os_arch_tick_elapsed_peek_cb();
+        ticks += os_arch_elapsed_ticks_peek();
     }
 #endif
 

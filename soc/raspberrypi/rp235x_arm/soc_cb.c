@@ -112,6 +112,19 @@ POWMAN timer cannot express a window. Use a slower tick, or light sleep."
 /** Timer reading when the open window started, in milliseconds. */
 static uint64_t soc_powman_entry_ms = 0U;
 
+/** Whether soc_powman_entry_ms describes a window that is actually running.
+ *
+ * The kernel raises its own os_tickless_window_open BEFORE it plans, and only calls
+ * os_arch_tick_suppress_cb afterwards - and not at all when the plan comes out too short to sleep.
+ * So "the kernel says a window is open" is NOT the same as "this timer has an entry stamp", and a
+ * peek in that gap would subtract the PREVIOUS window's stamp and report an arbitrarily large
+ * elapsed time. That is a clock that races, not one that lags.
+ *
+ * Written by the time-base owner only, read by any core. Raised after the stamp and lowered before
+ * the close touches the accumulator, so a peer that sees it true is looking at a whole,
+ * still-running window. */
+static __IO bool soc_powman_window_armed = false;
+
 /** Time measured but not yet announced, in milliseconds x OS_CONFIG_TICK_HZ.
  *
  * A window's last, incomplete tick used to be dropped: elapsed was a truncating division and the
@@ -266,6 +279,10 @@ void os_arch_tick_suppress_cb(uint32_t ticks)
         powman_clear_alarm();
         irq_set_enabled(POWMAN_IRQ_TIMER, true);
         powman_timer_enable_alarm_at_ms(soc_powman_entry_ms + wanted_ms);
+
+        /* Last, and after a barrier: from here a peer's peek may read the stamp above. */
+        OS_ARCH_DMB();
+        soc_powman_window_armed = true;
     }
 }
 
@@ -286,6 +303,11 @@ uint32_t os_arch_tick_resume_cb(void)
     /* Disarmed first: a window that ran its length leaves the alarm fired, and one cut short
      * leaves it armed for a moment nobody will wait for. Either way it must not survive into the
      * next window. */
+    /* First: a peek from here on answers 0 and the caller falls back to the announced tick, which
+     * is behind but never ahead. Nothing below is safe to read from another core. */
+    soc_powman_window_armed = false;
+    OS_ARCH_DMB();
+
     powman_timer_disable_alarm();
     powman_clear_alarm();
     irq_set_enabled(POWMAN_IRQ_TIMER, false);
@@ -325,7 +347,9 @@ uint32_t os_arch_tick_elapsed_peek_cb(void)
 {
     uint32_t elapsed_ticks = 0U;
 
-    if (soc_powman_ready_get())
+    OS_ARCH_DMB();
+
+    if (soc_powman_window_armed)
     {
         uint64_t elapsed_ms = powman_timer_get_ms() - soc_powman_entry_ms;
 

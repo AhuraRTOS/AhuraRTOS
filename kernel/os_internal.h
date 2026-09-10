@@ -329,6 +329,47 @@ OS_INLINE void os_critical_multicore_unlock(void) { }
 
 /******************************************************************************************************/
 /**
+ * @brief Freeze migration across a read of this core's id AND the per-core slot it indexes.
+ *
+ * The pattern it guards is everywhere in the kernel: take os_arch_core_id_get(), then index
+ * os_task_current[], os_kernel_lock_count[] or similar with it. On SMP the task can migrate
+ * between the two and the second read lands on another core's slot, so the pair has to be taken
+ * under the kernel mask.
+ *
+ * On one core there is nowhere to migrate TO, so both of these compile to nothing rather than
+ * charging every such read a mask save and restore. That distinction is worth a named pair: the
+ * cost is small individually and lands on os_task_switch_request, os_task_current_id_get and
+ * os_internal_can_block, which sit on the yield, mutex and every blocking path.
+ *
+ * @return uint32_t  Opaque state to hand back to os_internal_migration_unlock.
+ */
+OS_FORCE_INLINE uint32_t os_internal_migration_lock(void)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    return os_arch_kernel_mask_save();
+#else
+    return 0U;
+#endif
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Release os_internal_migration_lock. Nothing at all on a single-core build.
+ *
+ * @param[in] mask_state  What the matching lock returned.
+ * @return None.
+ */
+OS_FORCE_INLINE void os_internal_migration_unlock(uint32_t mask_state)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    os_arch_kernel_mask_restore(mask_state);
+#else
+    (void)mask_state;
+#endif
+}
+
+/******************************************************************************************************/
+/**
  * @brief Check whether the caller is allowed to block (task context, scheduler running and not
  *        locked).
  *
@@ -338,11 +379,11 @@ OS_INLINE void os_critical_multicore_unlock(void) { }
  */
 OS_FORCE_INLINE bool os_internal_can_block(void)
 {
-    uint32_t mask_state = os_arch_kernel_mask_save();
+    uint32_t mask_state = os_internal_migration_lock();
     bool     can_block = (os_kernel_running && !os_arch_in_isr() &&
                           (os_kernel_lock_count[os_arch_core_id_get()] == 0U));
 
-    os_arch_kernel_mask_restore(mask_state);
+    os_internal_migration_unlock(mask_state);
 
     return can_block;
 }

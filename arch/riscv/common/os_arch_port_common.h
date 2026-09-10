@@ -776,6 +776,18 @@ OS_INLINE void os_arch_cycle_tick(void)
  * @brief Whole ticks elapsed since the last tick interrupt (tickless accounting).
  */
 uint32_t os_arch_elapsed_ticks_get(void);
+/******************************************************************************************************/
+/**
+ * @brief Whole ticks elapsed so far in an open window, for a core that is not the one closing it.
+ *
+ * Guarded and clamped by the arch layer: 0 unless a window is genuinely armed, and never more than
+ * that window was promised. A core reading this can be behind the owner's eventual announcement but
+ * never ahead of it.
+ *
+ * @return uint32_t  Whole tick periods elapsed so far in the open window.
+ */
+uint32_t os_arch_elapsed_ticks_peek(void);
+
 
 /******************************************************************************************************/
 /**

@@ -343,10 +343,10 @@ void os_kernel_unlock(void)
  */
 bool os_kernel_is_locked(void)
 {
-    uint32_t mask_state = os_arch_kernel_mask_save();
+    uint32_t mask_state = os_internal_migration_lock();
     bool     locked = (os_kernel_lock_count[os_arch_core_id_get()] != 0U);
 
-    os_arch_kernel_mask_restore(mask_state);
+    os_internal_migration_unlock(mask_state);
 
     return locked;
 }

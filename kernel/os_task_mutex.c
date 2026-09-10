@@ -184,11 +184,22 @@ void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node
     /* An owner that has already gone owns nothing left to unlink. */
     if (owner != NULL)
     {
+        const os_mutex_t *released = OS_MUTEX_FROM_OWNER_NODE(owner_node);
+
+        /* Read before the unlink, and before os_mutex_unlock wakes anyone: an empty list here
+         * means this mutex was lifting nobody, so dropping it cannot lower the owner. Same
+         * argument as the acquire side in os_task_mutex_owner_link, and the uncontended
+         * lock/unlock pair is the common case by a wide margin. */
+        bool was_lifting = !os_list_is_empty(&released->waiters);
+
         os_list_remove(&owner->owned_mutexes, owner_node);
 
         /* Chain, for the same reason as in os_task_mutex_waiter_depart_tcb: releasing a mutex can
          * lower this owner, and anyone waiting behind IT was only boosted on its account. */
-        os_task_mutex_priority_recompute(owner);
+        if (was_lifting)
+        {
+            os_task_mutex_priority_recompute(owner);
+        }
     }
 }
 /******************************************************************************************************/

@@ -74,12 +74,12 @@
 
 /** Ticks the current window was opened for, 0 when none is open. Non-zero is the only reason to
  *  ask a wake source how long a window lasted; the value is the ceiling that answer is clamped to. */
-static uint32_t os_arch_tickless_planned = 0U;
+static __IO uint32_t os_arch_tickless_planned = 0U;
 
 #if (OS_ARCH_TICKLESS_SELF_SUPPRESS == 1)
 /** Which of the two mechanisms opened the window, so the close uses the same one. Only a port that
  *  has both needs to ask. */
-static bool os_arch_tickless_soc_window = false;
+static __IO bool os_arch_tickless_soc_window = false;
 #endif
 
 /*
@@ -247,6 +247,47 @@ void os_arch_sleep_prepare(uint32_t planned_ticks)
          * same thing before calling OS_ARCH_SLEEP(), and between them a package's deep-sleep hook
          * can never be entered with no wake source armed. */
     }
+}
+
+/******************************************************************************************************/
+/**
+ * @brief How much of the open window has elapsed, for a core that is not closing it.
+ *
+ * Same two safeguards as os_arch_elapsed_ticks_get, and for the same reason: os_arch_tickless_planned
+ * is raised only AFTER os_arch_tick_suppress_cb has stamped its entry, so it is the one honest
+ * answer to "is a window really armed". The kernel raises its own os_tickless_window_open earlier
+ * than that, and would ask a package to subtract a stamp belonging to the PREVIOUS window - which
+ * reports an arbitrarily large elapsed and makes the clock race rather than lag. That is not
+ * hypothetical: it is what this call did before it was routed through here.
+ *
+ * The clamp is the second half. A package that miscounts can then only make the clock late, never
+ * early, whatever it returns.
+ *
+ * The port's own SysTick window answers 0 deliberately: that timer belongs to the owner, is
+ * reprogrammed for the window, and means nothing read from another core.
+ *
+ * @return uint32_t  Whole tick periods elapsed so far, never more than the window was promised.
+ */
+uint32_t os_arch_elapsed_ticks_peek(void)
+{
+    uint32_t elapsed = 0U;
+
+    if (os_arch_tickless_planned != 0U)
+    {
+#if (OS_ARCH_TICKLESS_SELF_SUPPRESS == 1)
+        if (os_arch_tickless_soc_window)
+#endif
+        {
+            elapsed = os_arch_tick_elapsed_peek_cb();
+
+            if (elapsed > os_arch_tickless_planned)
+            {
+                elapsed = os_arch_tickless_planned;
+            }
+        }
+    }
+
+    return elapsed;
 }
 
 /******************************************************************************************************/

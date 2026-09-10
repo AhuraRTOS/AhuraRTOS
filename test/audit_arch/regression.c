@@ -195,7 +195,7 @@ void audit_sleep(uint32_t ticks)
  * waking the owner, so a test drives it directly. */
 static uint32_t test_peek;
 
-uint32_t os_arch_tick_elapsed_peek_cb(void)
+uint32_t os_arch_elapsed_ticks_peek(void)
 {
     return test_peek;
 }
