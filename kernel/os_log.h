@@ -81,6 +81,7 @@ void os_log_write(uint32_t level, const char *fmt, ...);
 /**
  * @brief Number of log lines dropped so far because the buffer was full. Also reported into
  *        the log itself once space frees up, so this is only needed for programmatic checks.
+ *        Cumulative since initialization, modulo 2^32; draining does not reset this count.
  */
 uint32_t os_log_dropped_get(void);
 

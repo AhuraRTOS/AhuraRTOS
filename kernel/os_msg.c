@@ -40,6 +40,7 @@
  * ***********************************************************************************************************
 */
 
+static bool   os_msg_sender_match(uint32_t needed, uint32_t unused, void *context, uint32_t *result_out);
 static void   os_msg_ring_write(os_msg_t *msg, const uint8_t *source, size_t length);
 static void   os_msg_ring_read(os_msg_t *msg, uint8_t *destination, size_t length);
 static void   os_msg_length_write(os_msg_t *msg, size_t length);
@@ -139,6 +140,7 @@ os_err_t os_msg_send(os_msg_t *msg, const void *data, size_t length, uint32_t ti
             {
                 /* Join the senders' waiter list inside the same critical section that saw there
                  * was no room (no lost-wakeup window). */
+                os_task_wait_data_set((uint32_t)needed, 0U);
                 os_task_wait_begin(&msg->send_waiters, remaining_ticks);
                 os_critical_exit();
 
@@ -224,10 +226,21 @@ os_err_t os_msg_receive(os_msg_t *msg, void *data, size_t data_size, size_t *len
                     msg->used -= (length + OS_MSG_HEADER_BYTES);
                     msg->count--;
 
-                    /* Room freed up: release the highest-priority sender. */
-                    (void)os_task_waiters_wake_one(&msg->send_waiters);
+                    /* Wake every sender whose message could fit. Space is not reserved: each
+                     * resumes through the send retry loop, so competing senders cannot overflow
+                     * the ring. Waking only one can strand smaller messages or leave usable
+                     * space idle forever after that sender finishes. */
+                    (void)os_task_waiters_wake_match(&msg->send_waiters, os_msg_sender_match, msg);
 
                     status = OS_ERR_NONE;
+                }
+
+                /* An undersized destination leaves the oldest message available. A successful
+                 * receive may leave later messages available. In both cases pass the wake to
+                 * another receiver instead of consuming its only notification. */
+                if (msg->count > 0U)
+                {
+                    (void)os_task_waiters_wake_one(&msg->receive_waiters);
                 }
 
                 os_task_wait_end();
@@ -530,6 +543,30 @@ os_err_t os_msg_cleanup(os_msg_t *msg)
  * Private function implementations
  * ***********************************************************************************************************
 */
+
+/******************************************************************************************************/
+/**
+ * @brief Match a sender against currently free bytes while the caller holds the critical section.
+ *
+ * Each eligible sender is woken independently, in priority order. Do not subtract its required
+ * space here: it has not sent yet and may be paused or deleted before it does. There is no
+ * reservation to release on those paths, and every eligible producer gets a chance to retry.
+ *
+ * @param[in] needed       Payload plus header bytes recorded before the sender blocked.
+ * @param[in] unused       Unused second wait-data word.
+ * @param[in] context      Message buffer whose space changed.
+ * @param[out] result_out  Unused wait result, set to zero.
+ * @return bool  True when this message fits the current free-space snapshot.
+ */
+static bool os_msg_sender_match(uint32_t needed, uint32_t unused, void *context, uint32_t *result_out)
+{
+    const os_msg_t *msg = (const os_msg_t *)context;
+
+    (void)unused;
+    *result_out = 0U;
+
+    return (size_t)needed <= (msg->capacity - msg->used);
+}
 
 /******************************************************************************************************/
 /**

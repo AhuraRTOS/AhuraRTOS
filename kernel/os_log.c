@@ -64,6 +64,8 @@ static uint8_t   os_log_buffer[OS_CONFIG_LOG_BUFFER_SIZE];
 static size_t    os_log_head    = 0U;
 static size_t    os_log_tail    = 0U;
 static uint32_t  os_log_dropped = 0U;
+/* Draining consumes only the pending notice count, never the public lifetime total. */
+static uint32_t  os_log_dropped_pending = 0U;
 
 /*
  * ***********************************************************************************************************
@@ -215,6 +217,7 @@ os_err_t os_log_system_init(void)
     os_log_head    = 0U;
     os_log_tail    = 0U;
     os_log_dropped = 0U;
+    os_log_dropped_pending = 0U;
 
     status = os_task_create_system(&tsk_log, &config);
 
@@ -288,8 +291,8 @@ static void os_log_task_entry(void *context)
         /* Ring is empty. Report anything lost while it was full, once, and
          * only now that there is room for the notice itself. */
         os_critical_enter();
-        dropped        = os_log_dropped;
-        os_log_dropped = 0U;
+        dropped                = os_log_dropped_pending;
+        os_log_dropped_pending = 0U;
         os_critical_exit();
 
         if (dropped != 0U)
@@ -316,8 +319,7 @@ static void os_log_task_entry(void *context)
 /**
  * @brief Copy finished bytes into the ring and wake the log task, or count a drop.
  *
- * Split out of os_log_write so the log task itself has a way to emit a line without going back
- * through the formatter. See os_log_emit_dropped for why that matters.
+ * Called by producers after formatting a complete line.
  *
  * @param[in] data    Finished line, line ending included.
  * @param[in] length  Number of bytes.
@@ -332,6 +334,7 @@ static void os_log_queue(const char *data, size_t length)
         /* Drop the whole line rather than half of it: a partial line would
          * corrupt the one already in the buffer and the one after it. */
         os_log_dropped++;
+        os_log_dropped_pending++;
     }
     else
     {
@@ -353,8 +356,10 @@ static void os_log_queue(const char *data, size_t length)
  * Deliberately does NOT call os_log_write: that path costs its own frame plus whatever vsnprintf
  * needs, on a stack sized for the output callback rather than the formatter - it overflowed the
  * log task and faulted exactly when the first drop happened. Hand-formatting keeps the worst-case
- * stack shallow and independent of libc. Only called with the ring empty, so the notice itself
- * cannot be the line that gets dropped.
+ * stack shallow and independent of libc. The consumer sends this notice directly to its output
+ * hook: a concurrent producer can fill the ring after the empty check, so enqueueing the notice
+ * could discard the very count it reports. The callback runs outside the critical section just
+ * as it does for ordinary ring chunks.
  *
  * @param[in] dropped  Number of lines lost while the buffer was full.
  * @return None.
@@ -372,7 +377,7 @@ static void os_log_emit_dropped(uint32_t dropped)
     length = os_log_append_u32(line, length, dropped, 0U);
     length = os_log_append_text(line, length, " log lines dropped ***\r\n");
 
-    os_log_queue(line, length);
+    os_log_output_cb((const uint8_t *)line, length);
 }
 
 /******************************************************************************************************/

@@ -322,3 +322,88 @@ package takes the same shared path and is due a re-run. The idle task calls
 `os_tickless_idle_process()` itself; the suite drives the same entry point
 directly, so a failure names the mechanism rather than the workload.
 ---
+
+
+### IRQ-independent counters and tickless synchronization
+
+`os_arch_delay_counter_hz_get()` reports the busy-wait counter frequency in Hz;
+`os_arch_delay_counter_get()` returns its low 32 bits. It must advance while
+interrupts are masked, including in an ISR. Cortex-M uses DWT when present;
+single-core RV32 uses `mcycle`. Every SMP port and Cortex-M ports without DWT must supply
+`os_arch_reference_clock_hz_cb()` and `os_arch_reference_clock_get_cb()` through
+the SoC: frequency in Hz and a coherent unsigned 64-bit monotonic reading in
+those units. The clock must be global across cores, continue in LIGHT sleep,
+and keep a stable ratio to the CPU clock during a window. The RP packages use
+the 1 MHz hardware TIMER. The default frequency is zero: any nonzero busy-wait
+then calls `os_arch_config_fault_trap()`, even with assertions disabled. This
+explicit unsupported-port failure replaces a SysTick-based wait that could
+hang when its tick ISR could not execute. The synthesized cycle estimate
+remains available for coarse diagnostics; it is not a busy-wait time source.
+
+On Cortex-M LIGHT sleep with an independent reference, the tickless adapter
+keeps SysTick on its original grid. Start/end CVR phase and the reference timer
+disambiguate actual missed boundaries; partial window durations are not added
+to the kernel independently. The reference and register sampling error must be
+less than half a tick period. An ordinary tick pending across entry/exit is
+credited once by its ISR. External tick selection bypasses all SysTick
+suppression and cycle-window accesses; the application's external-timer
+callbacks own suspension and accounting.
+
+In SMP builds the kernel excludes remote kernel operations from an outstanding
+suppressed interval. A remote lock entrant wakes core 0, releases the lock,
+and retries until core 0 announces elapsed time and closes the window. A tick
+read also observes this interlock. No kernel spinlock is held across sleep.
+The SoC IPI callback must be nonblocking and safe with the kernel lock held;
+the sleep must wake on that pending interrupt even while its handler is masked.
+Wake/clock-restore latency therefore bounds how long a remote kernel call can
+wait; measure it on the target, especially if replacing the sleep hooks.
+
+RV32 permanently reuses each hart's abandoned boot stack as its scheduler
+stack. Keep that backing storage alive for the entire kernel lifetime and size
+it for scheduler C call depth. The software-interrupt path switches there
+before publishing the outgoing task as migratable. FP and integer MVE both
+select the Cortex-M extended context capability; minimum stack budgets and
+bootstrap/save/restore code must use that capability consistently.
+Tickless pre/post-sleep and SoC callbacks inside an open SMP window must be
+bounded and nonblocking. They must never wait for work requiring a peer core
+to enter the kernel: that peer is waiting for reconciliation and window closure.
+The latency of remote kernel calls and kernel interrupts includes the owner's
+IPI wake, clock restoration and elapsed-tick announcement time.
+
+SoC descriptors which supply the LIGHT-sleep reference also set
+`OS_ARCH_TICKLESS_REFERENCE_CLOCK=1` through `AHURA_SOC_COMPILE_DEFINITIONS`.
+They implement `os_arch_tick_reference_clock_hz_cb()`: return the reference
+frequency for modes retaining the SysTick grid, or zero for clock-gated modes.
+This keeps SoC configuration out of architecture translation units and avoids
+adding reference accounting code to ports without that capability.
+
+SMP busy-waits always use that shared SoC counter, including when DWT or
+`mcycle` exists: tasks can migrate between samples, and CPU-local counters need
+not share an epoch. All three RP packages provide the shared 1 MHz TIMER.
+A generic SMP port without the callbacks explicitly rejects nonzero busy-waits
+through the same configuration-fault path. Busy-waits do not mask scheduling
+for their duration; their reference remains coherent if the caller migrates.
+
+### Coordinating shared-clock sleep
+
+Ports that change clocks shared by multiple processors can implement two optional
+SoC callbacks without changing the kernel's file layout:
+
+| Callback | Ordering and contract |
+|---|---|
+| `bool os_arch_soc_sleep_prepare_cb(void)` | Called by the time-base owner with its kernel interrupt mask held and no global lock, before remote kernel entry is closed. May request peer parking with a bounded wait. False declines this pass and must undo its own state; true guarantees a matching finish. Defaults to true. |
+| `void os_arch_soc_sleep_finish_cb(void)` | Called after the sleep, hardware restore, application post-sleep callback, tick announcement and reopening remote kernel entry. No global lock is held. Releases peers and restores any additional masks acquired by prepare. Also called if the final deadline was too near to sleep. Defaults to no work. |
+
+Deadlines are sampled after preparation so work a peer posted before acknowledging
+idle remains visible. Peer parking must not hold a kernel lock, and a parked peer
+must not execute application handlers against changing clocks. Masked pending
+interrupts must still cause a wake request; they must not be discarded. Cancellation
+requires a handshake that cannot confuse an old acknowledgement with a new request.
+`os_task_current_is_idle()` is available to SoC idle hooks and samples only this
+core's current task under its local mask, without the global lock.
+
+These callbacks supplement the existing architecture tick suppression callbacks;
+they do not replace the timer prepare/measure/restore contract. They also do not
+make shared-clock transitions safe for autonomous peripherals by themselves.
+Both application sleep hooks must remain bounded and nonblocking; on RP235x Arm
+DEEP, configurable interrupts on parked cores remain masked through those hooks.

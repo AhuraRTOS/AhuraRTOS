@@ -307,21 +307,35 @@ step 2. Swap one in, build, read the console, swap the next.
 
 ## Keeping the kernel up to date
 
-Updating is a replacement, never a merge. You never edited a kernel file, so
-there is nothing of yours inside `AhuraRTOS/` to preserve - your three files
-(`os_config.h`, `os_cb.c`, `os_main.c`) live in your own tree and are not
-touched by any of this.
+Updating replaces the whole installed `AhuraRTOS/` tree. Save any local changes
+in that directory before updating. Application files such as `os_config.h`,
+`os_cb.c` and `os_main.c` stay in the application tree and are preserved unless
+you explicitly request forced template replacement.
 
-**If you copied it in**, delete the directory and copy the new one over:
+**For an installer-managed copy**, run the installer from a separate checkout:
 
 ```bash
-cd AhuraRTOS-checkout && git pull
-rm -rf my_project/AhuraRTOS/kernel
-cp -r kernel my_project/AhuraRTOS/kernel
+python AhuraRTOS-checkout/tools/install_stm32_offline.py --project my_project --update --dry-run
+python AhuraRTOS-checkout/tools/install_stm32_offline.py --project my_project --update
 ```
 
-Deleting first rather than copying over the top matters: a file removed upstream
-would otherwise linger and keep compiling.
+Use `install_rpi_offline.py` for Pico SDK projects. The source checkout must be
+separate from, and must not contain, `my_project/AhuraRTOS`. Overlapping paths
+are rejected before files change. An online installer's `--update --ref REF`
+downloads the requested revision; an explicit `--source DIR` selects a local
+checkout instead.
+
+The installer stages every replacement before changing originals. If a commit
+step fails, it restores the original files, including their encoding and line
+endings. If filesystem errors also prevent rollback, it retains the transaction
+directory and reports its location for recovery. This handles caught failures;
+it is not a power-loss recovery journal.
+
+**For a manually integrated copy**, stage a complete new checkout beside the old
+one and keep the old directory as a backup until the replacement builds. Replace
+the entire RTOS tree together so the kernel, architecture, SoC and headers agree.
+Copying only `kernel/` can mix incompatible versions, and overlaying directories
+can leave removed source files behind.
 
 **If you tracked it as a submodule**, pull the pointer forward and commit it:
 

@@ -87,7 +87,7 @@ void os_delay_ms(uint32_t milliseconds)
 /**
  * @brief Busy-wait for the requested microseconds (precise, does not yield).
  *
- * Uses the DWT cycle counter; intended for short, precise waits. Prefer
+ * Uses an IRQ-independent hardware counter; intended for short, precise waits. Prefer
  * os_delay_ms for anything at or above the tick period.
  *
  * @param[in] microseconds  Delay duration in microseconds.
@@ -95,11 +95,14 @@ void os_delay_ms(uint32_t milliseconds)
  */
 void os_delay_us(uint32_t microseconds)
 {
-    uint32_t clock_hz = os_arch_clock_hz_get();
+    uint32_t clock_hz = os_arch_delay_counter_hz_get();
 
     /* No clock reading means no way to measure a microsecond, so this cannot wait at all. The
      * platform's clock callback is not answering - see doc/porting.md "Platform clock". */
-    OS_ASSERT((microseconds == 0U) || (clock_hz != 0U));
+    if ((microseconds != 0U) && (clock_hz == 0U))
+    {
+        os_arch_config_fault_trap();
+    }
 
     if ((microseconds != 0U) && (clock_hz != 0U))
     {
@@ -184,11 +187,14 @@ static void os_delay_ticks(uint32_t ticks)
         else
         {
             /* Pre-scheduler or interrupt context: precise busy-wait. */
-            uint32_t clock_hz = os_arch_clock_hz_get();
+            uint32_t clock_hz = os_arch_delay_counter_hz_get();
 
             /* Same as os_delay_us: without a clock reading there is no way to time the wait, so
              * this delays not at all. The platform's clock callback is not answering. */
-            OS_ASSERT(clock_hz != 0U);
+            if (clock_hz == 0U)
+            {
+                os_arch_config_fault_trap();
+            }
 
             if (clock_hz != 0U)
             {
@@ -203,7 +209,7 @@ static void os_delay_ticks(uint32_t ticks)
 
 /******************************************************************************************************/
 /**
- * @brief Busy wait for a cycle-count duration using the DWT cycle counter.
+ * @brief Busy wait for a cycle-count duration using the IRQ-independent architecture counter.
  *
  * @param[in] cycle_count  Number of core cycles to wait.
  * @return None.
@@ -215,9 +221,9 @@ static void os_delay_cycle_wait(uint64_t cycle_count)
     {
         uint32_t chunk = (cycle_count > (uint64_t)OS_DELAY_MAX_CYCLE_CHUNK) ?
                          OS_DELAY_MAX_CYCLE_CHUNK : (uint32_t)cycle_count;
-        uint32_t start = os_arch_cycle_count_get();
+        uint32_t start = os_arch_delay_counter_get();
 
-        while ((uint32_t)(os_arch_cycle_count_get() - start) < chunk)
+        while ((uint32_t)(os_arch_delay_counter_get() - start) < chunk)
         {
         }
 

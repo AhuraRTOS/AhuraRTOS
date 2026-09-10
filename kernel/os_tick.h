@@ -125,6 +125,31 @@ void os_tickless_post_sleep_cb(void);
  */
 void os_arch_soc_sleep_cb(void);
 
+/******************************************************************************************************/
+/**
+ * @brief Prepare a time-base owner's tickless pass, optionally coordinating peer cores.
+ *
+ * Called with the local kernel interrupt mask held, with no global kernel lock,
+ * before remote kernel entry is closed and before deadlines are sampled. A port
+ * may park idle peers here with a bounded wait. Return false to decline this
+ * pass; a declining callback must undo everything it acquired before returning.
+ * A true return is always paired with os_arch_soc_sleep_finish_cb(), including
+ * when the final deadline is too near to sleep. The default returns true.
+ * Callbacks must not block on kernel services or wait with a kernel lock held.
+ */
+bool os_arch_soc_sleep_prepare_cb(void);
+
+/******************************************************************************************************/
+/**
+ * @brief Release a successful preparation after the entire tickless pass ends.
+ *
+ * Called without the global lock, after the clock restore, application post-sleep
+ * hook, elapsed-time announcement and reopening remote kernel entry. The local
+ * kernel mask remains held. Restore any additional mask/state acquired by prepare
+ * and release parked peers here. The default does nothing.
+ */
+void os_arch_soc_sleep_finish_cb(void);
+
 #endif /* OS_CONFIG_TICKLESS_ENABLE */
 
 #ifdef __cplusplus

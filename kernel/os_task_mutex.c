@@ -32,7 +32,6 @@
 
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
 static void os_task_mutex_effective_recompute(os_task_tcb_t *owner);
-static void os_task_mutex_chain_recompute(os_task_tcb_t *task);
 #endif
 
 /*
@@ -61,6 +60,10 @@ void os_task_mutex_owner_link(os_list_node_t *owner_node)
     if ((current != NULL) && (current->id != 0U))
     {
         os_list_push_back(&current->owned_mutexes, owner_node);
+
+        /* Unlock wakes one waiter without reserving ownership. A different core can acquire
+         * first, while other waiters remain queued; they immediately boost this new owner. */
+        os_task_mutex_priority_recompute(current);
     }
 }
 
@@ -97,7 +100,7 @@ void os_task_mutex_priority_inherit(uint32_t owner_task_id)
              * correct and the same rule the release paths use. */
             if (owner->blocked_on_mutex != NULL)
             {
-                os_task_mutex_chain_recompute(os_task_find_by_id(owner->blocked_on_mutex->owner_id));
+                os_task_mutex_priority_recompute(os_task_find_by_id(owner->blocked_on_mutex->owner_id));
             }
         }
     }
@@ -116,18 +119,23 @@ void os_task_mutex_priority_inherit(uint32_t owner_task_id)
  */
 void os_task_mutex_waiter_depart_tcb(os_task_tcb_t *tcb)
 {
-    uint32_t owner_id = tcb->pi_owner_id;
+    /* A queued mutex can change owners without waking every waiter. Its current owner owes
+     * the boost; the captured id is only a fallback before a mutex wait edge was published. */
+    uint32_t owner_id = (tcb->blocked_on_mutex != NULL) ? tcb->blocked_on_mutex->owner_id
+                                                     : tcb->pi_owner_id;
+
+    /* No queued wait remains. Clear the forward edge before walking any owners, so a timeout,
+     * signal or forced wake cannot leave a runnable task appearing blocked to another walk. */
+    tcb->pi_owner_id      = 0U;
+    tcb->blocked_on_mutex = NULL;
+    tcb->blocked_forever  = false;
 
     if (owner_id != 0U)
     {
-        /* Cleared first: this task owes the owner nothing from here on, and clearing before the
-         * lookup means an owner that has since been deleted still ends the debt. */
-        tcb->pi_owner_id = 0U;
-
         /* Chain, not a single step: this task may have been the reason a whole line of owners was
          * lifted, and dropping only the first of them leaves the rest boosted for nothing - which
          * inverts the priorities the other way and is just as wrong. */
-        os_task_mutex_chain_recompute(os_task_find_by_id(owner_id));
+        os_task_mutex_priority_recompute(os_task_find_by_id(owner_id));
     }
 }
 
@@ -173,15 +181,15 @@ void os_task_mutex_owner_unlink_and_reprioritize(uint32_t owner_id, os_list_node
 
         /* Chain, for the same reason as in os_task_mutex_waiter_depart_tcb: releasing a mutex can
          * lower this owner, and anyone waiting behind IT was only boosted on its account. */
-        os_task_mutex_chain_recompute(owner);
+        os_task_mutex_priority_recompute(owner);
     }
 }
 /******************************************************************************************************/
 /**
  * @brief Record the mutex the calling task is about to block on, and whether that wait ever ends.
- *        Cleared by os_task_wait_end().
+ *        Cleared when the waiter leaves its queue, with os_task_wait_end() as a backstop.
  *
- * In every build, not only a debug one: this edge is what os_task_mutex_chain_recompute follows to
+ * In every build, not only a debug one: this edge is what os_task_mutex_priority_recompute follows to
  * find the task a boost actually has to reach.
  *
  * @param[in] mutex    Mutex about to be waited on, NULL to clear.
@@ -198,6 +206,53 @@ void os_task_mutex_blocked_on_set(const os_mutex_t *mutex, bool forever)
         current->blocked_forever  = forever;
     }
 }
+
+/******************************************************************************************************/
+/**
+ * @brief Recompute a task's inherited priority and then everyone it is transitively waiting behind.
+ *
+ * A boost is only worth what it lets the boosted task DO, and a blocked task can do nothing with
+ * one - so raising the immediate owner and stopping there leaves a three-deep inversion untouched.
+ * The walk follows blocked_on_mutex until it reaches a task that is actually runnable.
+ *
+ * Each step is the same max() every other path uses, which makes it correct in BOTH directions: a
+ * boost arriving raises each link, a boost released lowers it by the same rule, and nothing here
+ * knows which is happening.
+ *
+ * OS_TASK_DEADLOCK_MAX_DEPTH is load-bearing, not decorative: a cycle among already-deadlocked
+ * tasks would otherwise be walked forever inside a critical section. See doc/api.md, "Mutexes and
+ * priority inheritance".
+ *
+ * Caller holds a critical section.
+ *
+ * @param[in,out] task  Where to start; NULL is a no-op.
+ * @return None.
+ */
+void os_task_mutex_priority_recompute(os_task_tcb_t *task)
+{
+    uint32_t depth = 0U;
+
+    while ((task != NULL) && (depth < OS_TASK_DEADLOCK_MAX_DEPTH))
+    {
+        const os_mutex_t *waiting_on;
+
+        os_task_mutex_effective_recompute(task);
+
+        /* Runnable, or waiting on something that is not a mutex: the chain ends here. */
+        waiting_on = task->blocked_on_mutex;
+        if (waiting_on == NULL)
+        {
+            break;
+        }
+
+        /* One link further out. An owner that cannot be resolved - it was deleted while holding the
+         * mutex - ends the walk, exactly as it ends the deadlock walk, and for the same reason:
+         * there is nobody left to boost. */
+        task = os_task_find_by_id(waiting_on->owner_id);
+        depth++;
+    }
+}
+
 
 /*
  * ***********************************************************************************************************
@@ -241,51 +296,6 @@ static void os_task_mutex_effective_recompute(os_task_tcb_t *owner)
     os_task_effective_priority_set(owner, new_priority);
 }
 
-/******************************************************************************************************/
-/**
- * @brief Recompute a task's inherited priority and then everyone it is transitively waiting behind.
- *
- * A boost is only worth what it lets the boosted task DO, and a blocked task can do nothing with
- * one - so raising the immediate owner and stopping there leaves a three-deep inversion untouched.
- * The walk follows blocked_on_mutex until it reaches a task that is actually runnable.
- *
- * Each step is the same max() every other path uses, which makes it correct in BOTH directions: a
- * boost arriving raises each link, a boost released lowers it by the same rule, and nothing here
- * knows which is happening.
- *
- * OS_TASK_DEADLOCK_MAX_DEPTH is load-bearing, not decorative: a cycle among already-deadlocked
- * tasks would otherwise be walked forever inside a critical section. See doc/api.md, "Mutexes and
- * priority inheritance".
- *
- * Caller holds a critical section.
- *
- * @param[in,out] task  Where to start; NULL is a no-op.
- * @return None.
- */
-static void os_task_mutex_chain_recompute(os_task_tcb_t *task)
-{
-    uint32_t depth = 0U;
-
-    while ((task != NULL) && (depth < OS_TASK_DEADLOCK_MAX_DEPTH))
-    {
-        const os_mutex_t *waiting_on;
-
-        os_task_mutex_effective_recompute(task);
-
-        /* Runnable, or waiting on something that is not a mutex: the chain ends here. */
-        waiting_on = task->blocked_on_mutex;
-        if (waiting_on == NULL)
-        {
-            break;
-        }
-
-        /* One link further out. An owner that cannot be resolved - it was deleted while holding the
-         * mutex - ends the walk, exactly as it ends the deadlock walk, and for the same reason:
-         * there is nobody left to boost. */
-        task = os_task_find_by_id(waiting_on->owner_id);
-        depth++;
-    }
-}
 
 #endif /* OS_CONFIG_MUTEX_ENABLE */
 

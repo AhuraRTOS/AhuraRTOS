@@ -91,7 +91,9 @@
 /** The normal 1-tick SysTick reload, cached once by os_arch_tick_init(). Read by the tickless
  *  block far below, which is also where the rest of that state lives - next to the only code that
  *  touches it, and compiled out entirely when OS_CONFIG_TICKLESS_ENABLE is 0. */
+#if (OS_CONFIG_TICK_SOURCE == OS_CONFIG_TICK_SOURCE_SYSTICK)
 static uint32_t os_arch_tick_reload_cycles      = 0U;
+#endif
 
 /* Whether DWT CYCCNT is present and actually counting on this device; decided
  * once in os_arch_init(). False routes os_arch_cycle_count_get() to the
@@ -143,7 +145,7 @@ __asm(
 OS_ARCH_STRINGIFY(OS_CONFIG_ARCH_PENDSV_HANDLER) ":\n"
 "    mrs     r0, psp\n"
 "    cbz     r0, 1f\n"                     /* PSP == 0: no task has run yet, go start the first */
-#if defined(__ARM_FP)
+#if (OS_ARCH_EXTENDED_CONTEXT == 1)
 "    tst     lr, #0x10\n"
 "    it      eq\n"
 "    vstmdbeq r0!, {s16-s31}\n"            /* task used the FPU: save callee-saved FP regs */
@@ -191,7 +193,7 @@ OS_ARCH_STRINGIFY(OS_CONFIG_ARCH_PENDSV_HANDLER) ":\n"
 "    clrex\n"                              /* drop any LDREX reservation the outgoing task left */
 "    ldmia   r0!, {r2, r4-r11, lr}\n"
 "    msr     psplim, r2\n"                 /* restore the stack limit before PSP */
-#if defined(__ARM_FP)
+#if (OS_ARCH_EXTENDED_CONTEXT == 1)
 "    tst     lr, #0x10\n"
 "    it      eq\n"
 "    vldmiaeq r0!, {s16-s31}\n"
@@ -438,7 +440,7 @@ OS_WEAK uint32_t os_arch_handler_stack_limit_cb(uint32_t core_id)
  */
 void os_arch_start_first_task(void)
 {
-#if defined(__ARM_FP)
+#if (OS_ARCH_EXTENDED_CONTEXT == 1)
     uint32_t control;
 
     /* Startup/HAL code (hard-float ABI) may have used the FPU: clear FPCA so
@@ -589,7 +591,10 @@ uint32_t os_arch_cycle_count_get(void)
  * is one: it is not bounded by SysTick's 24 bits and it survives a sleep that gates SysTick's clock.
 */
 
-#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U) && \
+    (OS_CONFIG_TICK_SOURCE == OS_CONFIG_TICK_SOURCE_SYSTICK)
+
+#include "os_arch_tick_math.h"
 
 /** The effective (possibly 24-bit-capped) window this port armed for itself, in cycles: the reload
  *  actually programmed for (planned - 1) ticks plus the remainder of the tick already running. */
@@ -669,60 +674,50 @@ static uint32_t os_arch_tickless_self_max_ticks(void)
  */
 static uint32_t os_arch_tickless_self_open(uint32_t planned_ticks)
 {
-    uint32_t clock_hz;
-    uint32_t remaining_cycles;
-    uint64_t max_window_ticks;
-    uint64_t suppressed_cycles64;
-    uint32_t armed = 0U;   /* nothing armed until every check below passes */
+    uint64_t max_window_ticks = os_arch_max_window_ticks_get();
+    uint32_t armed = 0U;
 
-    clock_hz         = os_arch_clock_hz_get();
-    max_window_ticks = os_arch_max_window_ticks_get();
-
-    /* No usable clock, or the normal tick was never actually set up (os_arch_tick_init bailed at
-     * boot): nothing safe to reprogram. The max_window_ticks > 1 test is defensive only -
-     * unreachable given the reload range os_arch_tick_init enforces. */
-    if ((clock_hz != 0U) && (os_arch_tick_reload_cycles != 0U) && (max_window_ticks > 1U))
+    if ((os_arch_tick_reload_cycles != 0U) && (max_window_ticks > 1U))
     {
-        /* Cap the TICK COUNT first, then re-derive the cycle budget from the capped count:
-         * (planned_ticks - 1) * reload_cycles can vastly exceed uint32_t range for realistic tick
-         * counts, so capping after multiplying would overflow. One tick of headroom is left
-         * because the remainder below is added on top and can be almost a whole reload by
-         * itself. */
-        if ((uint64_t)(planned_ticks - 1U) > (max_window_ticks - 1U))
-        {
-            planned_ticks = (uint32_t)max_window_ticks;
-        }
-
-        /* Whatever is left of the tick ALREADY RUNNING, kept rather than discarded.
-         *
-         * The deadline the kernel asked for is planned_ticks tick BOUNDARIES away, and the first of
-         * them is this remainder away - not a whole period. Zeroing CVR here, as this once did,
-         * silently shortens every window to planned_ticks - 1 periods while the close still reports
-         * planned_ticks, so the clock gains a tick per window. A single sleep looks right; twenty
-         * of them are twenty ticks fast. */
+        uint32_t saved_csr;
+        uint32_t remaining_cycles;
+        uint64_t suppressed_cycles;
+        os_arch_sleep_mask_state = os_arch_kernel_mask_save();
+        saved_csr = OS_ARCH_REG_SYST_CSR;
+        OS_ARCH_REG_SYST_CSR = 0U;
         remaining_cycles = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
 
-        suppressed_cycles64 = (uint64_t)remaining_cycles +
-                              ((uint64_t)(planned_ticks - 1U) * (uint64_t)os_arch_tick_reload_cycles);
-
-        /* Committed to reprogramming SysTick: hold the kernel interrupt mask until
-         * os_arch_tickless_self_close() restores normal cadence and os_arch_sleep_finish() releases
-         * it, so a real tick can never fire against a half-reprogrammed register set. */
-        os_arch_sleep_mask_state         = os_arch_kernel_mask_save();
-        os_arch_sleep_mask_held          = true;
-        os_arch_suppressed_reload_cycles = (uint32_t)suppressed_cycles64;
-        os_arch_suppressed_head_cycles   = remaining_cycles;
-
-        OS_ARCH_REG_SYST_CSR = 0U;
-        OS_ARCH_REG_SYST_RVR = os_arch_suppressed_reload_cycles - 1UL;
-        OS_ARCH_REG_SYST_CVR = 0U;
-        OS_ARCH_REG_SYST_CSR = OS_ARCH_SYST_CSR_CLKSOURCE_MSK |
-                               OS_ARCH_SYST_CSR_TICKINT_MSK |
-                               OS_ARCH_SYST_CSR_ENABLE_MSK;
-
-        armed = planned_ticks;
+        /* A boundary racing the stop is still an ordinary pending tick.
+         * Leave it intact and decline this window instead of reinterpreting
+         * it as the end of a newly programmed long interval. */
+        if ((OS_ARCH_REG_ICSR & OS_ARCH_ICSR_PENDSTSET_MSK) != 0U)
+        {
+            OS_ARCH_REG_SYST_CSR = saved_csr;
+            os_arch_kernel_mask_restore(os_arch_sleep_mask_state);
+        }
+        else
+        {
+            if ((uint64_t)planned_ticks > max_window_ticks)
+            {
+                planned_ticks = (uint32_t)max_window_ticks;
+            }
+            if (remaining_cycles == 0U)
+            {
+                remaining_cycles = os_arch_tick_reload_cycles;
+            }
+            suppressed_cycles = (uint64_t)remaining_cycles +
+                ((uint64_t)(planned_ticks - 1U) * (uint64_t)os_arch_tick_reload_cycles);
+            os_arch_sleep_mask_held = true;
+            os_arch_suppressed_reload_cycles = (uint32_t)suppressed_cycles;
+            os_arch_suppressed_head_cycles = remaining_cycles;
+            OS_ARCH_REG_SYST_RVR = os_arch_suppressed_reload_cycles - 1U;
+            OS_ARCH_REG_SYST_CVR = 0U;
+            OS_ARCH_REG_SYST_CSR = OS_ARCH_SYST_CSR_CLKSOURCE_MSK |
+                                   OS_ARCH_SYST_CSR_TICKINT_MSK |
+                                   OS_ARCH_SYST_CSR_ENABLE_MSK;
+            armed = planned_ticks;
+        }
     }
-
     return armed;
 }
 
@@ -741,55 +736,55 @@ static uint32_t os_arch_tickless_self_open(uint32_t planned_ticks)
  */
 static uint32_t os_arch_tickless_self_close(uint32_t planned_ticks)
 {
-    uint32_t csr;
+    uint32_t csr = OS_ARCH_REG_SYST_CSR;
     uint32_t cvr;
     uint32_t elapsed_cycles;
     uint32_t elapsed_ticks = 0U;
+    uint32_t remaining_cycles;
 
-    /* Single CSR read: it clears COUNTFLAG as a side effect, so it must be sampled once. */
-    csr = OS_ARCH_REG_SYST_CSR;
+    /* Freeze first; the pending bit remains latched if the final boundary
+     * arrived between reading CSR and stopping the counter. */
+    OS_ARCH_REG_SYST_CSR = 0U;
+    cvr = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
+    /* Zero without COUNTFLAG/pending is the initial not-yet-reloaded state.
+     * A completed window's zero is handled separately by the pending branch. */
+    elapsed_cycles = (cvr == 0U) ? 0U : (os_arch_suppressed_reload_cycles - 1U) - cvr;
 
-    if ((csr & OS_ARCH_SYST_CSR_COUNTFLAG_MSK) != 0U)
+    if (((csr & OS_ARCH_SYST_CSR_COUNTFLAG_MSK) != 0U) ||
+        ((OS_ARCH_REG_ICSR & OS_ARCH_ICSR_PENDSTSET_MSK) != 0U))
     {
-        /* Full window elapsed: a real SysTick exception is already pending in the NVIC (latched the
-         * instant the down-counter hit zero, independent of the interrupt mask still held here) -
-         * it supplies the final +1 once that mask is released, through the unmodified
-         * os_tick_handler() ISR. */
-        elapsed_ticks = planned_ticks - 1U;
+        elapsed_ticks = planned_ticks - 1U; /* pending ISR supplies the final tick */
+        /* At the terminal zero there has been no post-boundary time yet. */
+        uint32_t late_cycles = (cvr == 0U) ? 0U : elapsed_cycles;
+        remaining_cycles = os_arch_tick_reload_cycles -
+                           (late_cycles % os_arch_tick_reload_cycles);
     }
     else
     {
-        /* Woke early: reconstruct how far CVR counted down from the reload actually programmed for
-         * this window. */
-        cvr            = OS_ARCH_REG_SYST_CVR & OS_ARCH_SYST_RVR_RELOAD_MSK;
-        elapsed_cycles = (os_arch_suppressed_reload_cycles - 1U) - cvr;
-
-        /* Boundaries, not a plain cycles-to-ticks conversion. The window did not begin on a tick
-         * boundary: the first one falls after os_arch_suppressed_head_cycles, and whole periods
-         * follow it. Dividing the raw elapsed cycles instead would report a tick before the first
-         * boundary was ever reached. */
-        if ((elapsed_cycles >= os_arch_suppressed_head_cycles) && (os_arch_tick_reload_cycles != 0U))
+        if (elapsed_cycles >= os_arch_suppressed_head_cycles)
         {
             elapsed_ticks = 1U + ((elapsed_cycles - os_arch_suppressed_head_cycles) /
                                   os_arch_tick_reload_cycles);
         }
-
-        if (elapsed_ticks > (planned_ticks - 1U))
-        {
-            elapsed_ticks = planned_ticks - 1U;
-        }
+        remaining_cycles = os_arch_tick_remaining(elapsed_cycles,
+                                                  os_arch_suppressed_head_cycles,
+                                                  os_arch_tick_reload_cycles);
     }
 
-    /* Restore SysTick to its normal single-tick cadence (identical values os_arch_tick_init
-     * programs). Writing CVR clears COUNTFLAG and forces an immediate reload from the now-normal
-     * RVR on the next clock; it does not affect an already-latched pending exception in the NVIC,
-     * which is exactly the point of the COUNTFLAG branch above. */
-    OS_ARCH_REG_SYST_CSR = 0U;
-    OS_ARCH_REG_SYST_RVR = os_arch_tick_reload_cycles - 1UL;
+    /* Only the first interval is partial. With the CPU clock as SysTick's
+     * source, the DSB gives the reload write/enable time to reach the timer
+     * before replacing LOAD for subsequent full periods. LOAD zero is avoided. */
+    if (remaining_cycles < 2U)
+    {
+        remaining_cycles = 2U;
+    }
+    OS_ARCH_REG_SYST_RVR = remaining_cycles - 1U;
     OS_ARCH_REG_SYST_CVR = 0U;
     OS_ARCH_REG_SYST_CSR = OS_ARCH_SYST_CSR_CLKSOURCE_MSK |
                            OS_ARCH_SYST_CSR_TICKINT_MSK |
                            OS_ARCH_SYST_CSR_ENABLE_MSK;
+    OS_ARCH_DSB();
+    OS_ARCH_REG_SYST_RVR = os_arch_tick_reload_cycles - 1U;
 
     return elapsed_ticks;
 }
@@ -923,4 +918,34 @@ static void os_arch_task_exit_trap(void)
     {
         __asm volatile("bkpt #0");
     }
+}
+
+
+uint32_t os_arch_delay_counter_hz_get(void)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    /* Tasks may migrate between reads; a per-core DWT epoch is not shared. */
+    return os_arch_reference_clock_hz_cb();
+#else
+    return os_arch_dwt_available ? os_arch_clock_hz_get() : os_arch_reference_clock_hz_cb();
+#endif
+}
+
+uint32_t os_arch_delay_counter_get(void)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    return (uint32_t)os_arch_reference_clock_get_cb();
+#else
+    return os_arch_dwt_available ? OS_ARCH_REG_DWT_CYCCNT : (uint32_t)os_arch_reference_clock_get_cb();
+#endif
+}
+
+OS_WEAK uint32_t os_arch_reference_clock_hz_cb(void)
+{
+    return 0U;
+}
+
+OS_WEAK uint64_t os_arch_reference_clock_get_cb(void)
+{
+    return 0ULL;
 }

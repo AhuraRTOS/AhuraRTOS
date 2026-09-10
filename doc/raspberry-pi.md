@@ -770,3 +770,47 @@ covers the vendor-independent half.
 Prove the integration before writing anything on top of it:
 **[Run the self-test suite](self-test.md)**. Set `OS_CONFIG_TEST_ENABLE` to `1`
 in `os_config.h`, rebuild, and read the console.
+
+### Coordinated Pico 2 Arm DEEP sleep
+
+`raspberrypi/rp235x_arm` supports `OS_CONFIG_TICKLESS_ENABLE=1U` with
+`SOC_CONFIG_SLEEP_MODE=OS_CONFIG_SLEEP_MODE_DEEP` and one or two cores.
+With two cores, core 1 cooperates only from its idle task. It saves its interrupt
+mask, SysTick control and sleep control, then acknowledges a numbered request.
+Core 0 waits at most 100 microseconds for that acknowledgement, without a kernel
+lock. A pending interrupt on a parked peer rings core 0's actual IPI; the peer
+waits until shared clocks and kernel timekeeping have been restored before
+resuming its handlers. Doorbell and FIFO scheduling transports are both supported.
+
+DEEP is an idle preference. A busy peer or a peripheral veto keeps tickless LIGHT
+sleep with normal clocks; pending local work may decline the pass. The PLL-off
+path requires the normal locked PLL_SYS/XOSC clock tree. It preserves PLL power
+state, dividers and sleep control, waits for restored clock selection, and leaves
+the crystal running. It does not enter the deepest POWMAN power-off modes.
+
+The port vetoes clock shutdown while DMA is busy, PIO/PWM is enabled, relevant
+serial/HSTX activity is active, or other enabled clock slices depend directly on
+PLL_SYS. It also vetoes shutdown while the USB controller is enabled: retaining
+the USB clock alone does not satisfy the RP2350-E12 system-clock requirement.
+See the [RP2350 datasheet](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf).
+Interrupt-driven UART receive and externally clocked serial slave operation keep
+normal clocks. The port does not stop application peripherals to manufacture
+eligibility.
+
+For external activity registers cannot identify, such as polled asynchronous UART
+receive, the board may define `bool soc_deep_sleep_allowed_cb(void)` and return
+false while normal clocks are required. Its default is true. This optional SoC
+hook runs with configurable interrupts masked on participating cores and no
+kernel lock; it must only inspect state, without waits or kernel API calls.
+Ordinary pre/post-sleep hooks still handle board preparation and restoration.
+
+The `OS_CONFIG_TEST_ENABLE=1U` image retains `soc_sleep_deep_entries` for debugger
+inspection. It increments when PLL_SYS is actually powered down; LIGHT fallbacks
+do not increment it. Board acceptance should check this count increases with both
+cores idle, that a busy peer/peripheral leaves it unchanged, and that a core-1-only
+interrupt promptly wakes the system without losing its handler or data. Repeat
+sleep/wake cycles and compare elapsed time against an external reference, checking
+both cores remain alive and measuring power. Compiler and deterministic protocol
+tests do not substitute for these hardware checks.
+
+RP2040 and RP235x RISC-V DEEP support are unchanged by this implementation.

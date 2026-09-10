@@ -155,7 +155,9 @@ const uint32_t soc_rp2040_anchor = 0U;
  * expensive to find. A refused build naming the settings that disagree costs nothing to read.
 */
 
-#if (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
+#if !defined(SOC_CONFIG_SLEEP_MODE)
+#error "soc_config.h is incomplete: SOC_CONFIG_SLEEP_MODE is required when OS_CONFIG_TICKLESS_ENABLE is 1."
+#elif (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
     (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_DEEP)
 #error "SOC_CONFIG_SLEEP_MODE must be OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP."
 #endif

@@ -101,6 +101,20 @@
  */
 __IO uint32_t os_arch_isr_nesting[OS_CONFIG_CORE_COUNT];
 
+/* Each hart permanently lends its boot stack to the scheduler. Interrupts stay masked
+ * throughout this handoff; no scheduler C frame may remain on a published task stack. */
+uint32_t *os_arch_scheduler_stack_top[OS_CONFIG_CORE_COUNT];
+
+uint32_t *os_arch_scheduler_stack_get(void)
+{
+    return os_arch_scheduler_stack_top[os_arch_core_id_get()];
+}
+
+void os_arch_scheduler_stack_set(uint32_t *stack)
+{
+    os_arch_scheduler_stack_top[os_arch_core_id_get()] = stack;
+}
+
 /*
  * ***********************************************************************************************************
  * Context switch
@@ -163,7 +177,11 @@ OS_ARCH_STRINGIFY(OS_CONFIG_ARCH_SWI_HANDLER) ":\n"
  * until the chip's own register is written, so skipping this re-enters the trap forever. */
 "    call    os_arch_swi_clear_cb\n"
 
-"    mv      a0, sp\n"                     /* a0 = outgoing task's stack pointer */
+/* s0 survives the helper call and preserves the saved task frame while sp is changed. */
+"    mv      s0, sp\n"
+"    call    os_arch_scheduler_stack_get\n"
+"    mv      sp, a0\n"
+"    mv      a0, s0\n"                     /* outgoing frame; C now uses the hart stack */
 "    call    os_task_stack_save_current\n"
 "    call    os_task_stack_select_next\n"  /* a0 = incoming task's stack pointer */
 "    mv      sp, a0\n"
@@ -233,6 +251,8 @@ __asm(
 ".global os_arch_start_first_task\n"
 ".type   os_arch_start_first_task, %function\n"
 "os_arch_start_first_task:\n"
+"    mv      a0, sp\n"
+"    call    os_arch_scheduler_stack_set\n"
 "    call    os_task_stack_select_next\n"  /* a0 = first task's stack pointer; never NULL */
 "    mv      sp, a0\n"
 "    j       os_arch_context_restore_asm\n"".popsection\n"
@@ -465,3 +485,32 @@ uint32_t os_arch_cycle_count_get(void)
 */
 
 #include "os_arch_atomic.c"
+
+uint32_t os_arch_delay_counter_hz_get(void)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    return os_arch_reference_clock_hz_cb();
+#else
+    return os_arch_clock_hz_get();
+#endif
+}
+
+uint32_t os_arch_delay_counter_get(void)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    /* mcycle is hart-local; migration cannot use it as a common epoch. */
+    return (uint32_t)os_arch_reference_clock_get_cb();
+#else
+    return os_arch_cycle_count_get();
+#endif
+}
+
+OS_WEAK uint32_t os_arch_reference_clock_hz_cb(void)
+{
+    return 0U;
+}
+
+OS_WEAK uint64_t os_arch_reference_clock_get_cb(void)
+{
+    return 0ULL;
+}

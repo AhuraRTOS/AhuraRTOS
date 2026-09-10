@@ -187,6 +187,38 @@ OS_STATIC_ASSERT(((uint32_t)OS_TASK_PRIO_1_LOWEST == ((uint32_t)OS_TASK_PRIO_IDL
 OS_STATIC_ASSERT((uint32_t)OS_TASK_PRIO_MAX < 32U,
                "OS_TASK_PRIO_MAX must fit the 32-bit ready bitmap");
 
+/* Priority names are enum constants, so these checks must run after the enum rather than in #if. */
+#if (OS_CONFIG_TEST_ENABLE == 0U)
+OS_STATIC_ASSERT(((uint32_t)OS_CONFIG_MAIN_TASK_PRIORITY >= (uint32_t)OS_TASK_PRIO_1_LOWEST) &&
+                 ((uint32_t)OS_CONFIG_MAIN_TASK_PRIORITY <= (uint32_t)OS_TASK_PRIO_30_HIGHEST),
+                 "OS_CONFIG_MAIN_TASK_PRIORITY must be a user priority (1..30)");
+OS_STATIC_ASSERT((OS_CONFIG_MAIN_TASK_STACK_SIZE >= OS_CONFIG_MIN_STACK_SIZE) &&
+                 ((OS_CONFIG_MAIN_TASK_STACK_SIZE % OS_ARCH_STACK_ALIGNMENT_BYTES) == 0U),
+                 "OS_CONFIG_MAIN_TASK_STACK_SIZE must meet the minimum and port alignment");
+#else
+OS_STATIC_ASSERT(((uint32_t)OS_CONFIG_TEST_PRIORITY >= (uint32_t)OS_TASK_PRIO_1_LOWEST) &&
+                 ((uint32_t)OS_CONFIG_TEST_PRIORITY <= (uint32_t)OS_TASK_PRIO_30_HIGHEST),
+                 "OS_CONFIG_TEST_PRIORITY must be a user priority (1..30)");
+OS_STATIC_ASSERT((OS_CONFIG_TEST_STACK_SIZE >= OS_CONFIG_MIN_STACK_SIZE) &&
+                 ((OS_CONFIG_TEST_STACK_SIZE % OS_ARCH_STACK_ALIGNMENT_BYTES) == 0U),
+                 "OS_CONFIG_TEST_STACK_SIZE must meet the minimum and port alignment");
+#endif
+
+#if (OS_CONFIG_TIMER_ENABLE == 1U)
+OS_STATIC_ASSERT((OS_CONFIG_TIMER_STACK_SIZE >= OS_CONFIG_MIN_STACK_SIZE) &&
+                 ((OS_CONFIG_TIMER_STACK_SIZE % OS_ARCH_STACK_ALIGNMENT_BYTES) == 0U),
+                 "OS_CONFIG_TIMER_STACK_SIZE must meet the minimum and port alignment");
+#endif
+
+#if (OS_CONFIG_LOG_ENABLE == 1U)
+OS_STATIC_ASSERT(((uint32_t)OS_CONFIG_LOG_TASK_PRIORITY >= (uint32_t)OS_TASK_PRIO_1_LOWEST) &&
+                 ((uint32_t)OS_CONFIG_LOG_TASK_PRIORITY <= (uint32_t)OS_TASK_PRIO_MAX),
+                 "OS_CONFIG_LOG_TASK_PRIORITY must be a task priority (1..31)");
+OS_STATIC_ASSERT((OS_CONFIG_LOG_TASK_STACK_SIZE >= OS_CONFIG_MIN_STACK_SIZE) &&
+                 ((OS_CONFIG_LOG_TASK_STACK_SIZE % OS_ARCH_STACK_ALIGNMENT_BYTES) == 0U),
+                 "OS_CONFIG_LOG_TASK_STACK_SIZE must meet the minimum and port alignment");
+#endif
+
 /** Core affinity: the task may run on any core - the empty mask, so no core is
  *  named and none is excluded. What the kernel's own idle, timer and log tasks
  *  use, and what a single-core OS_TASK_CONFIG fills in for you. */

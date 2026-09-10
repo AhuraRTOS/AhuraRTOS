@@ -15,6 +15,11 @@
 
 #include "os_types.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /*
  * ***********************************************************************************************************
  * Message buffer     - OS_CONFIG_MSG_ENABLE
@@ -43,11 +48,6 @@
  *  it is the difference between a 12-byte message costing 14 bytes and costing 16, and a knob for
  *  that is a decision every project would have to make and none would benefit from. */
 #define OS_MSG_HEADER_BYTES     2U
-
-#ifdef __cplusplus
-extern "C"
-{
-#endif
 
 /** Longest single message, in bytes: what OS_MSG_HEADER_BYTES can express. os_msg_send refuses
  *  anything longer with OS_ERR_INVALID_ARG rather than truncating it. */

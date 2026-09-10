@@ -29,6 +29,8 @@ extern "C"
 /******************************************************************************************************/
 /**
  * @brief Initialize kernel subsystems. Call once before any other kernel API.
+ *        A failed mandatory task initialization halts in the port configuration fault trap,
+ *        including with assertions disabled; a partially initialized scheduler cannot start.
  */
 void os_init(void);
 

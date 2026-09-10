@@ -750,6 +750,18 @@ void os_arch_tick_init(void);
  */
 uint32_t os_arch_cycle_count_get(void);
 
+/* Busy-waits require a free-running counter which advances with IRQs masked.
+ * Frequency is in Hz; get returns low 32 bits in those units. Frequency 0
+ * means unsupported and causes an explicit configuration fault on a nonzero delay. */
+uint32_t os_arch_delay_counter_hz_get(void);
+uint32_t os_arch_delay_counter_get(void);
+
+/* Optional independent SoC timer, in explicit counter units. Read must be
+ * coherent, IRQ-independent, monotonic and global across scheduling cores.
+ * LIGHT sleep must retain this timer and the CPU clock frequency. */
+uint32_t os_arch_reference_clock_hz_cb(void);
+uint64_t os_arch_reference_clock_get_cb(void);
+
 /******************************************************************************************************/
 /**
  * @brief Told by the kernel that this core's tick just fired, so a counter synthesized from the

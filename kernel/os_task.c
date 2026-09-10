@@ -297,7 +297,7 @@ os_err_t os_task_start(os_task_t *task)
  */
 os_err_t os_task_pause(os_task_t *task)
 {
-    uint32_t       core   = os_arch_core_id_get();
+    uint32_t       core;
     os_err_t      status = OS_ERR_NONE;
     os_task_tcb_t *tcb    = NULL;
 
@@ -317,6 +317,7 @@ os_err_t os_task_pause(os_task_t *task)
     else
     {
     os_critical_enter();
+    core = os_arch_core_id_get();
 
     if (task == NULL)
     {
@@ -387,13 +388,6 @@ os_err_t os_task_pause(os_task_t *task)
                 }
 
                 os_task_unlink(tcb);
-
-#if (OS_CONFIG_MUTEX_ENABLE == 1U)
-                /* Off the waiter list now, so a mutex owner this task was boosting drops back to
-                 * whatever the tasks STILL queued justify. Without this the owner would keep the
-                 * departed waiter's priority until its next unlock, starving anything in between. */
-                os_task_mutex_waiter_depart_tcb(tcb);
-#endif
 
                 tcb->delay_ticks = 0U;
                 tcb->state       = OS_TASK_STATE_SUSPENDED;
@@ -519,11 +513,12 @@ os_err_t os_task_delete(os_task_t *task)
 
     if (!os_arch_in_isr())
     {
-        uint32_t       core    = os_arch_core_id_get();
+        uint32_t       core;
         os_task_tcb_t *tcb     = NULL;
         bool           is_self = false;
 
         os_critical_enter();
+        core = os_arch_core_id_get();
 
         status = os_task_delete_resolve(task, core, &tcb, &is_self);
 
@@ -534,14 +529,6 @@ os_err_t os_task_delete(os_task_t *task)
             os_task_wake_compensate(tcb);
 
             os_task_unlink(tcb);
-
-#if (OS_CONFIG_MUTEX_ENABLE == 1U)
-            /* Before the TCB is cleared, while pi_owner_id still says whose boost this task was
-             * holding up. See os_task_pause for why departure has to trigger the recompute;
-             * os_task_tcb_clear below handles the mutexes this task OWNED, the opposite
-             * direction. */
-            os_task_mutex_waiter_depart_tcb(tcb);
-#endif
 
             os_task_tcb_clear(tcb);
 
@@ -593,9 +580,8 @@ void os_task_yield(void)
  * Takes effect immediately whatever the task is doing: a READY task moves between ready lists, a
  * RUNNING one may be preempted on the spot, a blocked one is re-sorted in its waiter list.
  *
- * A task holding a priority-inheritance boost keeps it. The new value becomes its BASE priority and
- * only bites now if it is HIGHER than the boost, since lowering it would hand back the very
- * inversion the boost prevents.
+ * The new base priority is combined with all waiters on mutexes the task owns, and the resulting
+ * effective priority is propagated to any mutex owner this task is waiting behind.
  *
  * @param[in,out] task      Task handle, or NULL for the calling task.
  * @param[in]     priority  New priority: OS_TASK_PRIO_1..OS_TASK_PRIO_30 (or any value in that range).
@@ -604,7 +590,7 @@ void os_task_yield(void)
  */
 os_err_t os_task_priority_set(os_task_t *task, os_task_priority_t priority)
 {
-    uint32_t       core   = os_arch_core_id_get();
+    uint32_t       core;
     uint32_t       value  = (uint32_t)priority;
     os_err_t       status = OS_ERR_INVALID_ARG;
     os_task_tcb_t *tcb;
@@ -613,6 +599,7 @@ os_err_t os_task_priority_set(os_task_t *task, os_task_priority_t priority)
     if ((value >= (uint32_t)OS_TASK_PRIO_1_LOWEST) && (value <= (uint32_t)OS_TASK_PRIO_30_HIGHEST))
     {
         os_critical_enter();
+        core = os_arch_core_id_get();
 
         tcb = (task == NULL) ? os_task_self_tcb()
                              : ((task->id == 0U) ? NULL : os_task_find_by_id(task->id));
@@ -632,15 +619,8 @@ os_err_t os_task_priority_set(os_task_t *task, os_task_priority_t priority)
         else
         {
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
-            /* Boosted exactly when the effective priority has been raised above the base. */
-            bool boosted = (tcb->priority > tcb->base_priority);
-
             tcb->base_priority = value;
-
-            if (!boosted || (value > tcb->priority))
-            {
-                os_task_effective_priority_set(tcb, value);
-            }
+            os_task_mutex_priority_recompute(tcb);
 #else
             os_task_effective_priority_set(tcb, value);
 #endif
@@ -1282,11 +1262,11 @@ void os_task_wait_end(void)
     /* An interrupt has no wait of its own to close out. */
     if (!os_arch_in_isr())
     {
+        os_critical_enter();
         current = os_task_current[os_arch_core_id_get()];
 
-        /* No lock needed: both fields are only ever written by a waker, which
-         * acts on BLOCKED tasks alone, and by the task itself - and the task
-         * running this call is neither blocked nor wakeable right now. */
+        /* The lock protects the core/current pair against migration and the mutex wait edge
+         * against a priority-inheritance walk on another core. */
         if (current != NULL)
         {
             current->wait_signaled = false;
@@ -1303,6 +1283,7 @@ void os_task_wait_end(void)
             current->blocked_forever  = false;
     #endif
         }
+        os_critical_exit();
     }
 }
 
@@ -1315,9 +1296,13 @@ void os_task_wait_end(void)
  */
 bool os_task_wait_signaled(void)
 {
+    uint32_t       mask_state = os_arch_kernel_mask_save();
     os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
+    bool           signaled = (current != NULL) ? current->wait_signaled : false;
 
-    return (current != NULL) ? current->wait_signaled : false;
+    os_arch_kernel_mask_restore(mask_state);
+
+    return signaled;
 }
 
 /******************************************************************************************************/
@@ -1351,9 +1336,13 @@ void os_task_wait_data_set(uint32_t data0, uint32_t data1)
  */
 uint32_t os_task_wait_result_get(void)
 {
+    uint32_t       mask_state = os_arch_kernel_mask_save();
     os_task_tcb_t *current = os_task_current[os_arch_core_id_get()];
+    uint32_t       result = (current != NULL) ? current->wait_result : 0U;
 
-    return (current != NULL) ? current->wait_result : 0U;
+    os_arch_kernel_mask_restore(mask_state);
+
+    return result;
 }
 
 /******************************************************************************************************/
@@ -1460,9 +1449,15 @@ void os_task_waiters_wake_all(os_list_t *waiters)
  */
 uint32_t os_task_current_id_get(void)
 {
+    uint32_t       mask_state = os_arch_kernel_mask_save();
     os_task_tcb_t *tcb = os_task_current[os_arch_core_id_get()];
+    uint32_t       id = (tcb == NULL) ? 0U : tcb->id;
 
-    return (tcb == NULL) ? 0U : tcb->id;
+    /* A core identity is only valid while this task cannot migrate to another core. Read both
+     * the pointer and its identity before restoring the mask; returning a pointer is not enough. */
+    os_arch_kernel_mask_restore(mask_state);
+
+    return id;
 }
 
 /******************************************************************************************************/
@@ -1473,9 +1468,13 @@ uint32_t os_task_current_id_get(void)
  */
 bool os_task_current_is_idle(void)
 {
+    uint32_t mask_state = os_arch_kernel_mask_save();
     uint32_t core = os_arch_core_id_get();
+    bool     idle = (os_task_current[core] == &os_task_idle_tcb[core]);
 
-    return (os_task_current[core] == &os_task_idle_tcb[core]);
+    os_arch_kernel_mask_restore(mask_state);
+
+    return idle;
 }
 
 /******************************************************************************************************/
@@ -1681,53 +1680,49 @@ os_err_t os_task_idle_create(void)
     os_err_t status = OS_ERR_NONE;
     uint32_t core;
 
-    /* Sampled once, BEFORE the loop runs. Creating core 0's idle task is what the first
-     * iteration does, and finishing it leaves os_task_idle_tcb[0] READY - so asking this
-     * question again as a loop condition would end the loop right there and core 1 would
-     * boot into an idle task that was never given a stack. */
-    bool     pending = (os_task_idle_tcb[0].state == OS_TASK_STATE_INACTIVE);
-
     /* One idle task per scheduling core; each is pinned to its core and is
-     * never queued in a ready list (it is the empty-bitmap fallback). Already
-     * created is success, so the loop simply does not run. A stack that will
-     * not initialise stops it through the same condition. */
+     * never queued in a ready list (it is the empty-bitmap fallback). Retry only a missing
+     * core's task: a successful core 0 does not imply later cores initialized successfully. */
     for (core = 0U;
-         pending && (core < OS_CONFIG_CORE_COUNT) && (status == OS_ERR_NONE);
+         (core < OS_CONFIG_CORE_COUNT) && (status == OS_ERR_NONE);
          core++)
     {
         os_task_tcb_t *tcb = &os_task_idle_tcb[core];
         uint32_t      *stack_ptr;
 
+        if (tcb->state == OS_TASK_STATE_INACTIVE)
+        {
 #if (OS_CONFIG_STACK_WATERMARK_ENABLE == 1U)
-        os_task_stack_fill(os_task_idle_stack[core], sizeof(os_task_idle_stack[core]));
+            os_task_stack_fill(os_task_idle_stack[core], sizeof(os_task_idle_stack[core]));
 #endif
 #if (OS_CONFIG_STACK_CHECK_ENABLE == 1U)
-        /* After any fill, which would otherwise overwrite it. */
-        os_task_stack_guard_set(os_task_idle_stack[core]);
+            /* After any fill, which would otherwise overwrite it. */
+            os_task_stack_guard_set(os_task_idle_stack[core]);
 #endif
 
-        stack_ptr = os_arch_task_stack_initialize(os_task_idle_stack[core], sizeof(os_task_idle_stack[core]),
-                                                  os_task_idle_entry, NULL);
-        if (stack_ptr == NULL)
-        {
-            status = OS_ERR_ERROR;
-        }
-        else
-        {
+            stack_ptr = os_arch_task_stack_initialize(os_task_idle_stack[core], sizeof(os_task_idle_stack[core]),
+                                                      os_task_idle_entry, NULL);
+            if (stack_ptr == NULL)
+            {
+                status = OS_ERR_ERROR;
+            }
+            else
+            {
 #if (OS_CONFIG_TASK_NAME_ENABLE == 1U)
-        tcb->name          = "tsk_idle";
+                tcb->name          = "tsk_idle";
 #endif
-        tcb->stack_base    = os_task_idle_stack[core];
-        tcb->stack_ptr     = stack_ptr;
-        tcb->stack_bytes   = sizeof(os_task_idle_stack[core]);
-        tcb->priority      = OS_TASK_PRIO_IDLE;
+                tcb->stack_base    = os_task_idle_stack[core];
+                tcb->stack_ptr     = stack_ptr;
+                tcb->stack_bytes   = sizeof(os_task_idle_stack[core]);
+                tcb->priority      = OS_TASK_PRIO_IDLE;
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
-        tcb->base_priority = OS_TASK_PRIO_IDLE;
+                tcb->base_priority = OS_TASK_PRIO_IDLE;
 #endif
-        tcb->id            = 0U;
-        tcb->delay_ticks   = 0U;
-        tcb->core_affinity = (1UL << core);
-        tcb->state         = OS_TASK_STATE_READY;
+                tcb->id            = 0U;
+                tcb->delay_ticks   = 0U;
+                tcb->core_affinity = (1UL << core);
+                tcb->state         = OS_TASK_STATE_READY;
+            }
         }
     }
 
@@ -1736,13 +1731,24 @@ os_err_t os_task_idle_create(void)
 
 /******************************************************************************************************/
 /**
- * @brief Check whether idle task is already created.
+ * @brief Check whether every core's idle task is already created.
  *
- * @return bool  True when idle task exists.
+ * @return bool  True when every idle task has an initialized stack.
  */
 bool os_task_idle_is_created(void)
 {
-    return (os_task_idle_tcb[0].state != OS_TASK_STATE_INACTIVE);
+    bool created = true;
+
+    for (uint32_t core = 0U; core < OS_CONFIG_CORE_COUNT; core++)
+    {
+        if ((os_task_idle_tcb[core].state == OS_TASK_STATE_INACTIVE) ||
+            (os_task_idle_tcb[core].stack_ptr == NULL))
+        {
+            created = false;
+        }
+    }
+
+    return created;
 }
 
 /******************************************************************************************************/
@@ -2441,6 +2447,11 @@ static void os_task_unlink(os_task_tcb_t *tcb)
     {
         os_list_remove(tcb->wait_list, &tcb->wait_node);
         tcb->wait_list = NULL;
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
+        /* Revoke inheritance at the actual departure, including timeouts and forced wakes.
+         * Waiting until the task is dispatched leaves owners boosted by a waiter no longer queued. */
+        os_task_mutex_waiter_depart_tcb(tcb);
+#endif
     }
 }
 
@@ -2493,6 +2504,7 @@ static void os_task_wait_node_insert(os_list_t *waiters, os_task_tcb_t *tcb)
  */
 static void os_task_switch_request(void)
 {
+    uint32_t mask_state = os_arch_kernel_mask_save();
     uint32_t core = os_arch_core_id_get();
 
     /* A locked scheduler remembers the request rather than taking it: os_kernel_unlock
@@ -2505,6 +2517,8 @@ static void os_task_switch_request(void)
     {
         OS_ARCH_CONTEXT_SWITCH_REQUEST();
     }
+
+    os_arch_kernel_mask_restore(mask_state);
 }
 
 /******************************************************************************************************/

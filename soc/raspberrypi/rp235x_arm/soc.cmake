@@ -96,3 +96,10 @@ elseif(PICO_PLATFORM MATCHES "riscv")
 		"Build for the Cortex-M33 side instead (PICO_PLATFORM=rp2350-arm-s). When a Hazard3 port "
 		"lands it will be a sibling package, raspberrypi/rp235x_riscv.")
 endif()
+
+# This package supplies an IRQ-independent reference timer for LIGHT SysTick
+# boundary accounting. The runtime callback declines modes which gate clk_sys.
+list(APPEND AHURA_SOC_COMPILE_DEFINITIONS
+	OS_ARCH_TICKLESS_REFERENCE_CLOCK=1
+	SOC_ARCH_IDLE_OVERRIDE=1
+)

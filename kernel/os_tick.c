@@ -68,13 +68,9 @@ __IO uint32_t os_test_tick_isr_entries = 0U;
 #endif
 
 #if (OS_CONFIG_CPU_USAGE_ENABLE == 1U)
-/* CPU load sampling: every tick counts once, and additionally as idle when
- * it interrupted the idle task. os_cpu_usage_get consumes and resets both.
- *
- * Written under the plain kernel mask, read under the full critical section. Safe because only
- * core 0 writes them, so there is no cross-core write for the reader's spinlock to exclude. Worst
- * case is one tick counted in the next sampling window; raising the writer would cost a spinlock
- * on every tick interrupt to tidy an advisory percentage. */
+/* Core 0 produces the two counters; any core may sample and reset them.
+ * Both writers and the consuming reader use the same nestable kernel critical
+ * section so a remote reset cannot split a total/idle update or lose increments. */
 static __IO uint32_t os_tick_usage_total_ticks = 0U;
 static __IO uint32_t os_tick_usage_idle_ticks  = 0U;
 #endif
@@ -105,7 +101,16 @@ void os_tick_init(void)
  */
 uint32_t os_tick_get(void)
 {
-    return os_tick_count;
+    uint32_t ticks;
+#if (OS_CONFIG_CORE_COUNT > 1U) && (OS_CONFIG_TICKLESS_ENABLE == 1U)
+    /* A remote reader must first reconcile an outstanding suppressed window. */
+    os_critical_enter();
+#endif
+    ticks = os_tick_count;
+#if (OS_CONFIG_CORE_COUNT > 1U) && (OS_CONFIG_TICKLESS_ENABLE == 1U)
+    os_critical_exit();
+#endif
+    return ticks;
 }
 
 /******************************************************************************************************/
@@ -140,11 +145,13 @@ void os_tick_handler(void)
         os_tick_count++;
 
 #if (OS_CONFIG_CPU_USAGE_ENABLE == 1U)
+        os_critical_enter();
         os_tick_usage_total_ticks++;
         if (os_task_current_is_idle())
         {
             os_tick_usage_idle_ticks++;
         }
+        os_critical_exit();
 #endif
 
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
@@ -194,8 +201,10 @@ void os_tick_announce(uint32_t elapsed_ticks)
 
 #if (OS_CONFIG_CPU_USAGE_ENABLE == 1U)
     /* Announced ticks elapsed during a tickless sleep: idle by definition. */
+    os_critical_enter();
     os_tick_usage_total_ticks += elapsed_ticks;
     os_tick_usage_idle_ticks  += elapsed_ticks;
+    os_critical_exit();
 #endif
 
     /* The mask stays held across the three list updates: os_tick_count is the new time the moment
@@ -268,28 +277,13 @@ uint32_t os_cpu_usage_get(void)
 
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 
-/* Tickless idle across cores: only core 0 ever suppresses, and the other cores nudge it.
- *
- * os_tick_handler above gives core 0 sole ownership of the kernel time base, so suppressing core
- * 0's tick stops delays and timers for EVERY core. os_tickless_idle_process masks interrupts before
- * it plans a window, which closes the race against this core's own ISRs and does nothing at all
- * about another core: core 1 keeps running tasks and can arm a timeout inside a window core 0 has
- * already committed to sleeping through.
- *
- * Asking whether the other cores are idle would not fix it - a core can take work the instant after
- * it answers. What does is the core CREATING the nearer deadline nudging core 0 out of its window,
- * and that is os_tickless_deadline_armed() below, called from every path that puts a new expiry on
- * a kernel time source. os_tickless_window_open is the flag it reads; the ordering that makes the
- * pair airtight is spelled out where the flag is raised.
- *
- * That leaves ONE thing this file cannot check for itself: the nudge is an IPI, and
- * os_arch_core_ipi_request_cb has a weak default in the SoC layer that does nothing at all. A
- * package without a real one is fine for ordinary preemption - the target core picks the task up at
- * its next tick - and is NOT fine here, because a suppressed window is precisely the absence of a
- * next tick. template/soc_cb.c therefore withdraws its empty default for this exact combination, so
- * an unpackaged multi-core target that enables tickless fails to LINK rather than to keep time. */
-/** Tick at which a window was last planned, so the idle loop walks the deadline lists once per
- *  tick rather than once per pass. */
+/* Only core 0 suppresses the shared timebase. While its window is open,
+ * remote outer kernel entries acquire the lock, observe the flag, send an IPI,
+ * then release/retry until the elapsed time has been announced. The owner holds
+ * no spinlock across sleep. Thus a new relative deadline or tick read cannot
+ * be published against the time origin from before the suppressed interval.
+ * All flag transitions and tests use the global lock; local masking alone
+ * would leave an open-versus-remote-entry race. */
 static __IO uint32_t os_tickless_last_plan_tick = 0U;
 
 /** Bumped whenever a new expiry joins a kernel time source. A hint, not a guarantee: written from
@@ -307,6 +301,19 @@ static __IO uint32_t os_tickless_last_plan_generation = 0U;
  *  Read by the other cores, which is the whole point: core 0 cannot know about a deadline that
  *  does not exist yet, so whoever creates one has to say so. */
 static __IO bool os_tickless_window_open = false;
+
+/* Called with the kernel spinlock held and local scheduling excluded. The
+ * caller releases the lock before retrying, allowing core 0 to announce and
+ * close. Checking under the lock closes the open-versus-remote-entry race. */
+bool os_tickless_remote_window_wait(void)
+{
+    bool wait = os_tickless_window_open && (os_arch_core_id_get() != 0U);
+    if (wait)
+    {
+        os_arch_core_ipi_request_cb(0U);
+    }
+    return wait;
+}
 #endif
 
 /******************************************************************************************************/
@@ -381,7 +388,8 @@ uint32_t os_tickless_max_suppressed_ticks_get(void)
  */
 void os_tickless_idle_process(void)
 {
-    uint32_t mask_state;
+    /* This entry is public: freeze migration before identifying the owner. */
+    uint32_t mask_state = os_arch_kernel_mask_save();
     uint32_t planned_idle_ticks;
     uint32_t suppress_ceiling;
     uint32_t suppress_floor;
@@ -418,8 +426,12 @@ void os_tickless_idle_process(void)
         os_tickless_last_plan_generation = generation;
     }
 
-    if (owns_time_base)
+    if (owns_time_base && os_arch_soc_sleep_prepare_cb())
     {
+        /* A SoC may first park peer cores before we close remote kernel entry.
+         * No global lock is held across preparation or its matching finish.
+         * Plan again after preparation: a peer may have published a deadline
+         * before acknowledging that it is parked. */
         /* Interrupts off BEFORE deciding how long to sleep, and kept off until the sleep has been
          * accounted for.
          *
@@ -433,13 +445,13 @@ void os_tickless_idle_process(void)
          *
          * Masking first closes it. A WFI still wakes on a pending interrupt while masked, so anything
          * arriving from here on shortens the sleep rather than being missed. */
-        mask_state = os_arch_kernel_mask_save();
 
 #if (OS_CONFIG_CORE_COUNT > 1U)
-        /* Raised BEFORE the deadlines are read, not before the sleep. Anything another core arms
-         * from here on is either already visible to the read below or answered by the IPI in
-         * os_tickless_deadline_armed - and there is no instant that is neither. */
+        /* Serialize the opening with remote kernel entry before reading any
+         * deadlines. Remote calls now wake us and wait for reconciliation. */
+        os_critical_enter();
         os_tickless_window_open = true;
+        os_critical_exit();
 #endif
 
         planned_idle_ticks = os_tickless_expected_idle_ticks_get();
@@ -517,17 +529,24 @@ void os_tickless_idle_process(void)
         }
 
 #if (OS_CONFIG_CORE_COUNT > 1U)
-        /* Lowered before the mask, so a deadline armed while this core is still masked still finds
-         * the window closed and skips an IPI that would wake nobody. */
+        /* Publish the reconciled clock and lists before remote kernel callers
+         * may proceed. No spinlock was held while the hardware slept. */
+        os_critical_enter();
         os_tickless_window_open = false;
+        os_critical_exit();
 #endif
+
+        /* Release peers only after clocks, tick state and deadline lists are
+         * restored and remote kernel entry is open again. Preparation must be
+         * unwound even when the plan above was too short to enter sleep. */
+        os_arch_soc_sleep_finish_cb();
 
         /* Releases the mask taken before the sleep was planned. Nesting is deliberate: the port's own
          * mask (taken in os_arch_sleep_prepare, released by os_arch_sleep_finish above) sits inside
          * this one, and both are save/restore rather than unconditional enables, so the interrupt
          * state the idle task arrived with is what it leaves with. */
-        os_arch_kernel_mask_restore(mask_state);
     }
+    os_arch_kernel_mask_restore(mask_state);
 }
 
 /******************************************************************************************************/

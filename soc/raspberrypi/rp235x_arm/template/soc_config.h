@@ -20,6 +20,9 @@
 #ifndef SOC_CONFIG_H
 #define SOC_CONFIG_H
 
+/* The tickless guard must work even when this header is included first. */
+#include "os_config.h"
+
 /**
  * Which lock id the kernel takes for its critical sections.
  *
@@ -94,29 +97,31 @@
 
 /*
  * ***********************************************************************************************************
- * Tickless wake source (OS_CONFIG_TICKLESS_ENABLE only)
+ * Tickless idle
  * ***********************************************************************************************************
  *
- * There is nothing to pick: what ends a suppressed window follows from how deep the core sleeps,
- * which is SOC_CONFIG_SLEEP_MODE below.
+ * These options apply only when OS_CONFIG_TICKLESS_ENABLE is 1U.
+ * The sleep mode determines the wake source:
  *
- *   LIGHT   the clocks keep running, so the window is ended by
- *           SysTick, the tick the kernel already owns, suppressed by the port - nothing to
- *           configure and no peripheral spent.
- *   DEEP    the clocks are gated and everything derived from them stops, so it would take
- *           the always-on POWMAN alarm - which this package does not
- *           implement yet, and says so rather than sleeping shallowly and reporting nothing.
+ *   LIGHT   a POWMAN timer alarm ends the window while clocks keep running.
+ *   DEEP    the POWMAN alarm remains available while PLL_SYS is stopped. With two
+ *           cores, core 1 must acknowledge from idle before shared clocks change.
+ *           A busy peer or clock-dependent peripheral keeps tickless LIGHT sleep;
+ *           pending local work aborts the pass. PLL-off sleep requires the default
+ *           XOSC/PLL_SYS tree and an inactive USB controller.
  *
- * It used to be five flags plus the mode, with an arithmetic rule saying exactly one flag had to
- * be 1, another naming the sources this part does not physically have, and a third refusing deep
- * sleep against a source that stops with the clocks. None of those states can be expressed any
- * more, so none of those rules exists.
+ * Boards with external activity the register checks cannot detect (for example
+ * polled UART receive) may override bool soc_deep_sleep_allowed_cb(void). Return
+ * false while that activity requires the normal clocks. This callback runs with
+ * configurable interrupts masked and must not block or call kernel APIs.
 */
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 
-/* How deep the core sleeps inside a window.
- *   OS_CONFIG_SLEEP_MODE_LIGHT   core stops, clocks keep running. Works with every source.
- *   OS_CONFIG_SLEEP_MODE_DEEP    clocks gated. Needs an always-on alarm to end the window.
- * Values: one of the two above. */
+/* How deep the core sleeps inside a suppressed window.
+ * Values: OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP, subject to the
+ * package restrictions above. */
 #define SOC_CONFIG_SLEEP_MODE               OS_CONFIG_SLEEP_MODE_LIGHT
+
+#endif /* OS_CONFIG_TICKLESS_ENABLE */
 
 #endif /* SOC_CONFIG_H */

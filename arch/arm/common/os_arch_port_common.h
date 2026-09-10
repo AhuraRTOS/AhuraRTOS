@@ -121,9 +121,15 @@
  * boots and runs until the task's FIRST floating-point operation sets FPCA; the switch after that
  * writes an extended frame straight past the bottom of the stack. The idle task never gets there,
  * so the board looks healthy right up to the moment one application task does arithmetic. */
-#if defined(__ARM_FP)
+#if defined(__ARM_FP) || (defined(__ARM_FEATURE_MVE) && (__ARM_FEATURE_MVE != 0))
+#define OS_ARCH_EXTENDED_CONTEXT 1
+#else
+#define OS_ARCH_EXTENDED_CONTEXT 0
+#endif
+
+#if (OS_ARCH_EXTENDED_CONTEXT == 1)
 #if (OS_CONFIG_MIN_STACK_SIZE < 256U)
-#error "OS_CONFIG_MIN_STACK_SIZE must be at least 256 bytes on a build with an FPU: a saved context is 204 bytes there (104 hardware frame + 36 software frame + 64 for s16-s31), so 128 overflows on the first context switch after a task touches the FPU."
+#error "OS_CONFIG_MIN_STACK_SIZE must be at least 256 bytes on a build with FP or MVE: a saved context is 204 bytes there (104 hardware frame + 36 software frame + 64 for s16-s31), so 128 overflows on the first context switch after a task touches the FPU."
 #endif
 #endif
 
@@ -914,6 +920,23 @@ uint32_t* os_arch_task_stack_initialize(uint8_t *stack_base, size_t stack_bytes,
  * @brief Read the free-running core cycle counter (DWT, or SysTick-derived when absent).
  */
 uint32_t os_arch_cycle_count_get(void);
+
+/* Busy-waits require a free-running counter which advances with IRQs masked.
+ * Frequency is in Hz; get returns low 32 bits in those units. Frequency 0
+ * means unsupported and causes an explicit configuration fault on a nonzero delay. */
+uint32_t os_arch_delay_counter_hz_get(void);
+uint32_t os_arch_delay_counter_get(void);
+
+/* Optional independent SoC timer, in explicit counter units. Read must be
+ * coherent, IRQ-independent, monotonic and global across scheduling cores.
+ * LIGHT sleep must retain this timer and the CPU clock frequency. */
+uint32_t os_arch_reference_clock_hz_cb(void);
+uint64_t os_arch_reference_clock_get_cb(void);
+
+/* Required when the SoC sets OS_ARCH_TICKLESS_REFERENCE_CLOCK=1. Return the
+ * reference frequency in sleep modes which retain SysTick and its clock ratio;
+ * return zero in other sleep modes (the ordinary SoC callback then accounts). */
+uint32_t os_arch_tick_reference_clock_hz_cb(void);
 
 /******************************************************************************************************/
 /**

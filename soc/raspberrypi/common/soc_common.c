@@ -46,6 +46,7 @@
 #include "hardware/structs/systick.h"
 #include "hardware/uart.h"
 #include "pico/multicore.h"
+#include "pico/time.h"
 
 /*
  * ***********************************************************************************************************
@@ -150,10 +151,12 @@ static void soc_core1_entry(void);
  * The "memory" clobber stops the compiler hoisting the idle loop's own reads out across this
  * call: what it is waiting for is written by an interrupt or by another core.
  */
+#if !defined(SOC_ARCH_IDLE_OVERRIDE)
 void os_arch_soc_idle_cb(void)
 {
     OS_ARCH_WFE();
 }
+#endif
 
 /******************************************************************************************************/
 /**
@@ -811,3 +814,25 @@ static void soc_panic_hex(uint32_t value)
 }
 
 #endif /* SOC_PANIC_OUTPUT */
+
+/* TIMER continues in LIGHT sleep and does not depend on SysTick interrupt service. */
+uint32_t os_arch_reference_clock_hz_cb(void)
+{
+    return 1000000U;
+}
+
+uint64_t os_arch_reference_clock_get_cb(void)
+{
+    return time_us_64();
+}
+
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+uint32_t os_arch_tick_reference_clock_hz_cb(void)
+{
+#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_LIGHT)
+    return os_arch_reference_clock_hz_cb();
+#else
+    return 0U;
+#endif
+}
+#endif /* OS_CONFIG_TICKLESS_ENABLE */

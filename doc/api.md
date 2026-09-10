@@ -122,10 +122,12 @@ There is no switch to compile the default task out. It always exists unless the
 build is a self-test build. Tasks that must exist before the scheduler starts,
 which is rare, still belong in `main()`, created the usual way.
 
-Note that `os_init()` discards this task's creation status, matching the
-work/timer service-init calls. An out-of-range priority or a stack below
-`OS_CONFIG_MIN_STACK_SIZE` therefore fails **silently**: the firmware builds,
-boots and schedules, but `os_main()` never runs.
+The enabled main or self-test task's priority and stack configuration are checked
+at compile time. `os_init()` checks every mandatory idle, timer, log and main/test
+task creation/start result. A failure halts in the port configuration fault trap,
+including when assertions are disabled. `os_start()` and `os_core_start()` require
+completed initialization and initialized idle stacks on every core. Call `os_init()`
+once, then `os_start()` once; repeated initialization or scheduler start also halts.
 
 When `OS_CONFIG_TEST_ENABLE` is `1`, `os_init()` does not create `tsk_main` at
 all, so the self-test suite runs alone instead of racing the application's own
@@ -273,21 +275,24 @@ it holds the mutex, and `os_mutex_unlock` restores it. This stays correct even
 when the task holds several mutexes at once, because the restore recomputes
 against every mutex it still holds rather than only the one just released.
 
-Inheritance is **transitive**. An owner that is itself blocked on a second mutex
-held by a third, lower-priority task propagates the boost along the whole chain,
-so the task at the far end runs at the priority of the task waiting at the near
-end. The walk is bounded by `OS_TASK_DEADLOCK_MAX_DEPTH`, and the chain is
-recomputed on every event that can change it - a waiter arriving, a waiter timing
-out or being deleted, an owner releasing - so a boost is dropped as soon as the
-reason for it is gone rather than lingering until the owner's next mutex call.
+Inheritance is **transitive within the supported chain bound**. An owner that is
+itself blocked on a second mutex propagates its effective priority to that mutex's
+owner. Each recomputation visits at most **eight tasks**, the fixed
+`OS_TASK_DEADLOCK_MAX_DEPTH` limit. Applications must keep mutex dependency chains
+within this bound; complete priority propagation and revocation on longer chains
+are not supported. The bound also prevents an already formed wait cycle from
+making a kernel critical section loop forever; it does not recover deadlocks.
 
-One limitation is accepted rather than implemented:
+The chain is recomputed when a waiter arrives or leaves, an owner releases a mutex,
+or a task's base priority changes. The effective priority is the maximum of the
+new base and the priorities of waiters on all owned mutexes. Tasks are immediately
+reordered in any object waiter list when their effective priority changes. Timeout,
+pause and forced-wake paths revoke inheritance when removing the waiter, before
+the departing task is dispatched again.
 
-- **Lazy repositioning.** A boost already in effect is not eagerly repositioned
-  within some *other* object's wait queue: a task boosted while queued on a
-  semaphore keeps the place it had. Its priority is correct immediately, and it
-  is scheduled at the correct priority; only its position in that unrelated queue
-  lags until it is woken.
+When a mutex changes owners while other waiters remain queued, the new owner
+immediately inherits from those waiters. Their later departure recomputes the
+mutex's current owner, even if they first blocked under a different owner.
 
 **Take a mutex only after `os_start()`.** Ownership is recorded as a task id, and
 id 0 means *no identifiable task* - the idle task, or any code running before the

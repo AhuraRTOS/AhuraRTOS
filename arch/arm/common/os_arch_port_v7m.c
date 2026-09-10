@@ -510,3 +510,33 @@ static void os_arch_task_exit_trap(void)
         __asm volatile("bkpt #0");
     }
 }
+
+
+uint32_t os_arch_delay_counter_hz_get(void)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    /* Tasks may migrate between reads; a per-core DWT epoch is not shared. */
+    return os_arch_reference_clock_hz_cb();
+#else
+    return os_arch_dwt_available ? os_arch_clock_hz_get() : os_arch_reference_clock_hz_cb();
+#endif
+}
+
+uint32_t os_arch_delay_counter_get(void)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    return (uint32_t)os_arch_reference_clock_get_cb();
+#else
+    return os_arch_dwt_available ? OS_ARCH_REG_DWT_CYCCNT : (uint32_t)os_arch_reference_clock_get_cb();
+#endif
+}
+
+OS_WEAK uint32_t os_arch_reference_clock_hz_cb(void)
+{
+    return 0U;
+}
+
+OS_WEAK uint64_t os_arch_reference_clock_get_cb(void)
+{
+    return 0ULL;
+}

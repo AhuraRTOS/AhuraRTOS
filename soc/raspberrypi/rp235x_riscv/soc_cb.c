@@ -32,6 +32,7 @@
 #include "hardware/structs/sio.h"
 #include "hardware/sync.h"
 #include "pico/multicore.h"
+#include "pico/time.h"
 
 /* SIO_RISCV_SOFTIRQ bit positions, from the RP2350 datasheet. Named here rather than taken from the
  * SDK's regs header so the intent is readable at the point of use. */
@@ -290,7 +291,9 @@ const uint32_t soc_rp235x_riscv_anchor = 0U;
  * expensive to find. A refused build naming the settings that disagree costs nothing to read.
 */
 
-#if (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
+#if !defined(SOC_CONFIG_SLEEP_MODE)
+#error "soc_config.h is incomplete: SOC_CONFIG_SLEEP_MODE is required when OS_CONFIG_TICKLESS_ENABLE is 1."
+#elif (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
     (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_DEEP)
 #error "SOC_CONFIG_SLEEP_MODE must be OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP."
 #endif
@@ -612,3 +615,14 @@ OS_WEAK void os_tickless_post_sleep_cb(void)
 }
 
 #endif /* OS_CONFIG_TICKLESS_ENABLE */
+
+/* SDK TIMER is shared, unlike the per-hart mcycle epochs. */
+uint32_t os_arch_reference_clock_hz_cb(void)
+{
+    return 1000000U;
+}
+
+uint64_t os_arch_reference_clock_get_cb(void)
+{
+    return time_us_64();
+}

@@ -208,6 +208,15 @@ os_task_state_t os_task_state_get(const os_task_t *task);
 
 /******************************************************************************************************/
 /**
+ * @brief Whether this core is executing its idle task (also callable from an ISR).
+ *
+ * Samples the current task under the local kernel interrupt mask without taking
+ * the global kernel lock. SoC idle hooks may use it when coordinating core sleep.
+ */
+bool os_task_current_is_idle(void);
+
+/******************************************************************************************************/
+/**
  * @brief Get a task's name (NULL means the calling task). NULL when the task is unknown, or in
  *        any build with OS_CONFIG_TASK_NAME_ENABLE at 0.
  */

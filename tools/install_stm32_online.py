@@ -192,7 +192,8 @@ def checkout(source: str, ref: str, project: Path, update: bool):
         yield given
         return
 
-    # Running from inside a checkout - tools/<this file> beside ahura.h and kernel/.
+    # --update without --source downloads the requested ref, even beside an installed checkout.
+    # Otherwise reuse the checkout beside this script.
     #
     # __file__ is not a reliable signal on its own: piped in as `python -` it is set to the
     # literal string "<stdin>", which resolves against the working directory and would point two
@@ -200,7 +201,7 @@ def checkout(source: str, ref: str, project: Path, update: bool):
     here = globals().get("__file__")
     if here and Path(here).is_file():
         local = Path(here).resolve().parent.parent
-        if looks_like_ahura(local) and has_installer(local):
+        if not update and looks_like_ahura(local) and has_installer(local):
             yield local
             return
 

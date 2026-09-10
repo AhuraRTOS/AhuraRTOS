@@ -90,12 +90,10 @@ typedef struct
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
     uint32_t        base_priority; /* configured priority, restored once no held mutex needs a boost */
     os_list_t       owned_mutexes; /* mutexes currently locked by this task (priority inheritance) */
-    /* Owner of the mutex this task is queued on, 0 when it is queued on none. The boost handed to
-     * that owner by os_task_mutex_priority_inherit has to come back off when this task leaves the
-     * queue by ANY route - timeout, pause or delete - and not only when the owner finally unlocks.
-     * Recorded as an id rather than a pointer for the same reason os_mutex_unlock captures one: the
-     * owner may be gone by the time it is read, and an id resolves to NULL where a pointer would
-     * dangle. */
+    /* Owner captured when inheritance starts, before publishing blocked_on_mutex. Once that
+     * edge exists, departure resolves the mutex's CURRENT owner: ownership may change while
+     * this waiter remains queued. The id is a fallback for the pre-publication state and is
+     * cleared on every departure. An id resolves to NULL if its task has since been deleted. */
     uint32_t        pi_owner_id;
 
     /* Mutex this task is blocked on, NULL otherwise: the forward edge "this owner is itself waiting
@@ -138,8 +136,10 @@ os_task_tcb_t* os_task_find_by_id(uint32_t id);
 void           os_task_effective_priority_set(os_task_tcb_t *tcb, uint32_t new_priority);
 
 #if (OS_CONFIG_MUTEX_ENABLE == 1U)
-/* Defined in os_task_mutex.c, used by os_task.c when a waiter pauses or is deleted. */
+/* Defined in os_task_mutex.c, called whenever a waiter leaves its queue. */
 void os_task_mutex_waiter_depart_tcb(os_task_tcb_t *tcb);
+/* Recompute effective priority and propagate through blocked mutex owners. Caller holds the lock. */
+void os_task_mutex_priority_recompute(os_task_tcb_t *tcb);
 #endif
 
 #ifdef __cplusplus

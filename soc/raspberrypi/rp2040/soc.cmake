@@ -79,3 +79,7 @@ if(PICO_PLATFORM AND NOT PICO_PLATFORM MATCHES "rp2040")
 "
 		"Use raspberrypi/rp235x_arm for the RP2350 and RP2354.")
 endif()
+
+# This package supplies an IRQ-independent reference timer for LIGHT SysTick
+# boundary accounting. The runtime callback declines modes which gate clk_sys.
+list(APPEND AHURA_SOC_COMPILE_DEFINITIONS OS_ARCH_TICKLESS_REFERENCE_CLOCK=1)

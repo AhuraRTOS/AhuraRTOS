@@ -36,7 +36,9 @@
 #include "hardware/structs/clocks.h"
 #include "hardware/structs/pll.h"
 #include "hardware/structs/scb.h"
+#include "hardware/structs/nvic.h"
 #include "pico/multicore.h"
+#include "pico/time.h"
 
 /** Referenced by nothing, and that is its entire job.
  *
@@ -65,7 +67,9 @@ const uint32_t soc_rp235x_arm_anchor = 0U;
  * expensive to find. A refused build naming the settings that disagree costs nothing to read.
 */
 
-#if (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
+#if !defined(SOC_CONFIG_SLEEP_MODE)
+#error "soc_config.h is incomplete: SOC_CONFIG_SLEEP_MODE is required when OS_CONFIG_TICKLESS_ENABLE is 1."
+#elif (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
     (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_DEEP)
 #error "SOC_CONFIG_SLEEP_MODE must be OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP."
 #endif
@@ -85,17 +89,10 @@ const uint32_t soc_rp235x_arm_anchor = 0U;
  * cycles, exactly a plain WFI. So the sleep below drops clk_sys back onto clk_ref and powers the
  * PLL down, which is where this part's idle power actually goes.
  *
- * SINGLE-CORE ONLY, and that was learned the hard way. Only core 0 ever reaches the sleep - the
- * kernel guards the tickless pass with owns_time_base - but clk_sys feeds BOTH cores, so core 0
- * dropping onto clk_ref and stopping the PLL takes the clock out from under whatever core 1 is
- * running, and takes clk_peri with it. It showed as bursts of mojibake in the middle of the
- * self-test's SMP section: core 0's idle task slept between phases while core 1 still had tasks
- * on it. Draining the console first was tried and changed nothing, which is what pointed at the
- * other core rather than at a byte in flight.
- *
- * Making this safe needs a rendezvous - both cores idle, and neither allowed to wake into a
- * stopped PLL - which is kernel work, not package work. Until that exists, DEEP is refused on an
- * SMP build rather than left to corrupt whatever the other core was doing.
+ * clk_sys feeds BOTH cores. The prepare hook below first parks core 1 cooperatively in its
+ * idle task, with all configurable interrupts masked, before the kernel opens the time window.
+ * A busy peer or peripheral declines the pass. Neither core may resume normal execution until
+ * the clocks are restored; core 1 stays parked until the kernel has also reconciled its time.
  *
  * It deliberately stops short of the deepest route - moving clk_ref onto LPOSC and stopping the
  * crystal as well. That saves more and is also the one where a mistake leaves the core with no
@@ -307,13 +304,248 @@ uint32_t os_arch_tick_resume_cb(void)
     return elapsed_ticks;
 }
 
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP) && (OS_CONFIG_CORE_COUNT > 1U)
-#error "OS_CONFIG_SLEEP_MODE_DEEP is single-core only on this package: the sleep stops PLL_SYS, \
-which clocks BOTH cores, so core 0 sleeping would pull the clock out from under core 1. Set \
-OS_CONFIG_CORE_COUNT to 1, or use OS_CONFIG_SLEEP_MODE_LIGHT."
+#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+
+#include "soc_sleep.h"
+
+/* The owner alone writes these local bookkeeping values. The kernel pairs prepare/finish
+ * outside its global lock, and holds its scheduling mask across the pair. */
+static uint32_t soc_sleep_owner_primask = 0U;
+static bool soc_sleep_owner_held = false;
+#if (OS_CONFIG_TEST_ENABLE == 1U)
+/* A debugger can distinguish real PLL-off entries from safe LIGHT fallbacks. */
+static __IO uint32_t soc_sleep_deep_entries = 0U;
 #endif
 
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+#if (OS_CONFIG_CORE_COUNT > 1U)
+/* Each shared word has exactly one writer. Publication and observation are ordered with DMB;
+ * no kernel API, SDK lock or hardware spinlock is used while either core is parked. Generation
+ * zero means released. A new request is never issued until the old acknowledgement is cleared,
+ * so even generation wrap cannot let a late acknowledgement authorize another sleep. */
+static __IO uint32_t soc_sleep_request = 0U;       /* core 0 writes */
+static __IO uint32_t soc_sleep_ack = 0U;           /* core 1 writes */
+static __IO uint32_t soc_sleep_abort = 0U;         /* core 1 writes */
+static __IO uint32_t soc_sleep_peer_idle = 0U;     /* core 1 writes, advisory only */
+static uint32_t soc_sleep_generation = 0U;
+
+/* An idle peer normally acknowledges in a few microseconds. Never wait indefinitely for a
+ * preempted idle callback or a core which is busy. The TIMER source runs normally during this
+ * rendezvous; no clock has been changed and the tickless window has not yet opened. */
+#define SOC_SLEEP_RENDEZVOUS_US 100U
+#endif
+
+/******************************************************************************************************/
+/**
+ * @brief Additional board veto for protocols whose clock requirements registers cannot reveal.
+ *
+ * Override strongly for external/polled activity. Called with configurable interrupts masked
+ * on both participating cores. It must only inspect board state: no waits or kernel API calls.
+ */
+OS_WEAK bool soc_deep_sleep_allowed_cb(void)
+{
+    return true;
+}
+
+/******************************************************************************************************/
+/** @brief Pending work on this core, including scheduler exceptions. Never clears a source. */
+static bool soc_sleep_work_pending(void)
+{
+    uint32_t exceptions = scb_hw->icsr;
+    bool pending = (exceptions & (M33_ICSR_PENDSVSET_BITS | M33_ICSR_PENDSTSET_BITS |
+                                  M33_ICSR_PENDNMISET_BITS)) != 0U;
+
+    pending = pending || ((nvic_hw->ispr[0] & nvic_hw->iser[0]) != 0U);
+    pending = pending || ((nvic_hw->ispr[1] & nvic_hw->iser[1]) != 0U);
+    return pending;
+}
+
+/******************************************************************************************************/
+/** @brief Restore precisely the PRIMASK received by this module, leaving BASEPRI untouched. */
+static void soc_sleep_primask_restore(uint32_t primask)
+{
+    OS_ARCH_DSB();
+    __asm volatile("msr primask, %0" :: "r"(primask) : "memory");
+    OS_ARCH_ISB();
+}
+
+/******************************************************************************************************/
+/** @brief Cancel/release the peer before returning the owner's saved interrupt state. */
+static void soc_sleep_release(void)
+{
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    OS_ARCH_DMB();
+    soc_sleep_request = 0U;
+    OS_ARCH_DSB();
+    OS_ARCH_SEV();
+#endif
+    soc_sleep_owner_held = false;
+    soc_sleep_primask_restore(soc_sleep_owner_primask);
+}
+
+/******************************************************************************************************/
+/**
+ * @brief Freeze both cores before the kernel freezes its shared time base.
+ *
+ * A secondary core must be allowed to finish an earlier kernel operation and reach idle before
+ * acknowledgement. Waiting after the kernel opens its time window would instead prevent that
+ * operation from completing. The owner holds no global lock here, even during cancellation.
+ */
+bool os_arch_soc_sleep_prepare_cb(void)
+{
+    bool ready = false;
+    bool proceed;
+
+    soc_sleep_owner_primask = os_arch_primask_get();
+    OS_ARCH_IRQ_DISABLE();
+    OS_ARCH_DSB();
+    OS_ARCH_ISB();
+
+    proceed = !soc_sleep_work_pending();
+    if (proceed)
+    {
+#if (OS_CONFIG_CORE_COUNT > 1U)
+        /* The hint avoids polling on every tick while the other core is busy. It is never proof
+         * of idleness: the generation-matched acknowledgement below is the only permission. */
+        OS_ARCH_DMB();
+        if ((soc_sleep_peer_idle != 0U) && (soc_sleep_ack == 0U))
+        {
+            uint64_t started = time_us_64();
+            uint32_t generation = soc_sleep_generation + 1U;
+
+            if (generation == 0U)
+            {
+                generation = 1U;
+            }
+            soc_sleep_generation = generation;
+            OS_ARCH_DMB();
+            soc_sleep_request = generation;
+            OS_ARCH_DSB();
+            OS_ARCH_SEV();
+
+            while ((soc_sleep_ack != generation) &&
+                   (soc_sleep_abort != generation) &&
+                   !soc_sleep_work_pending() &&
+                   ((time_us_64() - started) < SOC_SLEEP_RENDEZVOUS_US))
+            {
+                OS_ARCH_DMB();
+            }
+
+            OS_ARCH_DMB();
+            ready = (soc_sleep_ack == generation) && (soc_sleep_abort != generation) &&
+                    !soc_sleep_work_pending();
+        }
+#else
+        ready = true;
+#endif
+    }
+
+    if (ready)
+    {
+        /* Interrupt handlers on either core cannot start new peripheral work after this check.
+         * Autonomous/external protocols still require the board veto described above. */
+        ready = soc_deep_peripherals_ready() && soc_deep_sleep_allowed_cb();
+    }
+
+    if (ready)
+    {
+        soc_sleep_owner_held = true;
+    }
+    else
+    {
+        soc_sleep_release();
+    }
+    /* A busy peer/peripheral prevents shared-clock shutdown, not ordinary
+     * tickless sleep on core 0. The sleep hook uses WFI with clocks unchanged
+     * when preparation did not retain the peer. Pending local work declines
+     * this pass instead. */
+    return proceed;
+}
+
+/******************************************************************************************************/
+/** @brief Called only after hardware, elapsed ticks and the kernel window have been restored. */
+void os_arch_soc_sleep_finish_cb(void)
+{
+    if (soc_sleep_owner_held)
+    {
+        soc_sleep_release();
+    }
+}
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+/******************************************************************************************************/
+/**
+ * @brief Cooperatively park core 1 from idle; an IRQ requests wake but cannot run an ISR yet.
+ *
+ * Save/disable SysTick without clearing a pending tick or changing its reload/current value.
+ * Core 0 owns elapsed-time accounting; core 1 resumes its local scheduling cadence on release.
+ * SEVONPEND catches an IRQ arriving between the pending check and WFE. The releasing SEV is also
+ * latched, closing the release-versus-WFE race. No IRQ or scheduler state is consumed here.
+ */
+static void soc_sleep_peer_park(void)
+{
+    uint32_t primask = os_arch_primask_get();
+    uint32_t generation;
+
+    OS_ARCH_IRQ_DISABLE();
+    OS_ARCH_DSB();
+    OS_ARCH_ISB();
+    OS_ARCH_DMB();
+    generation = soc_sleep_request;
+
+    if ((generation != 0U) && os_task_current_is_idle() && !soc_sleep_work_pending())
+    {
+        uint32_t systick = OS_ARCH_REG_SYST_CSR;
+        uint32_t scr = scb_hw->scr;
+        bool wake_sent = false;
+
+        OS_ARCH_REG_SYST_CSR = systick & ~(OS_ARCH_SYST_CSR_ENABLE_MSK |
+                                         OS_ARCH_SYST_CSR_TICKINT_MSK);
+        scb_hw->scr = scr | M33_SCR_SEVONPEND_BITS | M33_SCR_SLEEPDEEP_BITS;
+        OS_ARCH_DSB();
+
+        /* SysTick may have pended between the first test and disabling its counter. Preserve
+         * that work and reject this request instead of clearing it to manufacture an idle core. */
+        if (!soc_sleep_work_pending() && (soc_sleep_request == generation))
+        {
+            OS_ARCH_DMB();
+            soc_sleep_ack = generation;
+            OS_ARCH_DSB();
+            OS_ARCH_SEV();
+
+            while (soc_sleep_request == generation)
+            {
+                OS_ARCH_DMB();
+                if (!wake_sent && soc_sleep_work_pending())
+                {
+                    soc_sleep_abort = generation;
+                    OS_ARCH_DSB();
+                    /* A real enabled IPI wakes core 0's WFI even with PRIMASK raised. SEV alone
+                     * would only wake WFE, and would leave the owner asleep until its timer. */
+                    os_arch_core_ipi_request_cb(0U);
+                    wake_sent = true;
+                }
+                OS_ARCH_DSB();
+                OS_ARCH_WFE();
+            }
+        }
+        else
+        {
+            soc_sleep_abort = generation;
+            OS_ARCH_DSB();
+            OS_ARCH_SEV();
+        }
+
+        scb_hw->scr = scr;
+        OS_ARCH_REG_SYST_CSR = systick;
+        OS_ARCH_DSB();
+        /* Publish zero only after this generation's peripheral state is whole again. Core 0
+         * declines another request while a cancelled/finished acknowledgement remains visible. */
+        soc_sleep_ack = 0U;
+        OS_ARCH_DMB();
+    }
+    soc_sleep_primask_restore(primask);
+}
+#endif
 
 /******************************************************************************************************/
 /**
@@ -343,16 +575,36 @@ OS_CONFIG_CORE_COUNT to 1, or use OS_CONFIG_SLEEP_MODE_LIGHT."
  */
 void os_arch_soc_sleep_cb(void)
 {
+    /* The kernel's pre-sleep board callback ran since prepare. Recheck autonomous peripheral
+     * activity and incoming work immediately before touching a shared clock. A rejected deep
+     * entry still closes the already-armed tickless window through its normal wake path. */
+    bool ready = soc_sleep_owner_held && !soc_sleep_work_pending();
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+    OS_ARCH_DMB();
+    ready = ready && (soc_sleep_ack == soc_sleep_request) && (soc_sleep_request != 0U) &&
+            (soc_sleep_abort != soc_sleep_request);
+#endif
+    ready = ready && soc_deep_peripherals_ready() && soc_deep_sleep_allowed_cb();
+    if (!ready)
+    {
+        __wfi();
+        return;
+    }
+
     uint32_t pll_cs   = pll_sys_hw->cs;
     uint32_t pll_fb   = pll_sys_hw->fbdiv_int;
     uint32_t pll_prim = pll_sys_hw->prim;
+    uint32_t pll_pwr  = pll_sys_hw->pwr;
     uint32_t sys_ctrl = clocks_hw->clk[clk_sys].ctrl;
     uint32_t sys_div  = clocks_hw->clk[clk_sys].div;
+    uint32_t sys_selected = clocks_hw->clk[clk_sys].selected;
+    uint32_t scr = scb_hw->scr;
 
     /* Off the PLL first, and glitchlessly: clk_sys back to clk_ref, which is still running from
      * whatever the application put it on. Only once nothing is fed from the PLL may it be stopped -
      * pulling it out from under a running clk_sys stops the core where it stands. */
-    clocks_hw->clk[clk_sys].ctrl = CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLK_REF;
+    clocks_hw->clk[clk_sys].ctrl = sys_ctrl & ~CLOCKS_CLK_SYS_CTRL_SRC_BITS;
 
     while ((clocks_hw->clk[clk_sys].selected & 1U) == 0U)
     {
@@ -360,30 +612,66 @@ void os_arch_soc_sleep_cb(void)
 
     pll_sys_hw->pwr = PLL_PWR_BITS;   /* every block powered down */
 
-    scb_hw->scr |= M33_SCR_SLEEPDEEP_BITS;
+    scb_hw->scr = scr | M33_SCR_SLEEPDEEP_BITS;
 
+#if (OS_CONFIG_TEST_ENABLE == 1U)
+    soc_sleep_deep_entries++;
+#endif
     OS_ARCH_DSB();
     __wfi();
     OS_ARCH_ISB();
 
-    scb_hw->scr &= ~M33_SCR_SLEEPDEEP_BITS;
+    scb_hw->scr = scr;
 
     /* Back up in the order it came down: the PLL has to be locked before anything is fed from it. */
     pll_sys_hw->cs        = pll_cs;
     pll_sys_hw->fbdiv_int = pll_fb;
     pll_sys_hw->prim      = pll_prim;
-    pll_sys_hw->pwr       = 0U;
+    pll_sys_hw->pwr       = pll_pwr | PLL_PWR_POSTDIVPD_BITS;
 
     while ((pll_sys_hw->cs & PLL_CS_LOCK_BITS) == 0U)
     {
     }
 
+    pll_sys_hw->pwr = pll_pwr;
+
     clocks_hw->clk[clk_sys].div  = sys_div;
     clocks_hw->clk[clk_sys].ctrl = sys_ctrl;
+    while (clocks_hw->clk[clk_sys].selected != sys_selected)
+    {
+    }
+    OS_ARCH_DSB();
+    OS_ARCH_ISB();
 }
 
 #endif /* SOC_CONFIG_SLEEP_MODE_DEEP */
 
+#endif /* OS_CONFIG_TICKLESS_ENABLE */
+
+/******************************************************************************************************/
+/** @brief Package idle override: normal WFE, with cooperative DEEP parking on the second core. */
+void os_arch_soc_idle_cb(void)
+{
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U) && \
+    (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP) && (OS_CONFIG_CORE_COUNT > 1U)
+    if ((get_core_num() == 1U) && os_task_current_is_idle())
+    {
+        soc_sleep_peer_idle = 1U;
+        OS_ARCH_DMB();
+        soc_sleep_peer_park();
+        OS_ARCH_WFE();
+        soc_sleep_peer_park();
+        soc_sleep_peer_idle = 0U;
+        OS_ARCH_DMB();
+    }
+    else
+#endif
+    {
+        OS_ARCH_WFE();
+    }
+}
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
 
 /*
  * ***********************************************************************************************************

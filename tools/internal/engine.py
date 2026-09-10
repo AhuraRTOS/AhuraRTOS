@@ -509,52 +509,139 @@ def repo_source(source: str, ref: str):
         yield roots[0]
 
 
+def checked_destination(path: Path, root: Path) -> Path:
+    """Resolve a write target and refuse to leave the selected project."""
+    if path.is_symlink():
+        raise Fatal("refusing to replace a symbolic link: {}".format(path))
+    target = path.resolve()
+    if target == root or root not in target.parents:
+        raise Fatal("installer destination is outside the project: {}".format(path))
+    return target
+
+
+def validate_copy_paths(copies, root: Path):
+    """Reject aliased or overlapping repository copies before staging or prompting."""
+    project_root = root.resolve()
+    for kind, source, destination in copies:
+        target = checked_destination(destination, project_root)
+        source = source.resolve()
+        if kind == "repo":
+            if source == target or source in target.parents or target in source.parents:
+                raise Fatal("source and destination checkouts overlap:\n"
+                            "  source: {}\n  destination: {}\n"
+                            "  Use a separate source checkout for an offline update."
+                            .format(source, target))
+            if target.exists() and not looks_like_ahura(target):
+                raise Fatal("{} exists but is not an AhuraRTOS checkout; "
+                            "refusing to replace it.".format(relative(target, project_root)))
+
+
 def apply(edits, copies, root: Path):
-    """Write everything, or put it all back. Originals are held in memory, so a
-    failure halfway - a read-only file, a full disk - leaves no half-install."""
-    written, created = [], []
+    """Stage every replacement, then commit with original files retained for rollback.
+
+    A transaction directory on the project filesystem holds both staged data and
+    backups. Original files are renamed, not reconstructed from decoded text, so
+    rollback preserves BOMs, line endings and metadata. If rollback itself fails,
+    retain that directory and name it instead of deleting the only remaining copy.
+    """
+    project_root = root.resolve()
+    validate_copy_paths(copies, project_root)
+    operations = [(kind, source, checked_destination(dest, project_root))
+                  for kind, source, dest in copies]
+    operations += [("edit", source, checked_destination(source.path, project_root))
+                   for source in edits]
+    targets = [op[2] for op in operations]
+    for index, target in enumerate(targets):
+        if any(target == other or target in other.parents or other in target.parents
+               for other in targets[:index]):
+            raise Fatal("overlapping installer destinations: {}".format(target))
+    if not operations:
+        return
+
+    transaction = Path(tempfile.mkdtemp(prefix=".ahura-install-", dir=project_root)).resolve()
+    if project_root not in transaction.parents:
+        raise Fatal("transaction directory escaped the project")
+    records, created_dirs = [], []
+    preserve = False
     try:
-        for kind, src, dest in copies:
+        # Nothing belonging to the project is changed until every source is readable.
+        for index, (kind, source, target) in enumerate(operations):
+            staged = transaction / ("new-{}".format(index))
             if kind == "repo":
-                if dest.exists():
-                    if not looks_like_ahura(dest):
-                        raise Fatal(
-                            "{} exists but is not an AhuraRTOS checkout (no\n"
-                            "  ahura.h in it). Refusing to delete it - move it aside\n"
-                            "  and re-run.".format(relative(dest, root)))
-                    # Updating is a replacement, never a merge: a file dropped
-                    # upstream would otherwise linger and keep compiling.
-                    shutil.rmtree(dest)
-                shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
-                created.append(dest)
-                print("  tree    -> {}".format(relative(dest, root)))
+                shutil.copytree(source, staged, ignore=shutil.ignore_patterns(".git"))
+            elif kind == "edit":
+                staged.write_bytes(source.to_bytes())
+                shutil.copystat(target, staged)
             else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, dest)
-                created.append(dest)
-                print("  copied  -> {}".format(relative(dest, root)))
+                shutil.copy2(source, staged)
+            records.append({"target": target, "staged": staged,
+                            "backup": transaction / ("old-{}".format(index)),
+                            "original": target.exists()})
 
-        for src in edits:
-            tmp = src.path.with_suffix(src.path.suffix + ".ahura-tmp")
-            tmp.write_bytes(src.to_bytes())
-            os.replace(tmp, src.path)
-            written.append(src)
-            print("  patched -> {}".format(relative(src.path, root)))
+        # From the first rename onward, an asynchronous cancellation must never
+        # make finally discard an original. Clear this only after commit or a
+        # completely successful rollback.
+        preserve = True
+        for record in records:
+            target = record["target"]
+            missing = []
+            parent = target.parent
+            while not parent.exists():
+                missing.append(parent)
+                parent = parent.parent
+            for parent in reversed(missing):
+                parent.mkdir()
+                created_dirs.append(parent)
+            if target.exists():
+                os.replace(target, record["backup"])
+            os.replace(record["staged"], target)
 
-    except Exception:
+    except BaseException:
         print_error("! failed - rolling back")
-        for src in written:
-            src.path.write_bytes(
-                src.original.replace("\n", src.newline).encode(src.encoding))
-        for path in created:
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
+        recovery_errors = []
+        for record in reversed(records):
+            try:
+                # Inspect rename results instead of flags set after a syscall:
+                # Ctrl-C can arrive after a rename succeeds but before Python
+                # can record it. These paths are on the same filesystem.
+                saved = record["backup"].exists()
+                installed = (not record["staged"].exists() and
+                             record["target"].exists() and
+                             (saved or not record["original"]))
+                if installed:
+                    # Move the replacement out of the way; never delete an original.
+                    os.replace(record["target"], record["staged"])
+                if saved:
+                    os.replace(record["backup"], record["target"])
+            except BaseException as exc:
+                recovery_errors.append("{}: {}".format(type(exc).__name__, exc))
+        for parent in reversed(created_dirs):
+            try:
+                parent.rmdir()  # only directories created here, and only when empty
+            except BaseException as exc:
+                recovery_errors.append("{}: {}".format(type(exc).__name__, exc))
+        if recovery_errors:
+            preserve = True
+            raise Fatal("rollback could not finish; originals and staged files remain in {}:\n{}"
+                        .format(transaction, "\n".join(recovery_errors)))
+        preserve = False
         raise
+    else:
+        for kind, source, target in operations:
+            action = "tree" if kind == "repo" else ("patched" if kind == "edit" else "copied")
+            print("  {:7} -> {}".format(action, relative(target, project_root)))
+        preserve = False
+    finally:
+        if not preserve:
+            # The checked, newly allocated directory is the only recursive removal here.
+            try:
+                shutil.rmtree(transaction)
+            except OSError:
+                print_error("installation transaction files remain at {}".format(transaction))
 
 
 def finish(args, project, root, edits, copies, notes):
+    validate_copy_paths(copies, root)
     for src in edits:
         print(src.diff(root))
 

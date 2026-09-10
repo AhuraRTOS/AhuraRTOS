@@ -52,6 +52,10 @@
 #define OS_ARCH_TICKLESS_TICK_RESTORE()   do { } while (0)
 #endif
 
+#ifndef OS_ARCH_TICKLESS_ELAPSED_ADJUST
+#define OS_ARCH_TICKLESS_ELAPSED_ADJUST(n) (n)
+#endif
+
 #ifndef OS_ARCH_TICKLESS_CYCLE_FROM_TICK
 /** The cycle counter is real hardware, independent of the tick. */
 #define OS_ARCH_TICKLESS_CYCLE_FROM_TICK  0
@@ -256,6 +260,7 @@ uint32_t os_arch_elapsed_ticks_get(void)
             }
 
             OS_ARCH_TICKLESS_TICK_RESTORE();
+            elapsed = OS_ARCH_TICKLESS_ELAPSED_ADJUST(elapsed);
 
 #if (OS_ARCH_TICKLESS_CYCLE_FROM_TICK == 1)
             /* Exactly what is about to be announced, not a wrap count guessed from it: per-tick

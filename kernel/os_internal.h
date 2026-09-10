@@ -180,13 +180,6 @@ uint32_t os_task_current_id_get(void);
 
 /******************************************************************************************************/
 /**
- * @brief Check whether the idle task is currently running (os_task.c, ISR-safe).
- */
-bool os_task_current_is_idle(void);
-
-
-/******************************************************************************************************/
-/**
  * @brief Whether a PendSV on this core would actually switch or round-robin (os_task.c,
  *        ISR-safe). Lets the tick handler skip a pointless PendSV round trip. False while the
  *        scheduler is locked, and for an equal-priority peer until the running task's time
@@ -231,6 +224,11 @@ uint32_t os_task_next_delay_ticks_get(void);
  * @brief Tell core 0 a deadline nearer than its suppressed tickless window has just been armed.
  */
 void os_tickless_deadline_armed(void);
+
+#if (OS_CONFIG_CORE_COUNT > 1U)
+/* Called with the kernel spinlock held. True means release/retry while core 0 closes its window. */
+bool os_tickless_remote_window_wait(void);
+#endif
 
 #endif
 
@@ -340,8 +338,13 @@ OS_INLINE void os_critical_multicore_unlock(void) { }
  */
 OS_FORCE_INLINE bool os_internal_can_block(void)
 {
-    return (os_kernel_running && !os_arch_in_isr() &&
-            (os_kernel_lock_count[os_arch_core_id_get()] == 0U));
+    uint32_t mask_state = os_arch_kernel_mask_save();
+    bool     can_block = (os_kernel_running && !os_arch_in_isr() &&
+                          (os_kernel_lock_count[os_arch_core_id_get()] == 0U));
+
+    os_arch_kernel_mask_restore(mask_state);
+
+    return can_block;
 }
 
 /******************************************************************************************************/
@@ -530,7 +533,9 @@ extern os_task_deadlock_report_t os_task_deadlock_report;
  * false alarm. That distinction used to be carried by simply not publishing the edge; it has its
  * own flag now because the two walks want different subsets of the same information.
  */
+#if (OS_CONFIG_MUTEX_ENABLE == 1U)
 void os_task_mutex_blocked_on_set(const os_mutex_t *mutex, bool forever);
+#endif
 
 #if (OS_MUTEX_DEADLOCK_CHECK == 1)
 /******************************************************************************************************/

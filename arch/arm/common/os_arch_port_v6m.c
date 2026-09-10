@@ -438,3 +438,24 @@ static void os_arch_task_exit_trap(void)
         __asm volatile("bkpt #0");
     }
 }
+
+
+uint32_t os_arch_delay_counter_hz_get(void)
+{
+    return os_arch_reference_clock_hz_cb();
+}
+
+uint32_t os_arch_delay_counter_get(void)
+{
+    return (uint32_t)os_arch_reference_clock_get_cb();
+}
+
+OS_WEAK uint32_t os_arch_reference_clock_hz_cb(void)
+{
+    return 0U;
+}
+
+OS_WEAK uint64_t os_arch_reference_clock_get_cb(void)
+{
+    return 0ULL;
+}

@@ -233,8 +233,9 @@ static os_task_t *os_test_bench_task_fill[TEST_BENCH_TASK_FILL] = {
 static void test_bench_timer_cb(void *context, uint32_t value);
 
 /* Sits in the delay list for the whole deadline-scan measurement, then leaves. */
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 static void test_bench_sleeper_entry(void *context);
-
+#endif
 
 /* A minute long, so it can be armed and cancelled 2000 times over without ever expiring: the
  * measurement sees the arm/cancel path alone, never a delivery. */
@@ -3806,6 +3807,7 @@ static void test_log(void)
 {
     uint32_t dropped_before;
     uint32_t dropped_after;
+    uint32_t dropped_reported;
     uint32_t i;
 
     test_print_section("Buffered Logging");
@@ -3883,14 +3885,18 @@ static void test_log(void)
                       "the hand-formatted notice carries both of its delimiters");
     AHURA_TEST_CHECK(test_log_capture_contains("] W "),
                       "the notice is emitted at warning severity");
-    AHURA_TEST_CHECK(os_log_dropped_get() == 0U,
-                      "the dropped counter is cleared once reported (now %lu)",
-                      (unsigned long)os_log_dropped_get());
+    /* Reporting consumes the pending notice, not the public cumulative total. */
+    dropped_reported = os_log_dropped_get();
+    AHURA_TEST_CHECK(dropped_reported == dropped_after,
+                      "reporting preserves the cumulative dropped count (%lu -> %lu)",
+                      (unsigned long)dropped_after, (unsigned long)dropped_reported);
 
     os_test_log_capture_len = 0U;
     OS_LOG_INFO("logging still works after an overrun");
     os_delay_ms(50U);
     AHURA_TEST_CHECK(test_log_capture_contains("still works"), "logging recovers after an overrun");
+    AHURA_TEST_CHECK(!test_log_capture_contains(" log lines dropped ***"),
+                      "an already reported loss is not reported again");
 
     AHURA_TEST_CHECK(os_kernel_is_running(), "kernel state is intact after the log stress");
 
@@ -6693,6 +6699,7 @@ static void test_tickless_suppression(void)
 
 /******************************************************************************************************/
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 /**
  * @brief Never actually reached - the benchmark timer's period outlives the measurement.
  */
@@ -6702,6 +6709,7 @@ static void test_bench_sleeper_entry(void *context)
 
     os_delay_ms(5000U);
 }
+#endif
 
 static void test_bench_timer_cb(void *context, uint32_t value)
 {

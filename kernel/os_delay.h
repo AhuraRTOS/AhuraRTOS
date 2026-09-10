@@ -49,12 +49,13 @@ uint32_t os_tick_get(void);
  */
 void os_tick_handler(void);
 
-/*
- * The three delays return nothing. A delay either waits or the request was one the platform
- * cannot express - an unreadable CPU clock, or a duration too long for a 32-bit tick count - and
- * both of those are programming or configuration errors that OS_ASSERT reports where they happen,
- * rather than a status every call site would have to cast away.
- */
+/* Nonblocking delays require an IRQ-independent counter: DWT, mcycle, or
+ * os_arch_reference_clock_*_cb supplied by the SoC. The RP packages supply
+ * their hardware TIMER. A port with neither a CPU counter nor a reference
+ * timer calls os_arch_config_fault_trap on a nonzero busy-wait, including
+ * when assertions are disabled; it never substitutes an ISR-fed estimate.
+ * Resolution is one counter unit, and the timer frequency must remain stable
+ * for the duration of a busy-wait. */
 
 /******************************************************************************************************/
 /**

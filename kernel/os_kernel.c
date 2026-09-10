@@ -21,6 +21,8 @@
  * ***********************************************************************************************************
 */
 
+static void os_kernel_init_require(bool valid);
+
 #if (OS_CONFIG_TEST_ENABLE == 0U)
 static os_err_t os_main_system_init(void);
 static void      os_main_task_entry(void *context);
@@ -40,6 +42,7 @@ static void      os_test_task_entry(void *context);
 /* Not static: os_internal.h declares it so os_internal_can_block() can read it
  * without a cross-module call - the same arrangement as os_kernel_lock_count. */
 __IO bool os_kernel_running = false;
+static __IO bool os_kernel_initialized = false;
 
 /* Scheduler lock, per core. Nonzero means this core defers its own context switches with
  * interrupts left fully live; the pending flag remembers a switch that was swallowed while
@@ -106,6 +109,17 @@ OS_WEAK void os_arch_soc_idle_cb(void)
 
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 /******************************************************************************************************/
+/* Ports without shared-clock coordination need no preparation or release. */
+OS_WEAK bool os_arch_soc_sleep_prepare_cb(void)
+{
+    return true;
+}
+
+OS_WEAK void os_arch_soc_sleep_finish_cb(void)
+{
+}
+
+/******************************************************************************************************/
 /**
  * @brief Weak default for the sleep inside a suppressed window: the same plain WFI, which is
  *        correct wherever the package's wake source keeps counting through it.
@@ -124,26 +138,28 @@ OS_WEAK void os_arch_soc_sleep_cb(void)
 /******************************************************************************************************/
 void os_init(void)
 {
+    os_kernel_init_require(!os_kernel_initialized && !os_kernel_running);
+
     /* First, before os_arch_init() and long before os_tick_init(): a SoC package publishes the
      * CPU clock here, and the tick period is computed from it. */
     os_arch_soc_init_cb();
 
     os_arch_init();
     os_task_system_init();
-    (void)os_task_idle_create();
+    os_kernel_init_require(os_task_idle_create() == OS_ERR_NONE);
 
     /* The kernel timer task, at OS_CONFIG_TIMER_PRIORITY: it runs both timer expiries and the
      * deferred work, which is why there is no second service task beside it.
      * Created as a system task, so the application cannot pause or delete it whatever priority it
      * is given. */
 #if (OS_CONFIG_TIMER_ENABLE == 1U)
-    (void)os_timer_system_init();
+    os_kernel_init_require(os_timer_system_init() == OS_ERR_NONE);
 #endif
     /* The log task sits at the opposite end from the timer task: lowest priority,
      * so draining the log never preempts application work. Created before the
      * main/test task so anything they log at startup already has a consumer. */
 #if (OS_CONFIG_LOG_ENABLE == 1U)
-    (void)os_log_system_init();
+    os_kernel_init_require(os_log_system_init() == OS_ERR_NONE);
 #endif
     /* The self-test suite takes priority over the default application task:
      * both otherwise run tsk_main-priority-range code from os_init(), and a
@@ -151,13 +167,14 @@ void os_init(void)
      * application's own task against it. Outside test builds, tsk_main is
      * created unconditionally. */
 #if (OS_CONFIG_TEST_ENABLE == 0U)
-    (void)os_main_system_init();
+    os_kernel_init_require(os_main_system_init() == OS_ERR_NONE);
 #endif
 #if (OS_CONFIG_TEST_ENABLE == 1U)
-    (void)os_test_system_init();
+    os_kernel_init_require(os_test_system_init() == OS_ERR_NONE);
 #endif
 
     os_tick_init();
+    os_kernel_initialized = true;
 }
 
 /******************************************************************************************************/
@@ -168,10 +185,8 @@ void os_init(void)
  */
 void os_start(void)
 {
-    /* os_init() created it, and os_task_idle_create is idempotent - so a missing one here means
-     * that creation failed and a retry would fail identically. Assert rather than re-create:
-     * without an idle task the first switch restores through a NULL stack_ptr and hard faults. */
-    OS_ASSERT(os_task_idle_is_created());
+    /* Never dispatch a partially initialized kernel, including when assertions are disabled. */
+    os_kernel_init_require(os_kernel_initialized && !os_kernel_running && os_task_idle_is_created());
 
     os_kernel_running = true;
 
@@ -218,10 +233,7 @@ void os_start(void)
 void os_core_start(void)
 {
 
-    /* Same precondition as os_start(): without an idle task this core's first switch restores
-     * through a NULL stack_ptr and hard faults. Cheap, and it turns a secondary core started too
-     * early into a named assertion rather than a fault with no history. */
-    OS_ASSERT(os_task_idle_is_created());
+    os_kernel_init_require(os_kernel_initialized && os_kernel_running && os_task_idle_is_created());
 
     /* Getting past this means the vector check inside os_arch_init() agreed that THIS core's
      * table routes the context switch - the single most likely thing to be wrong on a fresh SoC
@@ -331,7 +343,12 @@ void os_kernel_unlock(void)
  */
 bool os_kernel_is_locked(void)
 {
-    return (os_kernel_lock_count[os_arch_core_id_get()] != 0U);
+    uint32_t mask_state = os_arch_kernel_mask_save();
+    bool     locked = (os_kernel_lock_count[os_arch_core_id_get()] != 0U);
+
+    os_arch_kernel_mask_restore(mask_state);
+
+    return locked;
 }
 
 #if (OS_CONFIG_ASSERT_ENABLE == 1U)
@@ -368,6 +385,26 @@ void os_assert_failed(const char *file, uint32_t line)
  * Private function implementations
  * ***********************************************************************************************************
 */
+
+/******************************************************************************************************/
+/**
+ * @brief Halt at an unusable startup configuration even when optional assertions are disabled.
+ *
+ * @param[in] valid  Whether the mandatory initialization step succeeded.
+ * @return None.
+ */
+static void os_kernel_init_require(bool valid)
+{
+    if (!valid)
+    {
+        OS_ASSERT(valid);
+        os_arch_config_fault_trap();
+
+        while (1)
+        {
+        }
+    }
+}
 
 #if (OS_CONFIG_TEST_ENABLE == 0U)
 /******************************************************************************************************/

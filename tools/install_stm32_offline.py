@@ -14,8 +14,8 @@ offline is a property of the file rather than a promise in a comment.
 
     python3 AhuraRTOS/tools/install_stm32_offline.py
 
-Options go after the `-`: --dry-run shows the diff and writes nothing, --yes skips the prompt,
---update fetches the current kernel over the one already installed, --uninstall takes it back out,
+Options follow the script name: --dry-run shows the diff and writes nothing, --yes skips the prompt,
+--update replaces the installed kernel from a separate local checkout, --uninstall takes it back out,
 --source DIR installs from a checkout you already have.
 
 HOW IT WORKS
