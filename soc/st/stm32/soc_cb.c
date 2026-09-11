@@ -61,8 +61,8 @@
  * read as 0 in the #if tests below - which is LIGHT and "do not touch the HAL tick", exactly what
  * a build without tickless wants. */
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
-#if !defined(SOC_CONFIG_TICKLESS_HAL_TICK) || !defined(SOC_CONFIG_SLEEP_MODE)
-#error "soc_config.h is incomplete: OS_CONFIG_TICKLESS_ENABLE is 1, so SOC_CONFIG_TICKLESS_HAL_TICK and SOC_CONFIG_SLEEP_MODE are required too."
+#if !defined(SOC_CONFIG_TICKLESS_HAL_TICK)
+#error "soc_config.h is incomplete: OS_CONFIG_TICKLESS_ENABLE is 1, so SOC_CONFIG_TICKLESS_HAL_TICK is required too."
 #endif
 #endif
 
@@ -91,7 +91,7 @@
  * ***********************************************************************************************************
 */
 
-#if (OS_CONFIG_TICKLESS_ENABLE == 1U) && (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U) && (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
 /* Defined with the LPTIM driver further down; declared here because the init callback above the
  * driver is what calls it. */
 static void soc_lptim_init(void);
@@ -123,7 +123,7 @@ void os_arch_soc_init_cb(void)
     SystemCoreClockUpdate();
 #endif
 
-#if (OS_CONFIG_TICKLESS_ENABLE == 1U) && (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U) && (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
     soc_lptim_init();
 #endif
 }
@@ -205,12 +205,6 @@ const uint32_t soc_stm32_anchor = 0U;
  * expensive to find. A refused build naming the settings that disagree costs nothing to read.
 */
 
-#if (OS_CONFIG_TICKLESS_ENABLE == 1U) &&                       \
-    (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) &&   \
-    (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_DEEP)
-#error "SOC_CONFIG_SLEEP_MODE must be OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP."
-#endif
-
 /* No wake source to choose, and that is the whole of it: the depth decides. LIGHT leaves this
  * package supplying no source at all, and the port suppresses against SysTick itself - which is
  * exactly right, since SysTick is clocked from the core and the core clock is still running. DEEP
@@ -233,8 +227,8 @@ const uint32_t soc_stm32_anchor = 0U;
  * nobody should have to fill in. Missing it is refused rather than defaulted, because the default
  * that suggests itself - a plain WFI - is precisely the light sleep this build just said it did
  * not want, and it would save nothing while reporting nothing. */
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP) && !defined(SOC_CONFIG_DEEP_SLEEP)
-#error "OS_CONFIG_SLEEP_MODE_DEEP needs SOC_CONFIG_DEEP_SLEEP: this series' HAL Stop entry, \
+#if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U) && !defined(SOC_CONFIG_DEEP_SLEEP)
+#error "OS_CONFIG_TICKLESS_DEEP_ENABLE needs SOC_CONFIG_DEEP_SLEEP: this series' HAL Stop entry, \
 written out as the statement to run. soc/st/stm32/template/soc_config.h lists the call for every \
 family."
 #endif
@@ -242,15 +236,15 @@ family."
 /* Selecting the LPTIM here is only half of it: enabling the peripheral in CubeMX is what brings the
  * HAL module into the project at all. Without that step this would fail as a heap of missing
  * declarations from inside the package, which says nothing about what to do about it. */
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP) && !defined(HAL_LPTIM_MODULE_ENABLED)
-#error "OS_CONFIG_SLEEP_MODE_DEEP needs the LPTIM to end its windows, and this project has no \
+#if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U) && !defined(HAL_LPTIM_MODULE_ENABLED)
+#error "OS_CONFIG_TICKLESS_DEEP_ENABLE needs the LPTIM to end its windows, and this project has no \
 LPTIM HAL module. In CubeMX \
 enable the LPTIM named by SOC_CONFIG_TICKLESS_LPTIM_HANDLE, give it LSI or LSE as its clock, \
 leave its NVIC entry OFF - the package owns that - and regenerate."
 #endif
 
 
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+#if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
 
 /*
  * ***********************************************************************************************************
@@ -741,7 +735,7 @@ uint32_t os_arch_tick_resume_cb(void)
     return elapsed;
 }
 
-#endif /* SOC_CONFIG_SLEEP_MODE_DEEP */
+#endif /* OS_CONFIG_TICKLESS_DEEP_ENABLE */
 
 /* SysTick is the port's own, so this package supplies none of the three suppress callbacks for it
  * - os_arch_port_v8m.c reprograms the reload itself. The weak defaults in the port answer 0, which
@@ -815,7 +809,7 @@ OS_WEAK void os_tickless_post_sleep_cb(void)
  *
  * @return None.
  */
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+#if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
 /* CubeMX generates this into main.c on every project it makes, and generates it NON-static -
  * it simply never puts a prototype in main.h. Declared here rather than asking each application
  * to edit a generated header. A project that has no such function fails to LINK, naming the
@@ -826,7 +820,7 @@ void SystemClock_Config(void);
 
 void os_arch_soc_sleep_cb(void)
 {
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+#if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
     SOC_CONFIG_DEEP_SLEEP();
 
     /* Stop gates the PLL and drops the core onto HSI or CSI, so the wake returns to a machine

@@ -155,13 +155,6 @@ const uint32_t soc_rp2040_anchor = 0U;
  * expensive to find. A refused build naming the settings that disagree costs nothing to read.
 */
 
-#if !defined(SOC_CONFIG_SLEEP_MODE)
-#error "soc_config.h is incomplete: SOC_CONFIG_SLEEP_MODE is required when OS_CONFIG_TICKLESS_ENABLE is 1."
-#elif (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
-    (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_DEEP)
-#error "SOC_CONFIG_SLEEP_MODE must be OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP."
-#endif
-
 /* No wake source to choose: the depth decides it. LIGHT keeps the clocks running, so the microsecond TIMER is
  * still counting and takes the window; DEEP gates them, and only the RTC would survive that.
  *
@@ -169,9 +162,9 @@ const uint32_t soc_rp2040_anchor = 0U;
  * be 1, another naming the sources this chip does not physically have, and a third refusing deep
  * sleep against a source that stops with the clocks. None of those states can be expressed any
  * more, so none of those rules exists. */
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
-#error "OS_CONFIG_SLEEP_MODE_DEEP is not implemented in this package yet: the microsecond TIMER is gated with clk_sys and cannot wake the core from it, and the RTC that could is not written yet. \
-Use OS_CONFIG_SLEEP_MODE_LIGHT."
+#if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
+#error "OS_CONFIG_TICKLESS_DEEP_ENABLE is not implemented in this package yet: the microsecond TIMER is gated with clk_sys and cannot wake the core from it, and the RTC that could is not written yet. \
+Set it to 0U."
 #endif
 
 /*

@@ -506,7 +506,7 @@ void os_tickless_idle_process(void)
          *
          * That last part is what makes this a correctness test rather than an optimisation.
          * OS_ARCH_SLEEP() ends in os_arch_soc_sleep_cb(), which a package is entitled to define as
-         * its deepest mode: on an STM32 under OS_CONFIG_SLEEP_MODE_DEEP it is a Stop entry. Entered
+         * its deepest mode: on an STM32 under OS_CONFIG_TICKLESS_DEEP_ENABLE it is a Stop entry. Entered
          * with no wake source armed it also stops SysTick, so the core waits on whatever unrelated
          * interrupt happens along, and os_arch_elapsed_ticks_get() - correctly, having armed nothing
          * - reports 0. The whole sleep is then missing from os_tick_count, and every delay, timeout

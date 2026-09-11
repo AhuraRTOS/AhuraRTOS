@@ -54,7 +54,7 @@
  * Before this include the port answered a hard 0 to every tickless query and never called the SoC
  * suppress callbacks at all, so a package that supplied a wake source got nothing from it - and
  * OS_ARCH_SLEEP() still ran os_arch_soc_sleep_cb(), which on an STM32 under
- * OS_CONFIG_SLEEP_MODE_DEEP entered Stop mode with no window armed and no way to measure it. */
+ * OS_CONFIG_TICKLESS_DEEP_ENABLE entered Stop mode with no window armed and no way to measure it. */
 #include "os_arch_tickless.c"
 
 /*
@@ -163,8 +163,8 @@ OS_ARCH_STRINGIFY(OS_CONFIG_ARCH_PENDSV_HANDLER) ":\n"
 "    msr     msp, r0\n"                    /* abandon the boot context, including the frame this  */
 "    mov     r0, r5\n"                     /* exception pushed - the return below unstacks from   */
 #else                                      /* PSP instead. Single-core: the vector-table value    */
-"    movw    r1, #0xED08\n"                /* is exactly this core's stack, and always was.      */
-"    movt    r1, #0xE000\n"                /* the boot (main) context is abandoned here,   */
+"    movw    r1, " OS_ARCH_ASM_VTOR_LO "\n"  /* is exactly this core's stack, and always was. */
+"    movt    r1, " OS_ARCH_ASM_VTOR_HI "\n"  /* the boot (main) context is abandoned here,   */
 "    ldr     r1, [r1]\n"                   /* including the frame this exception pushed -  */
 "    ldr     r1, [r1]\n"                   /* the return below unstacks from PSP instead   */
 "    msr     msp, r1\n"

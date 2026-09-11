@@ -58,8 +58,12 @@ thing: a periodic call to `os_tick_handler()`. It claims no `SVC_Handler`, no
 - **Multi-core (SMP)** is verified on silicon on three dual-core targets: the
   RP2350's Cortex-M33 pair, the same chip's Hazard3 pair, and the RP2040's
   Cortex-M0+ pair.
-- **Unfinished:** tickless idle - implemented on the ARMv8-M port, but not yet
-  wired into the idle task.
+- **Tickless idle** is driven by the idle task on every port, and the self-test
+  measures it rather than assuming it: it counts tick interrupts across a window
+  of known length. On the NUCLEO-H503RB that reads 1 entry over 33 suppressed
+  ticks, against 33 while awake.
+- **Unfinished:** TrustZone - the build and its callbacks are wired, but it has
+  never run on a part with the Security Extension enabled.
 
 **No dynamic allocation anywhere in the kernel itself.** Task control blocks,
 ready lists, timer objects, the log ring and the optional heap are all static.

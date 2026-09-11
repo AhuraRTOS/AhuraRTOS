@@ -45,25 +45,4 @@
  */
 #define SOC_CONFIG_HANDLER_STACK_SIZE       1024U
 
-/*
- * ***********************************************************************************************************
- * Tickless idle
- * ***********************************************************************************************************
- *
- * These options apply only when OS_CONFIG_TICKLESS_ENABLE is 1U.
- * The sleep mode determines the wake source:
- *
- *   LIGHT   the RISC-V machine timer (mtime/mtimecmp) ends the window while clocks run.
- *   DEEP    requires a POWMAN wake source that this package does not implement yet.
- *           Selecting DEEP is rejected at compile time.
-*/
-#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
-
-/* How deep the core sleeps inside a suppressed window.
- * Values: OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP, subject to the
- * package restrictions above. */
-#define SOC_CONFIG_SLEEP_MODE               OS_CONFIG_SLEEP_MODE_LIGHT
-
-#endif /* OS_CONFIG_TICKLESS_ENABLE */
-
 #endif /* SOC_CONFIG_H */

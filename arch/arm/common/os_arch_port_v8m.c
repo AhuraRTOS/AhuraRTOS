@@ -178,8 +178,8 @@ OS_ARCH_STRINGIFY(OS_CONFIG_ARCH_PENDSV_HANDLER) ":\n"
 "    msr     msp, r0\n"                    /* abandon the boot context, including the frame this  */
 "    mov     r0, r5\n"                     /* exception pushed - the return below unstacks from   */
 #else                                      /* PSP instead. Single-core: the vector-table value    */
-"    movw    r1, #0xED08\n"                /* is exactly this core's stack, and always was.      */
-"    movt    r1, #0xE000\n"
+"    movw    r1, " OS_ARCH_ASM_VTOR_LO "\n"  /* is exactly this core's stack, and always was. */
+"    movt    r1, " OS_ARCH_ASM_VTOR_HI "\n"
 "    ldr     r1, [r1]\n"
 "    ldr     r1, [r1]\n"
 "    msr     msp, r1\n"

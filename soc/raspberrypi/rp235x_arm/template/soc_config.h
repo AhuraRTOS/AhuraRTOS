@@ -95,33 +95,4 @@
  */
 #define SOC_CONFIG_FAULT_REPORT             1U
 
-/*
- * ***********************************************************************************************************
- * Tickless idle
- * ***********************************************************************************************************
- *
- * These options apply only when OS_CONFIG_TICKLESS_ENABLE is 1U.
- * The sleep mode determines the wake source:
- *
- *   LIGHT   a POWMAN timer alarm ends the window while clocks keep running.
- *   DEEP    the POWMAN alarm remains available while PLL_SYS is stopped. With two
- *           cores, core 1 must acknowledge from idle before shared clocks change.
- *           A busy peer or clock-dependent peripheral keeps tickless LIGHT sleep;
- *           pending local work aborts the pass. PLL-off sleep requires the default
- *           XOSC/PLL_SYS tree and an inactive USB controller.
- *
- * Boards with external activity the register checks cannot detect (for example
- * polled UART receive) may override bool soc_deep_sleep_allowed_cb(void). Return
- * false while that activity requires the normal clocks. This callback runs with
- * configurable interrupts masked and must not block or call kernel APIs.
-*/
-#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
-
-/* How deep the core sleeps inside a suppressed window.
- * Values: OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP, subject to the
- * package restrictions above. */
-#define SOC_CONFIG_SLEEP_MODE               OS_CONFIG_SLEEP_MODE_LIGHT
-
-#endif /* OS_CONFIG_TICKLESS_ENABLE */
-
 #endif /* SOC_CONFIG_H */

@@ -113,13 +113,13 @@
  * ***********************************************************************************************************
  *
  * There is nothing to pick: what ends a suppressed window follows from how deep the core sleeps,
- * which is SOC_CONFIG_SLEEP_MODE below.
+ * which is OS_CONFIG_TICKLESS_DEEP_ENABLE in os_config.h.
  *
- *   LIGHT   the core clock keeps running, so SysTick is still counting and the port suppresses
- *           against it directly. This package supplies no timer at all and the LPTIM settings
- *           here are not read.
- *   DEEP    Stop mode gates the core clock and SysTick with it, so the LPTIM - clocked from LSI
- *           or LSE - takes the window instead. That is what the settings below describe.
+ *   0 (light)  the core clock keeps running, so SysTick is still counting and the port suppresses
+ *              against it directly. This package supplies no timer at all and the LPTIM settings
+ *              here are not read.
+ *   1 (deep)   Stop mode gates the core clock and SysTick with it, so the LPTIM - clocked from LSI
+ *              or LSE - takes the window instead. That is what the settings below describe.
  *
  * It used to be two flags plus the mode, with an arithmetic rule saying exactly one flag had to
  * be 1 and another refusing deep sleep against a source that dies in Stop. Neither state can be
@@ -131,7 +131,7 @@
 */
 
 /* Which LPTIM, what its NVIC entry and vector are called, and what its source clock runs at. Only
- * read when SOC_CONFIG_SLEEP_MODE is DEEP.
+ * read when OS_CONFIG_TICKLESS_DEEP_ENABLE is 1U.
  *
  * Three names rather than an instance number, because across the STM32 range they are not
  * derivable from one another: the G0 folds this very timer into TIM6_DAC_LPTIM1_IRQn. Copy them
@@ -148,15 +148,9 @@
 #define SOC_CONFIG_TICKLESS_LPTIM_VECTOR    LPTIM1_IRQHandler
 #define SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ  32768U
 
-/* How deep the core sleeps inside a window.
- *   OS_CONFIG_SLEEP_MODE_LIGHT   core stops, clocks keep running. Works with every source.
- *   OS_CONFIG_SLEEP_MODE_DEEP    Stop mode. Saves far more, and needs the LPTIM under it.
- * Values: one of the two above. */
-#define SOC_CONFIG_SLEEP_MODE               OS_CONFIG_SLEEP_MODE_LIGHT
-
 /*
  * ***********************************************************************************************************
- * Deep sleep entry (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP only)
+ * Deep sleep entry (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U only)
  * ***********************************************************************************************************
 */
 

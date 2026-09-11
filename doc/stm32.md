@@ -641,8 +641,9 @@ the package safe on a hand-written project: `SOC_CONFIG_CLOCK_AUTO_UPDATE` and
 **NUCLEO-H743ZI** (Cortex-M7), **NUCLEO-H503RB** (M33) and **NUCLEO-G431RB**
 (M4). The full self-test
 passes on silicon, both from the one-command installer and from the manual
-route. Single-core only. The tickless hooks are wired but share the kernel's
-overall tickless status - implemented, not yet driven by the idle task.
+route. Single-core only. Tickless idle is driven by the idle task here as everywhere;
+this package adds Stop mode with an LPTIM ending the window, selected with
+`OS_CONFIG_TICKLESS_DEEP_ENABLE`.
 
 ## What regeneration touches
 

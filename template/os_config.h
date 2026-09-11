@@ -452,6 +452,14 @@
 /* Values: 1 = allow suppression, 0 = plain WFI. */
 #define OS_CONFIG_TICKLESS_ENABLE           0U
 
+/* Whether a suppressed window sleeps as deep as the SoC package can go (1 = yes, 0 = light).
+ *
+ * Deep gates the clocks - STM32 Stop, RP2350 with PLL_SYS down - so only a wake source that
+ * outlives them can end the window. The package supplies that source and refuses the build when it
+ * has none; its soc_config.h holds whatever deep sleep needs there.
+ * Values: 1 = as deep as the package goes, 0 = light. */
+#define OS_CONFIG_TICKLESS_DEEP_ENABLE      0U
+
 /* Shortest planned idle worth suppressing for; below it the wake-up costs more than the sleep
  * saves. Milliseconds, because what it pays off is a duration - arming the wake source and
  * entering and leaving the sleep - and that does not change when the tick rate does.

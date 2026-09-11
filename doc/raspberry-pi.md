@@ -774,7 +774,7 @@ in `os_config.h`, rebuild, and read the console.
 ### Coordinated Pico 2 Arm DEEP sleep
 
 `raspberrypi/rp235x_arm` supports `OS_CONFIG_TICKLESS_ENABLE=1U` with
-`SOC_CONFIG_SLEEP_MODE=OS_CONFIG_SLEEP_MODE_DEEP` and one or two cores.
+`OS_CONFIG_TICKLESS_DEEP_ENABLE=1U` and one or two cores.
 With two cores, core 1 cooperates only from its idle task. It saves its interrupt
 mask, SysTick control and sleep control, then acknowledges a numbered request.
 Core 0 waits at most 100 microseconds for that acknowledgement, without a kernel

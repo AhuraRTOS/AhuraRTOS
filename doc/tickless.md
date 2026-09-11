@@ -212,9 +212,9 @@ one copy now.
 
 | Package | Wake source | Deepest mode | Ceiling |
 |---|---|---|---|
-| `st/stm32` | LPTIM, clocked from LSI or LSE | Stop (`SOC_CONFIG_SLEEP_MODE = OS_CONFIG_SLEEP_MODE_DEEP`) | The LPTIM's 16-bit counter, in ticks - 2047 on a 32 kHz clock at 1 kHz ticks |
+| `st/stm32` | LPTIM, clocked from LSI or LSE | Stop (`OS_CONFIG_TICKLESS_DEEP_ENABLE = 1U`) | Three quarters of the LPTIM's 16-bit span, the rest kept as wrap headroom - 1500 ticks on a 32.768 kHz clock at 1 kHz ticks, 1536 on a 32 kHz LSI |
 | `raspberrypi/rp2040` | An alarm on the always-on microsecond timer | Core sleep, clocks running | 60 s |
-| `raspberrypi/rp235x_arm` | A POWMAN alarm | Core sleep, clocks running | Effectively unbounded - `OS_TICKLESS_MAX_IDLE_TICKS` is the binding limit |
+| `raspberrypi/rp235x_arm` | A POWMAN alarm, which outlives the clocks | PLL_SYS powered down (`OS_CONFIG_TICKLESS_DEEP_ENABLE = 1U`), with core 1 parked by agreement | Effectively unbounded - `OS_TICKLESS_MAX_IDLE_TICKS` is the binding limit |
 | `raspberrypi/rp235x_riscv` | `mtimecmp` | Core sleep | As above |
 | *(none)* | - | - | 0: the kernel skips the sleep, the idle task does a plain `WFI` |
 

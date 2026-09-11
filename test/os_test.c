@@ -2898,14 +2898,6 @@ static void test_timer_isr(void)
     printf("         Cortex-M specific; see the comment at test_timer_isr().\r\n");
     return;
 #else
-    /* SHPR2: SVCall's priority byte is the top one. Written as a WORD - byte access to this bank is
-     * not architecturally guaranteed on ARMv6-M - and 0xFF saturates to the lowest priority
-     * whatever the implemented bits are. SVCall resets to 0, which is above any
-     * OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY threshold, and the kernel traps a call from an interrupt
-     * its mask cannot reach. Lowering it is exactly what an application must do for an ISR of its
-     * own, so doing it here is part of what the section demonstrates. */
-    __IO uint32_t *shpr2 = (__IO uint32_t *)0xE000ED1CUL;
-
     test_print_section("Timer API from an ISR");
 
     /* Before the first svc: confirm the vector table actually routes SVC to the handler above.
@@ -2962,7 +2954,12 @@ static void test_timer_isr(void)
     }
 #endif
 
-    *shpr2 = (*shpr2 & 0x00FFFFFFUL) | 0xFF000000UL;
+    /* SVCall resets to priority 0, which is above any OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY threshold,
+     * and the kernel traps a call from an interrupt its mask cannot reach. 0xFF saturates to the
+     * lowest priority whatever the implemented bits are. Lowering it is exactly what an application
+     * must do for an ISR of its own, so doing it here is part of what the section demonstrates. */
+    OS_ARCH_REG_SHPR2 = (OS_ARCH_REG_SHPR2 & ~OS_ARCH_SHPR2_SVC_PRI_MSK) |
+                        (0xFFUL << OS_ARCH_SHPR2_SVC_PRI_POS);
 
     /* ---- start, retune and defer, all from the handler ---- */
     os_test_isr_entered     = 0U;

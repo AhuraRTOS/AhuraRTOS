@@ -20,11 +20,11 @@ def compile_test(root, database, build):
     entry = next(e for e in entries if e['file'].replace('\\', '/').endswith('/rp235x_arm/soc_cb.c'))
     previous = Path(entry['file']).parents[3]
     config = (previous.parent / 'os_config.h').read_text()
-    for key, value in [('OS_CONFIG_CORE_COUNT', '2U'), ('OS_CONFIG_TICKLESS_ENABLE', '1U')]:
+    for key, value in [('OS_CONFIG_CORE_COUNT', '2U'), ('OS_CONFIG_TICKLESS_ENABLE', '1U'),
+                       ('OS_CONFIG_TICKLESS_DEEP_ENABLE', '1U')]:
         config = setting(config, key, value)
     (build / 'os_config.h').write_text(config)
     soc = (root / 'soc/raspberrypi/rp235x_arm/template/soc_config.h').read_text()
-    soc = setting(soc, 'SOC_CONFIG_SLEEP_MODE', 'OS_CONFIG_SLEEP_MODE_DEEP')
     soc = setting(soc, 'SOC_CONFIG_IPI_DOORBELL', '1U')
     (build / 'soc_config.h').write_text(soc)
     args = command_arguments(entry)

@@ -104,10 +104,7 @@ def main():
             variant = setting(config, "OS_CONFIG_CORE_COUNT", f"{cores}U")
             variant = setting(variant, "OS_CONFIG_TICKLESS_ENABLE", f"{tickless}U")
             (directory / "os_config.h").write_text(variant, encoding="utf-8")
-            # Off builds must also work with the unused sleep option absent.
-            mode = soc_config if tickless else re.sub(
-                r"^#define\s+SOC_CONFIG_SLEEP_MODE\s+.*$", "", soc_config, flags=re.M)
-            (directory / "soc_config.h").write_text(mode, encoding="utf-8")
+            (directory / "soc_config.h").write_text(soc_config, encoding="utf-8")
             for entry in entries:
                 symbols = compile_source(entry, directory, label)
                 if Path(entry["file"]).name == "soc_cb.c":
@@ -126,15 +123,15 @@ def main():
                         raise RuntimeError(label + ": incorrect tickless reference callback guard")
             results.append({"test": label, "result": "PASS"})
 
-    directory = build / (chip + "-missing-sleep-mode")
+    # The sleep depth is a kernel option now, so the incompleteness check is the kernel's.
+    directory = build / (chip + "-missing-sleep-depth")
     directory.mkdir(exist_ok=True)
-    (directory / "os_config.h").write_text(
-        setting(config, "OS_CONFIG_TICKLESS_ENABLE", "1U"), encoding="utf-8")
-    (directory / "soc_config.h").write_text(re.sub(
-        r"^#define\s+SOC_CONFIG_SLEEP_MODE\s+.*$", "", soc_config, flags=re.M), encoding="utf-8")
-    compile_source(chip_entry, directory, "missing sleep mode",
-                   "SOC_CONFIG_SLEEP_MODE is required when OS_CONFIG_TICKLESS_ENABLE is 1")
-    results.append({"test": chip + " missing enabled sleep mode rejected", "result": "PASS"})
+    (directory / "os_config.h").write_text(re.sub(
+        r"^#define\s+OS_CONFIG_TICKLESS_DEEP_ENABLE\s+.*$", "",
+        setting(config, "OS_CONFIG_TICKLESS_ENABLE", "1U"), flags=re.M), encoding="utf-8")
+    (directory / "soc_config.h").write_text(soc_config, encoding="utf-8")
+    compile_source(chip_entry, directory, "missing sleep depth", "os_config.h is incomplete")
+    results.append({"test": chip + " missing sleep depth rejected", "result": "PASS"})
     (build / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(results, indent=2))
 

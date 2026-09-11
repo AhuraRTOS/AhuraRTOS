@@ -159,7 +159,7 @@ OS_ARCH_STRINGIFY(OS_CONFIG_ARCH_PENDSV_HANDLER) ":\n"
 "    b       os_arch_context_restore_asm\n"
 ".align 2\n"
 "os_arch_vtor_addr:\n"                     /* VTOR reads as zero on cores without it, which is */
-"    .word   0xE000ED08\n"                 /* the fixed table address anyway                   */
+"    .word   " OS_ARCH_STRINGIFY(OS_ARCH_ADDR_VTOR) "\n"  /* the fixed table address anyway  */
 
 ".global os_arch_context_restore_asm\n"
 ".type   os_arch_context_restore_asm, %function\n"

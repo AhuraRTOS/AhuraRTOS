@@ -140,7 +140,7 @@ feature off shows exactly which values stop mattering. PART 3 is the platform.
 | `OS_CONFIG_ARCH_VECTOR_CHECK` | `1U` | Boot-time check that the vector table routes PendSV to the kernel |
 | `OS_CONFIG_TRUSTZONE` | `..._DISABLED` | Security state on ARMv8-M |
 | `OS_CONFIG_CORE_COUNT` + `SPINLOCK_SOC_BACKEND` | `1U` | SMP scheduling. Verified on silicon on the RP2350's Cortex-M33 pair, the same chip's Hazard3 pair, and the RP2040 |
-| `OS_CONFIG_TICKLESS_ENABLE` + `TICKLESS_MIN_IDLE`, `MAX_SUPPRESSED_TICKS` | `0U` | Tick suppression while idle. Implemented on the ARMv8-M port but **not yet wired into the idle task**, so today it changes nothing at run time |
+| `OS_CONFIG_TICKLESS_ENABLE` + `TICKLESS_DEEP_ENABLE`, `TICKLESS_MIN_IDLE_MS` | `0U` | Tick suppression while idle, driven by the idle task. How long a window may last and what ends it is the SoC package's answer; `TICKLESS_DEEP_ENABLE` says whether it sleeps as deep as that package can go |
 
 Two more `OS_CONFIG_ARCH_` names exist but are **not** yours to set in
 `os_config.h`: `OS_CONFIG_ARCH_CORE_ID_MHARTID` and `OS_CONFIG_ARCH_SWI_SECTION`

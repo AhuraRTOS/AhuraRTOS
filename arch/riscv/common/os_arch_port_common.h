@@ -48,18 +48,6 @@
 #define OS_CONFIG_TICK_SOURCE_SYSTICK   0U
 #define OS_CONFIG_TICK_SOURCE_EXTERNAL  1U
 
-/* How deep the core sleeps inside a suppressed tickless window, for SOC_CONFIG_SLEEP_MODE.
- * Kernel-owned encoding; which of them a board can actually use is its SoC package's answer,
- * because it depends entirely on whether the chosen wake source keeps running that deep.
- *
- *   LIGHT  The core stops, clocks and peripherals keep running. Every wake source works, so this
- *          is the only mode a part can offer unconditionally. Saves the tick interrupts.
- *   DEEP   Clocks are gated - STM32 Stop, RP2350 dormant. Saves far more, and only a source that
- *          survives it can end the window: an LPTIM or RTC on an STM32, POWMAN on an RP2350.
- *          SysTick is NOT one of them, which is why the pair is checked rather than assumed. */
-#define OS_CONFIG_SLEEP_MODE_LIGHT      0U
-#define OS_CONFIG_SLEEP_MODE_DEEP       1U
-
 /* TrustZone mode.
  *
  * REQUIRED by the ARM port and deliberately NOT required here. Every other option in the list
@@ -103,6 +91,17 @@
     !defined(OS_CONFIG_CORE_COUNT) ||                     \
     !defined(OS_CONFIG_TICKLESS_MIN_IDLE_MS)
 #error "os_config.h is incomplete: it must define every option listed in template/os_config.h."
+#endif
+
+/* Asked for only when there is tickless idle to configure: a build without it has no window to
+ * sleep through, so it has no depth to answer for. The value is checked here rather than in every
+ * SoC package; what a package can do with it stays the package's own check. */
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+#if !defined(OS_CONFIG_TICKLESS_DEEP_ENABLE)
+#error "os_config.h is incomplete: OS_CONFIG_TICKLESS_ENABLE is 1, so OS_CONFIG_TICKLESS_DEEP_ENABLE is required too."
+#elif (OS_CONFIG_TICKLESS_DEEP_ENABLE != 0U) && (OS_CONFIG_TICKLESS_DEEP_ENABLE != 1U)
+#error "OS_CONFIG_TICKLESS_DEEP_ENABLE must be 0U (light) or 1U (as deep as the SoC package goes)."
+#endif
 #endif
 
 /*
@@ -233,6 +232,12 @@ extern "C"
 #define OS_ARCH_MIE_MSIE_MSK              (1UL << 3)
 #define OS_ARCH_MIE_MTIE_MSK              (1UL << 7)
 #define OS_ARCH_MIE_MEIE_MSK              (1UL << 11)
+
+/* mcountinhibit and its CY bit, which gate mcycle. Addressed by number rather than by name for the
+ * same reason as meicontext further down: the CSR postdates some assemblers' tables, and this port
+ * builds on whatever toolchain the target ships with. Bit 2 is IR (instret), left as found. */
+#define OS_ARCH_CSR_MCOUNTINHIBIT         0x320
+#define OS_ARCH_MCOUNTINHIBIT_CY_MSK      (1UL << 0)
 
 /* Trap causes, which double as the vector table index in mtvec vectored mode (offset = cause * 4). */
 #define OS_ARCH_TRAP_CAUSE_SWI            3U

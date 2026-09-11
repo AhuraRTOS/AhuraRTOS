@@ -30,18 +30,6 @@
 #define OS_CONFIG_TICK_SOURCE_SYSTICK   0U
 #define OS_CONFIG_TICK_SOURCE_EXTERNAL  1U
 
-/* How deep the core sleeps inside a suppressed tickless window, for SOC_CONFIG_SLEEP_MODE.
- * Kernel-owned encoding; which of them a board can actually use is its SoC package's answer,
- * because it depends entirely on whether the chosen wake source keeps running that deep.
- *
- *   LIGHT  The core stops, clocks and peripherals keep running. Every wake source works, so this
- *          is the only mode a part can offer unconditionally. Saves the tick interrupts.
- *   DEEP   Clocks are gated - STM32 Stop, RP2350 dormant. Saves far more, and only a source that
- *          survives it can end the window: an LPTIM or RTC on an STM32, POWMAN on an RP2350.
- *          SysTick is NOT one of them, which is why the pair is checked rather than assumed. */
-#define OS_CONFIG_SLEEP_MODE_LIGHT      0U
-#define OS_CONFIG_SLEEP_MODE_DEEP       1U
-
 /*
  * The application provides the kernel configuration: copy
  * template/os_config.h into the project as os_config.h
@@ -79,10 +67,21 @@
     !defined(OS_CONFIG_TIMER_CORE_AFFINITY) ||                                                        \
     !defined(OS_CONFIG_MAIN_TASK_STACK_SIZE) || !defined(OS_CONFIG_MAIN_TASK_PRIORITY) ||             \
     !defined(OS_CONFIG_TEST_STACK_SIZE) || !defined(OS_CONFIG_TEST_PRIORITY) ||                       \
-    !defined(OS_CONFIG_TRUSTZONE) || !defined(OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY) ||                  \
+    !defined(OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY) ||                  \
     !defined(OS_CONFIG_CORE_COUNT) ||                     \
     !defined(OS_CONFIG_TICKLESS_MIN_IDLE_MS)
 #error "os_config.h is incomplete: it must define every option listed in template/os_config.h."
+#endif
+
+/* Asked for only when there is tickless idle to configure: a build without it has no window to
+ * sleep through, so it has no depth to answer for. The value is checked here rather than in every
+ * SoC package; what a package can do with it stays the package's own check. */
+#if (OS_CONFIG_TICKLESS_ENABLE == 1U)
+#if !defined(OS_CONFIG_TICKLESS_DEEP_ENABLE)
+#error "os_config.h is incomplete: OS_CONFIG_TICKLESS_ENABLE is 1, so OS_CONFIG_TICKLESS_DEEP_ENABLE is required too."
+#elif (OS_CONFIG_TICKLESS_DEEP_ENABLE != 0U) && (OS_CONFIG_TICKLESS_DEEP_ENABLE != 1U)
+#error "OS_CONFIG_TICKLESS_DEEP_ENABLE must be 0U (light) or 1U (as deep as the SoC package goes)."
+#endif
 #endif
 
 #if (OS_CONFIG_CORE_COUNT < 1U)
@@ -353,6 +352,16 @@ extern "C"
 #define OS_ARCH_HAS_BASEPRI               0
 #endif
 
+/* CFSR and HFSR belong to the Main Extension, so the cores without it - ARMv6-M
+ * and ARMv8-M baseline (Cortex-M0/M0+/M23) - do not have them at all. Reading
+ * those addresses there is a reserved access, not a zero, so a fault report has
+ * to leave the two fields out rather than read them and print noise. */
+#if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8_1M_MAIN__)
+#define OS_ARCH_HAS_FAULT_STATUS          1
+#else
+#define OS_ARCH_HAS_FAULT_STATUS          0
+#endif
+
 /*
  * Kernel interrupt-mask backend selected by OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY:
  *   0        PRIMASK: critical sections mask every interrupt (all cores).
@@ -367,6 +376,17 @@ extern "C"
 
 #if (OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY > 255U)
 #error "OS_CONFIG_MAX_SYSCALL_IRQ_PRIORITY is an 8-bit NVIC priority byte (0..255, pre-shifted into the implemented bits)."
+#endif
+
+/* A core without the Security Extension has one possible answer, so a configuration that leaves
+ * the option out on such a target gets it rather than a build failure - the same terms the RISC-V
+ * port states it on. A v8-M build still has to say which state the product runs in. */
+#if (OS_ARCH_HAS_TRUSTZONE == 0)
+#ifndef OS_CONFIG_TRUSTZONE
+#define OS_CONFIG_TRUSTZONE             OS_CONFIG_TRUSTZONE_DISABLED
+#endif
+#elif !defined(OS_CONFIG_TRUSTZONE)
+#error "os_config.h is incomplete: this core has the Security Extension, so OS_CONFIG_TRUSTZONE is required."
 #endif
 
 /* Validate the configured TrustZone mode against the target early, with
@@ -400,8 +420,24 @@ extern "C"
 
 /* Vector Table Offset Register. Writable on ARMv7-M/ARMv8-M and on most ARMv6-M
  * implementations; where it is not implemented it reads as zero, which is also
- * the fixed table address, so reading it locates the table on every core. */
-#define OS_ARCH_REG_VTOR                  (*(__I uint32_t *)0xE000ED08UL)
+ * the fixed table address, so reading it locates the table on every core.
+ *
+ * The address is a macro of its own because the ports emit it in inline
+ * assembly, where the pointer cast cannot follow. It carries no UL suffix for
+ * the same reason: the assembler takes the token as written. The LO/HI pair is
+ * the movw/movt form the v7m and v8m ports need; v6m emits it as a .word. */
+#define OS_ARCH_ADDR_VTOR                 0xE000ED08
+#define OS_ARCH_REG_VTOR                  (*(__I uint32_t *)(uintptr_t)OS_ARCH_ADDR_VTOR)
+#define OS_ARCH_ASM_VTOR_LO               "#:lower16:" OS_ARCH_STRINGIFY(OS_ARCH_ADDR_VTOR)
+#define OS_ARCH_ASM_VTOR_HI               "#:upper16:" OS_ARCH_STRINGIFY(OS_ARCH_ADDR_VTOR)
+
+/* Fault status. CFSR says WHICH fault it was; HFSR usually reads FORCED, meaning
+ * the fault escalated from CFSR. Both are memory-mapped, so a fault handler can
+ * read them however bad the stack that got it there is. */
+#if (OS_ARCH_HAS_FAULT_STATUS == 1)
+#define OS_ARCH_REG_CFSR                  (*(__IO uint32_t *)0xE000ED28UL)
+#define OS_ARCH_REG_HFSR                  (*(__IO uint32_t *)0xE000ED2CUL)
+#endif
 
 /* Exception numbers, which - unlike the handler NAMES - are architectural. */
 #define OS_ARCH_VECTOR_PENDSV             14U
@@ -432,6 +468,14 @@ extern "C"
  *              SHPR1, whose first byte is exception number 4 (MemManage). */
 #define OS_ARCH_REG_NVIC_IPR_BASE         ((__I uint8_t *)0xE000E400UL)
 #define OS_ARCH_REG_SHPR_BASE             ((__I uint8_t *)0xE000ED18UL)
+
+/* The same bank as a word, at SHPR2, whose top byte is SVCall's priority. A word
+ * because byte access to this bank is not architecturally guaranteed on ARMv6-M.
+ * The kernel never writes it - it does not use SVC - but anything that raises SVC
+ * from an ISR has to lower that priority first. */
+#define OS_ARCH_REG_SHPR2                 (*(__IO uint32_t *)0xE000ED1CUL)
+#define OS_ARCH_SHPR2_SVC_PRI_POS         24U
+#define OS_ARCH_SHPR2_SVC_PRI_MSK         (0xFFUL << OS_ARCH_SHPR2_SVC_PRI_POS)
 
 /* IPSR exception-number boundaries: 0 = thread mode, 1..15 = system
  * exceptions, 16+ = external interrupts (IRQ n is IPSR 16 + n). */

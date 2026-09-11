@@ -419,10 +419,8 @@ void os_arch_init(void)
      * os_delay_us() and the self-test's benchmarks spin forever. The board does not fault, it
      * simply stops making progress, which is why this is worth a comment rather than one line.
      *
-     * Written by number because mcountinhibit postdates some assemblers' CSR tables, and this file
-     * has to build on whatever toolchain the target ships with. Bit 0 is CY (cycle); bit 2 is IR
-     * (instret), left as found since the kernel does not read it. */
-    OS_ARCH_CSR_CLEAR(0x320, 1UL << 0);
+     * The kernel does not read instret, so only the CY bit is cleared. */
+    OS_ARCH_CSR_CLEAR(OS_ARCH_CSR_MCOUNTINHIBIT, OS_ARCH_MCOUNTINHIBIT_CY_MSK);
 
     OS_ARCH_CSR_SET(mie, OS_ARCH_MIE_MSIE_MSK);
 }

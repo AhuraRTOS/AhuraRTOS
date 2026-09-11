@@ -566,8 +566,12 @@ void soc_fault_report(const uint32_t *frame)
         soc_fault.msp = msp_value;
     }
 
-    soc_fault.cfsr = *(volatile uint32_t *)0xE000ED28UL;
-    soc_fault.hfsr = *(volatile uint32_t *)0xE000ED2CUL;
+    /* Only on a core that has them. On the RP2040 (Cortex-M0+) these two registers do not exist,
+     * so both fields stay zero and the report says what it can from the rest. */
+#if (OS_ARCH_HAS_FAULT_STATUS == 1)
+    soc_fault.cfsr = OS_ARCH_REG_CFSR;
+    soc_fault.hfsr = OS_ARCH_REG_HFSR;
+#endif
     soc_fault.taken = 1U;
 
     /* Now the frame, and only if it can be trusted: inside RAM, word aligned, and with room for
@@ -838,7 +842,7 @@ uint64_t os_arch_reference_clock_get_cb(void)
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U)
 uint32_t os_arch_tick_reference_clock_hz_cb(void)
 {
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_LIGHT)
+#if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 0U)
     return os_arch_reference_clock_hz_cb();
 #else
     return 0U;

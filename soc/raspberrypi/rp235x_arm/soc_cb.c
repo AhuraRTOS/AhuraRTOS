@@ -67,13 +67,6 @@ const uint32_t soc_rp235x_arm_anchor = 0U;
  * expensive to find. A refused build naming the settings that disagree costs nothing to read.
 */
 
-#if !defined(SOC_CONFIG_SLEEP_MODE)
-#error "soc_config.h is incomplete: SOC_CONFIG_SLEEP_MODE is required when OS_CONFIG_TICKLESS_ENABLE is 1."
-#elif (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_LIGHT) && \
-    (SOC_CONFIG_SLEEP_MODE != OS_CONFIG_SLEEP_MODE_DEEP)
-#error "SOC_CONFIG_SLEEP_MODE must be OS_CONFIG_SLEEP_MODE_LIGHT or OS_CONFIG_SLEEP_MODE_DEEP."
-#endif
-
 /* No wake source to choose: the depth decides it. LIGHT keeps the clocks running and DEEP gates
  * them, and the POWMAN timer below serves both - it lives in the always-on domain, so it is the
  * one alarm on this part that outlives clk_sys. SysTick and the TIMER blocks do not.
@@ -224,15 +217,15 @@ uint32_t os_arch_tick_suppress_max_cb(void)
  * @brief The shortest window worth sleeping through.
  *
  * A millisecond is this timer's whole resolution, so a window has to span at least two of them
- * before its length can be told from rounding. At a 1 kHz tick that is two ticks, which is already
- * the floor the kernel insists on regardless - so this decides nothing today. It is here so that a
- * faster tick, where a millisecond spans several ticks, raises the bar by itself.
+ * before its length can be told from rounding. That is two milliseconds converted TO ticks,
+ * rounded up so a slow tick never asks for a floor of zero: at 1 kHz it comes to the two ticks the
+ * kernel insists on anyway, and below 1 kHz a single tick already covers the two milliseconds.
  *
  * @return uint32_t  Floor on one window, in ticks.
  */
 uint32_t os_arch_tick_suppress_min_cb(void)
 {
-    return (uint32_t)(2UL * SOC_POWMAN_MS_PER_TICK);
+    return (uint32_t)(((2UL * OS_CONFIG_TICK_HZ) + 999UL) / 1000UL);
 }
 
 /******************************************************************************************************/
@@ -304,7 +297,7 @@ uint32_t os_arch_tick_resume_cb(void)
     return elapsed_ticks;
 }
 
-#if (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP)
+#if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
 
 #include "soc_sleep.h"
 
@@ -647,7 +640,7 @@ void os_arch_soc_sleep_cb(void)
     }
 }
 
-#endif /* SOC_CONFIG_SLEEP_MODE_DEEP */
+#endif /* OS_CONFIG_TICKLESS_DEEP_ENABLE */
 
 #endif /* OS_CONFIG_TICKLESS_ENABLE */
 
@@ -656,7 +649,7 @@ void os_arch_soc_sleep_cb(void)
 void os_arch_soc_idle_cb(void)
 {
 #if (OS_CONFIG_TICKLESS_ENABLE == 1U) && \
-    (SOC_CONFIG_SLEEP_MODE == OS_CONFIG_SLEEP_MODE_DEEP) && (OS_CONFIG_CORE_COUNT > 1U)
+    (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U) && (OS_CONFIG_CORE_COUNT > 1U)
     if ((get_core_num() == 1U) && os_task_current_is_idle())
     {
         soc_sleep_peer_idle = 1U;
