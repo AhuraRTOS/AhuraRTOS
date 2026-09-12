@@ -156,6 +156,21 @@ void os_test_isr_entry(void);
  * tick.
  */
 extern __IO uint32_t os_test_tick_isr_entries;
+
+/**
+ * @brief Entries into the SoC package's DEEPEST sleep, counted so the suite can say whether a deep
+ *        build really gated its clocks or quietly took a light window instead.
+ *
+ * Compiled only with OS_CONFIG_TEST_ENABLE, and written by the SoC PACKAGE rather than the kernel -
+ * only the package knows which of its sleeps was the deep one.
+ *
+ * It exists because that fallback is silent by design: every condition a package tests before
+ * stopping the clocks is a legitimate reason not to - a peer core still running, a peripheral
+ * mid-transfer, an unread byte in a UART receiver - and a build that takes the light route every
+ * single time passes every other check in this suite unchanged. Zero here, against a configuration
+ * that asked for deep sleep, is the only symptom there is.
+ */
+extern __IO uint32_t os_test_deep_sleep_entries;
 #endif /* OS_CONFIG_TEST_ENABLE */
 
 

@@ -223,6 +223,14 @@ using SysTick - which is why a NUCLEO-H503 with tickless on and no LPTIM
 configured reports a ceiling of 67 ticks (24 bits at 250 MHz, 1 kHz ticks) rather
 than 0.
 
+The converse is the part that surprises, and two boards proved it: on **ARMv7-M**
+the port leaves SysTick's reload alone on purpose - moving it would strand
+`os_delay_us()` and the synthesized cycle counter - so with
+`OS_CONFIG_TICKLESS_DEEP_ENABLE = 0U` the `st/stm32` package supplies no source
+at all and the ceiling really is 0: tickless is enabled and never opens a
+window. A NUCLEO-G431RB and a NUCLEO-H743ZI both report exactly that. On a
+Cortex-M4 or M7, deep sleep is the only setting that suppresses anything.
+
 Each package must also declare a link anchor in its `soc.cmake`
 (`AHURA_SOC_LINK_OPTIONS -u soc_<name>_anchor`). Without it the whole `soc_cb.c`
 object can be dropped from a static-archive link, taking the tick with it -

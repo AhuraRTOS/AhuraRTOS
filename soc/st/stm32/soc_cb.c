@@ -821,6 +821,11 @@ void SystemClock_Config(void);
 void os_arch_soc_sleep_cb(void)
 {
 #if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
+#if (OS_CONFIG_TEST_ENABLE == 1U)
+    /* Counted before the entry, not after: the wake path below must not decide whether this
+     * sleep happened. See os_test_deep_sleep_entries in ahura.h. */
+    os_test_deep_sleep_entries++;
+#endif
     SOC_CONFIG_DEEP_SLEEP();
 
     /* Stop gates the PLL and drops the core onto HSI or CSI, so the wake returns to a machine

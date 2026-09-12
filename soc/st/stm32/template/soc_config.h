@@ -115,11 +115,17 @@
  * There is nothing to pick: what ends a suppressed window follows from how deep the core sleeps,
  * which is OS_CONFIG_TICKLESS_DEEP_ENABLE in os_config.h.
  *
- *   0 (light)  the core clock keeps running, so SysTick is still counting and the port suppresses
- *              against it directly. This package supplies no timer at all and the LPTIM settings
- *              here are not read.
+ *   0 (light)  the core clock keeps running, so SysTick is still counting - but whether the port
+ *              suppresses against it depends on the core. Only the v8m port stretches its own
+ *              reload (OS_ARCH_TICKLESS_SELF_SUPPRESS, see doc/tickless.md); the v7m port leaves
+ *              SysTick alone on purpose, because moving that reload strands os_delay_us(). So on a
+ *              Cortex-M4 or M7 this package supplies no source at all and NO window is ever opened:
+ *              tickless is on and suppresses nothing. Measured: a G431 and an H743 both report a
+ *              0-tick ceiling here, where an H503 reports 67 and really sleeps. The LPTIM settings
+ *              below are not read either way.
  *   1 (deep)   Stop mode gates the core clock and SysTick with it, so the LPTIM - clocked from LSI
- *              or LSE - takes the window instead. That is what the settings below describe.
+ *              or LSE - takes the window instead. That is what the settings below describe, and on
+ *              a v7m part it is the only setting that suppresses anything at all.
  *
  * It used to be two flags plus the mode, with an arithmetic rule saying exactly one flag had to
  * be 1 and another refusing deep sleep against a source that dies in Stop. Neither state can be

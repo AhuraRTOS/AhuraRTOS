@@ -156,7 +156,12 @@ static os_sem_t os_test_sched_lock_sem;  /* left empty: a take would have to blo
 
 /* Saturating subtract: an operation cheaper than the measurement overhead itself would
  * otherwise wrap to a huge unsigned value. */
-#define TEST_BENCH_SUB(total, over) (((total) > (over)) ? ((total) - (over)) : 0U)
+#define TEST_BENCH_SUB(total, over) \
+    (((total) == UINT32_MAX) ? UINT32_MAX : (((total) > (over)) ? ((total) - (over)) : 0U))
+
+/* Halve a figure without destroying the no-sample sentinel: the per-switch rows derive from a
+ * round trip. */
+#define TEST_BENCH_HALF(value)      (((value) == UINT32_MAX) ? UINT32_MAX : ((value) / 2U))
 
 /* Sample one operation TEST_BENCH_SAMPLES times, keeping the cheapest AND the dearest run. The
  * statement is pasted inline (not called through a function pointer) so no call overhead is
@@ -6441,6 +6446,8 @@ static void test_tickless_sleep(void)
     uint32_t  tolerance_high;
     uint32_t  mask_before;
     uint32_t  mask_after;
+    uint32_t  deep_before;
+    uint32_t  deep_after;
     os_err_t init_status;
     os_err_t start_status;
 
@@ -6482,10 +6489,12 @@ static void test_tickless_sleep(void)
 
     mask_before = os_arch_kernel_mask_active();
 
+    deep_before = os_test_deep_sleep_entries;
     t0 = os_tick_get();
     os_tickless_idle_process();
     t1 = os_tick_get();
     delta = t1 - t0;
+    deep_after = os_test_deep_sleep_entries;
 
     mask_after = os_arch_kernel_mask_active();
 
@@ -6512,6 +6521,22 @@ static void test_tickless_sleep(void)
                       "os_tickless_idle_process() slept ~%lu ticks and measured it accurately (delta=%lu)",
                       (unsigned long)horizon, (unsigned long)delta);
     AHURA_TEST_CHECK(os_kernel_is_running(), "kernel state is intact after a real tickless sleep/wake cycle");
+
+    /* Reported, never asserted: a LIGHT configuration has no deep entries by design, and a deep one
+     * is entitled to refuse - a busy peer core, a peripheral mid-transfer, an unread byte in a UART
+     * receiver. What must not happen is for that refusal to be invisible, which is what these lines
+     * exist to prevent. */
+    if (deep_after != deep_before)
+    {
+        printf("  [INFO] the SoC package gated its clocks %lu time(s) in that window - a real DEEP sleep\r\n",
+               (unsigned long)(deep_after - deep_before));
+    }
+    else
+    {
+        printf("  [INFO] no deep entry was recorded in that window: either this build sleeps LIGHT,\r\n");
+        printf("         or the package declined to stop the clocks this time. The window above was\r\n");
+        printf("         real either way - see the package's own conditions for why it may decline.\r\n");
+    }
 
     os_delay_ms(5U); /* let the timer service task run the callback */
     AHURA_TEST_CHECK(os_test_oneshot_fired == 1U, "the timer bounding the sleep fired exactly once (fired=%lu)",
@@ -6754,6 +6779,17 @@ static void test_bench_partner_entry(void *context)
  */
 static void test_bench_row(const char *name, uint32_t best, uint32_t worst, uint32_t clock_hz)
 {
+    /* Every sample was rejected by the TEST_BENCH_MAX_SAMPLE filter, so there is nothing to print.
+     * Saying so is the whole point: the arithmetic below would otherwise turn the untouched initial
+     * value into a plausible-looking 4294967276 cycles, which is how a partner task that never ran
+     * once came to be read as a timing result. */
+    if (best == UINT32_MAX)
+    {
+        printf("  %-48s   no sample (every run exceeded the %lu-cycle filter)\r\n",
+               name, (unsigned long)TEST_BENCH_MAX_SAMPLE);
+        return;
+    }
+
     if (clock_hz != 0U)
     {
         /* 64-bit throughout: a slow core with a big cycle count would overflow 32 bits here. */
@@ -7280,7 +7316,8 @@ static void test_benchmarks(void)
             worst = TEST_BENCH_SUB(worst, overhead);
 
             test_bench_row("os_task_yield (round trip, 2 switches)", best, worst, clock_hz);
-            test_bench_row("  ^ ONE context switch, task to task", best / 2U, worst / 2U, clock_hz);
+            test_bench_row("  ^ ONE context switch, task to task",
+                           TEST_BENCH_HALF(best), TEST_BENCH_HALF(worst), clock_hz);
         }
 
         os_test_bench_partner_run = false;

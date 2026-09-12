@@ -305,10 +305,6 @@ uint32_t os_arch_tick_resume_cb(void)
  * outside its global lock, and holds its scheduling mask across the pair. */
 static uint32_t soc_sleep_owner_primask = 0U;
 static bool soc_sleep_owner_held = false;
-#if (OS_CONFIG_TEST_ENABLE == 1U)
-/* A debugger can distinguish real PLL-off entries from safe LIGHT fallbacks. */
-static __IO uint32_t soc_sleep_deep_entries = 0U;
-#endif
 
 #if (OS_CONFIG_CORE_COUNT > 1U)
 /* Each shared word has exactly one writer. Publication and observation are ordered with DMB;
@@ -610,7 +606,9 @@ void os_arch_soc_sleep_cb(void)
         scb_hw->scr = scr | M33_SCR_SLEEPDEEP_BITS;
 
 #if (OS_CONFIG_TEST_ENABLE == 1U)
-        soc_sleep_deep_entries++;
+        /* The suite reports this: a deep build that always falls back to LIGHT is otherwise
+         * indistinguishable from one that works. See os_test_deep_sleep_entries in ahura.h. */
+        os_test_deep_sleep_entries++;
 #endif
         OS_ARCH_DSB();
         __wfi();

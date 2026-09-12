@@ -65,6 +65,9 @@ static __IO uint32_t os_tick_count = 0U;
 /* Defined here rather than in test/os_test.c so the kernel library never depends on the test
  * library to link. Declared in ahura.h, where the reason it exists is written out. */
 __IO uint32_t os_test_tick_isr_entries = 0U;
+
+/** Written by the SoC package when it really gates the clocks; see ahura.h. */
+__IO uint32_t os_test_deep_sleep_entries = 0U;
 #endif
 
 #if (OS_CONFIG_CPU_USAGE_ENABLE == 1U)
