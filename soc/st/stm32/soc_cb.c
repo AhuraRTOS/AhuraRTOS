@@ -700,11 +700,14 @@ uint32_t os_arch_tick_suppress_max_cb(void)
  * faster tick, or a source divided down by a prescaler, and a couple of counts is suddenly several
  * ticks.
  *
- * Deep sleep does not add a term here, and the reason is arithmetic rather than principle: Stop
- * exit on this family is tens of microseconds, and a clock restore behind it a couple of hundred
- * more, against a floor the kernel already holds at two whole tick periods. A part with a slower
- * wake, or an application whose SOC_CONFIG_DEEP_SLEEP relocks a long-settling PLL, is where the
- * term starts to bind - measure it before adding it.
+ * Deep sleep does not add a term here, and the reason is arithmetic rather than principle: measured
+ * on an H503 over 783 windows, a deep one ends 240 us late on average and 500 us at worst - Stop
+ * exit, the PLL relock, and this counter's own 31.25 us step - against a floor the kernel already
+ * holds at two whole tick periods. That lateness is charged to the deadline and to interrupt
+ * latency, never to the clock: the counter runs through Stop and is read after the restore, so the
+ * elapsed figure is the truth. A part with a slower wake, or an application whose
+ * SOC_CONFIG_DEEP_SLEEP relocks a long-settling PLL, is where the term starts to bind - measure it
+ * before adding it.
  *
  * @return uint32_t  Floor on one window, in ticks.
  */

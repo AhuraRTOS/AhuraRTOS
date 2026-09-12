@@ -231,6 +231,30 @@ at all and the ceiling really is 0: tickless is enabled and never opens a
 window. A NUCLEO-G431RB and a NUCLEO-H743ZI both report exactly that. On a
 Cortex-M4 or M7, deep sleep is the only setting that suppresses anything.
 
+### What a deep wake costs
+
+A deep window ends **late**, not short. The LPTIM counts straight through Stop
+and the kernel reads it after the clock tree is back, so the elapsed figure it
+gets is the truth and the kernel clock does not drift. What the wake costs is
+charged to the deadline it was serving, and to interrupt latency, since the
+kernel mask is held across it.
+
+Measured on a NUCLEO-H503RB at 250 MHz over 783 deep windows, LSI at 32 kHz:
+
+| | LPTIM counts | Time |
+|---|---|---|
+| Windows that ended late | 774 of 783 | - |
+| Mean | 7.7 | 240 us |
+| Worst | 16 | 500 us |
+
+Most of that is HSE and the PLL relocking, about 35000 core cycles, with Stop
+exit and the counter's own 31.25 us granularity behind it. It stays under one
+tick period at 1 kHz, the accumulator banks the fraction, and the floor the
+kernel already holds - two whole ticks - is well clear of it. That is why no
+port subtracts a lead term from the window it arms. A part with a
+slower-settling PLL, or an application whose `SOC_CONFIG_DEEP_SLEEP` does more
+than enter Stop, is where that stops being true: measure it before assuming.
+
 Each package must also declare a link anchor in its `soc.cmake`
 (`AHURA_SOC_LINK_OPTIONS -u soc_<name>_anchor`). Without it the whole `soc_cb.c`
 object can be dropped from a static-archive link, taking the tick with it -
