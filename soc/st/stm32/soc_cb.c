@@ -95,6 +95,7 @@
 /* Defined with the LPTIM driver further down; declared here because the init callback above the
  * driver is what calls it. */
 static void soc_lptim_init(void);
+static void soc_lptim_rate_verify(void);
 #endif
 
 /******************************************************************************************************/
@@ -528,6 +529,60 @@ static void soc_lptim_write_settle(uint32_t flag)
 
 /******************************************************************************************************/
 /**
+ * @brief Refuse to run if the counter's real clock is not the one this project declared.
+ *
+ * SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ is hand-written, and nothing downstream can tell it from the
+ * truth: the driver arms in counts and converts the same counts back with the same constant, so a
+ * wrong rate makes every window the wrong LENGTH while the arithmetic stays self-consistent. Seen
+ * for real on an H743 whose CubeMX project left the mux on the APB at 120 MHz while this option
+ * still said 32768 - a clean build, every guard passing, and no symptom to follow.
+ *
+ * The mux register is read rather than HAL_RCCEx_GetPeriphCLKFreq(), which looks like the obvious
+ * call and is not: the H7 implementation has no LPTIM case and answers 0, so on the one family that
+ * produced the bug it would check nothing. What the mux says is also more than a rate - a source
+ * that is neither LSI nor LSE is refused outright, whatever it runs at, because this file is
+ * compiled only for deep sleep and Stop mode gates every other clock the mux offers.
+ *
+ * Exact, with no tolerance band: LSI_VALUE and LSE_VALUE are nominal numbers from the same headers
+ * CubeMX wrote the project against, not measurements, so the two either name one clock or they name
+ * two. A band wide enough to be worth having would have let 32768-against-32000 through - 2.4% on
+ * every window. A real oscillator's own spread is a different question, invisible here.
+ *
+ * Runs after HAL_LPTIM_Init(), because the generated MspInit is what programs the mux, and is
+ * unconditional rather than an OS_ASSERT: a build with assertions compiled out is the last one that
+ * can afford to sleep for the wrong length of time silently. Only LPTIM1 is checked - every family
+ * spells the accessor for its other instances differently, and all of them name that one.
+ */
+static void soc_lptim_rate_verify(void)
+{
+#if defined(LPTIM1) && defined(RCC_LPTIM1CLKSOURCE_LSI) && defined(RCC_LPTIM1CLKSOURCE_LSE)
+    if (SOC_LPTIM_HANDLE->Instance == LPTIM1)
+    {
+        uint32_t src = __HAL_RCC_GET_LPTIM1_SOURCE();
+
+        /* Zero unless the mux names a clock that survives Stop, so any other source fails the
+         * comparison below on its own - no legal value of the option is 0. */
+        uint32_t actual = 0U;
+
+        if (src == RCC_LPTIM1CLKSOURCE_LSI)
+        {
+            actual = (uint32_t)LSI_VALUE;
+        }
+        else if (src == RCC_LPTIM1CLKSOURCE_LSE)
+        {
+            actual = (uint32_t)LSE_VALUE;
+        }
+
+        if (actual != (uint32_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ)
+        {
+            os_arch_config_fault_trap();
+        }
+    }
+#endif
+}
+
+/******************************************************************************************************/
+/**
  * @brief Start the counter and take the interrupt vector. Called once, from os_arch_soc_init_cb().
  *
  * Everything expensive lives here so that arming a window later is a single register write.
@@ -553,6 +608,10 @@ static void soc_lptim_init(void)
 
     if (HAL_LPTIM_Init(SOC_LPTIM_HANDLE) == HAL_OK)
     {
+        /* Now, and not earlier: the mux this checks is programmed by the generated MspInit that
+         * HAL_LPTIM_Init just ran. */
+        soc_lptim_rate_verify();
+
         /* Continuous counting with a compare interrupt, started and never stopped again. The name
          * describes the output waveform, which is nothing to do with this: no LPTIM output pin is
          * routed. What matters is the order inside, which is the order the peripheral insists on
