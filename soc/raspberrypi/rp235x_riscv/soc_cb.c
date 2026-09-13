@@ -305,7 +305,9 @@ const uint32_t soc_rp235x_riscv_anchor = 0U;
  * clk_sys and stops with it, so the window is taken by the POWMAN timer in the always-on domain
  * instead - the same source the Arm package uses at either depth, shared from ../common. */
 #if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
-#error "OS_CONFIG_TICKLESS_DEEP_ENABLE is written for this package but NOT yet working: the two cores wake each other in a loop. Core 0 releases the park with an inter-core interrupt, core 1 counts that same interrupt as work and aborts with one back, and mip.MSIP on core 0 is then never quiet - so WFI returns at once and every window measures zero ticks (24M cycles of real sleep become 100k). Masking mie.MSIE for the sleep makes the window real but closes the cross-core wake and hangs the suite; clearing the bit does not hold. Measured on a Pico 2, 2026-09-13. Set it to 0U. The implementation below is complete apart from that handshake."
+/* Only the deep path needs these: the POWMAN wake source, and the walk that checks nothing else
+ * is mid-transfer before the shared clocks stop. Both are shared with the Arm package and included
+ * rather than compiled, so a LIGHT build carries neither. */
 #include "soc_powman.h"
 #include "soc_sleep.h"
 #endif
@@ -518,12 +520,22 @@ uint32_t os_arch_tick_resume_cb(void)
  * exceptions plus NVIC pending-and-enabled; here the scheduler's own request IS an interrupt
  * (MSIP, from SIO's per-core softirq), so one masked read covers both.
  *
- * SEVONPEND and SLEEPDEEP have no equivalent and need none. SLEEPDEEP only told the Arm core what
- * to do on WFI - the clocks are stopped by writing the clock registers, which is architecture-
- * neutral - and the event register SEV/WFE used for the core-1 rendezvous does not exist, so the
- * release is a real inter-core interrupt instead. That interrupt is deliberately never cleared
- * here: core 1 leaves the park with it still pending, and taking it on the way out is what makes a
- * reschedule that arrived during the park impossible to lose.
+ * SEVONPEND and SLEEPDEEP map onto Hazard3's xh3pwr extension rather than onto nothing. SLEEPDEEP
+ * only told the Arm core what to do on WFI - the clocks are stopped by writing the clock
+ * registers, which is architecture-neutral - and the event register the Arm package uses for the
+ * core-1 rendezvous has an exact counterpart here: h3.block / h3.unblock, the OS_ARCH_WFE() /
+ * OS_ARCH_SEV() the port supplies. A block wakes on an unblock event, and an unblock received
+ * since the last block is latched, closing the same release-versus-block race SEV/WFE closes.
+ *
+ * What the rendezvous must NOT do on this core is use MSIP for the park or its release. Here the
+ * context-switch request and the cross-core doorbell are the same level-sensitive interrupt, so
+ * a release sent that way arrives on core 1 indistinguishable from a reschedule - its parked
+ * work test sees "work", aborts with an IPI of its own back to core 0, and core 0's MSIP then
+ * stands for the whole masked window, where nothing can take the trap that would clear it. Every
+ * subsequent WFI returns on the spot, every window measures zero, and the collapsed windows keep
+ * the two cores in that phase against each other. h3.unblock carries no interrupt state at all,
+ * which is why the park, the request and the release below all go through it, and MSIP is left
+ * with its one real job.
 */
 
 /* The owner alone writes these. The kernel pairs prepare/finish outside its global lock and holds
@@ -576,14 +588,16 @@ OS_WEAK bool soc_deep_sleep_allowed_cb(void)
  * core that sleeps and one that only looks like it does. On Arm the equivalent is PendSV, which is
  * not pending at this point because the kernel took it before idling. On RISC-V the same request is
  * mip.MSIP, only the trap handler clears it, and the trap cannot run while the idle path holds its
- * mask - so it stands there for the whole tickless sequence. Measured on a Pico 2: mip 0x88 against
- * mie 0x808 at every sleep, which is a WFI that returns on the spot, every window measuring zero,
- * and a deep entry that never happens.
+ * mask - so a request that pended before the mask went up can still be standing here. The park and
+ * release no longer manufacture one (they ride h3.block/h3.unblock instead of the softirq), which
+ * is what made the deep window real: before that change mip was 0x88 against mie 0x808 at every
+ * sleep, a WFI that returns on the spot, every window measuring zero, and a deep entry that never
+ * happened.
  *
  * Discounting it for the sleep decision is safe because the kernel has already decided: it plans a
  * window only when nothing is runnable, so a request still standing here is one whose reason has
- * gone. Nothing is discarded - the bit stays pending and is taken the moment the mask lifts, exactly
- * as the core-1 park below leaves its own.
+ * gone. Nothing is discarded - the bit is retired just before the WFI, or taken the moment the
+ * mask lifts if the window is declined.
  *
  * @param[in] swi_matters  Whether a standing scheduler request counts as work.
  * @return bool  True when something is pending and enabled.
@@ -660,11 +674,12 @@ static void soc_sleep_release(void)
     {
         soc_sleep_request = 0U;
         OS_ARCH_DSB();
-        /* The Arm package sends SEV here, unconditionally, because an unwanted SEV costs a latched
-         * bit and nothing else. This is a real interrupt - core 1 is in WFI, not WFE - so it costs
-         * a trap and a scheduler pass on the other core, and core 0 declines far more idle passes
-         * than it sleeps through. Sent only when a request was actually standing. */
-        os_arch_core_ipi_request_cb(1U);
+        /* The release is an unblock event, not an interrupt, for the reason the Deep sleep block
+         * comment spells out: on this core an interrupt aimed at core 1 IS MSIP, the scheduler's
+         * own request, and a parked core cannot tell the two apart. The event is sent only when a
+         * request was actually standing, so the peer's idle block is not disturbed on the many
+         * passes core 0 declines. */
+        OS_ARCH_SEV();
     }
 #endif
     soc_sleep_owner_held = false;
@@ -709,10 +724,11 @@ bool os_arch_soc_sleep_prepare_cb(void)
             OS_ARCH_DMB();
             soc_sleep_request = generation;
             OS_ARCH_DSB();
-            /* Core 1 is asleep in WFI, so it has to be interrupted to notice the request at all.
-             * It takes that interrupt normally, reschedules, and comes back round to its idle
-             * callback with the request standing. */
-            os_arch_core_ipi_request_cb(1U);
+            /* Core 1 sits in h3.block between its two park checks, so an unblock event is all it
+             * takes to notice the request - no MSIP, so nothing on either core mistakes the
+             * request for a reschedule. The event latch covers the race with the request word:
+             * an unblock arriving before the block falls straight through it. */
+            OS_ARCH_SEV();
 
             while ((soc_sleep_ack != generation) &&
                    (soc_sleep_abort != generation) &&
@@ -775,11 +791,14 @@ void os_arch_soc_sleep_finish_cb(void)
  * is about to stop counting at the rate its deadline was written in. Core 0 owns elapsed-time
  * accounting throughout; core 1 re-bases its own cadence on release.
  *
- * The softirq is never cleared in here, and that is the whole trick. It is what core 0 uses to end
- * the park, and it is also what the kernel uses to demand a reschedule - indistinguishable from
- * this side. Leaving it pending means the exit path takes it the moment the mask comes back, so a
- * reschedule that arrived mid-park is delivered late rather than lost, and a wake that was only the
- * release costs one harmless trap.
+ * The wait is h3.block, not wfi, and that is not a preference. A block wakes on the unblock event
+ * the owner sends to release the park - a wake that carries no interrupt state, where an MSIP
+ * wake would be indistinguishable from a reschedule - AND on every pending-and-enabled interrupt,
+ * exactly as a WFI does, mstatus.MIE or no. So a real request that arrives while this core is
+ * parked is never missed: it wakes the block, the work test above catches it, and the abort below
+ * carries it to core 0, which ends the window early rather than sleeping through it. A softirq
+ * still standing when the park exits is deliberately left for the mask-restore to take, so the
+ * request it carries is delivered, never discarded.
  *
  * @return None.
  */
@@ -814,14 +833,20 @@ static void soc_sleep_peer_park(void)
                 {
                     soc_sleep_abort = generation;
                     OS_ARCH_DSB();
+                    /* A real interrupt on the owner is what cuts its WFI short, an event would
+                     * not - core 0 sleeps in WFI, not in a block. MSIP is the one channel that
+                     * is, and it is correct that this looks to the owner like a reschedule:
+                     * it closes the window early and the kernel re-plans, which is the whole
+                     * point of an abort. */
                     os_arch_core_ipi_request_cb(0U);
                     wake_sent = true;
                 }
                 OS_ARCH_DSB();
-                /* Woken by the release interrupt, by an abort-worthy one, or spuriously; the loop
-                 * condition is the only thing that decides which. With the mask held, none of them
-                 * runs a handler here. */
-                OS_ARCH_IDLE();
+                /* Woken by the owner's release event, by an abort-worthy interrupt, or
+                 * spuriously (a stray event from elsewhere in the system); the loop condition
+                 * and the work test above are the only things that decide which. With the mask
+                 * held, none of the interrupt sources runs a handler here. */
+                OS_ARCH_WFE();
             }
         }
         else
@@ -910,16 +935,17 @@ void os_arch_soc_sleep_cb(void)
          * indistinguishable from one that works. See os_test_deep_sleep_entries in ahura.h. */
         os_test_deep_sleep_entries++;
 #endif
-        /* Belt and braces, and only here: core 1 is parked, so no cross-core wake can be owed and
-         * closing MSIE for the length of the sleep costs nothing. In the declined path above it
-         * would cost the cross-core wake itself, which is why that one only retires the bit. */
-        uint32_t mie_saved = (uint32_t)OS_ARCH_CSR_READ(mie);
-
+        /* Retire a scheduler request that may have been overtaken before halting, then sleep with
+         * MSIE left open. With the rendezvous on h3.block/h3.unblock nothing manufactures MSIP
+         * any more, so the retire is belt and braces rather than the load-bearing part it used to
+         * be. Masking MSIE here instead would close the one channel a genuine cross-core wake
+         * uses - the parked peer's abort and any remote kernel entry both arrive as MSIP - and a
+         * real request then waits out the whole window, which is how an earlier revision hung the
+         * suite. A request that arrives after the retire still cuts the sleep short, exactly as
+         * the kernel documents. */
         soc_sleep_swi_retire();
-        OS_ARCH_CSR_CLEAR(mie, SOC_SLEEP_MIP_SWI);
         OS_ARCH_DSB();
         OS_ARCH_IDLE();
-        OS_ARCH_CSR_WRITE(mie, mie_saved);
         OS_ARCH_ISB();
 
         /* Back up in the order it came down: the PLL has to be locked before anything is fed from
@@ -1033,9 +1059,17 @@ void os_arch_soc_init_cb(void)
 /**
  * @brief Idle the core until an interrupt arrives.
  *
- * WFI, not the WFE the Arm package uses. WFE is an Arm instruction with no RISC-V counterpart, and
- * the reason the Arm side needs it does not arise here: it avoids gating the clock SysTick counts,
- * while mtime keeps running through WFI because it lives in SIO rather than in the core.
+ * WFI on core 0, and deliberately so: mtime keeps running through WFI because it lives in SIO
+ * rather than in the core, so the reason the Arm package uses WFE everywhere - a gated clock would
+ * stop that core's own tick - does not arise here.
+ *
+ * Core 1, under DEEP, waits in h3.block between its two park checks instead. A block wakes on
+ * pending-and-enabled interrupts exactly as a WFI does, so the tick and every reschedule reach it
+ * unchanged; what it adds is the unblock event, the channel core 0 uses for the park request and
+ * the release - a wake that carries no interrupt state and so cannot be mistaken for a scheduler
+ * request on either side.
+ *
+ * @return None.
  */
 void os_arch_soc_idle_cb(void)
 {
@@ -1045,7 +1079,7 @@ void os_arch_soc_idle_cb(void)
         soc_sleep_peer_idle = 1U;
         OS_ARCH_DMB();
         soc_sleep_peer_park();
-        OS_ARCH_IDLE();
+        OS_ARCH_WFE();
         soc_sleep_peer_park();
         soc_sleep_peer_idle = 0U;
         OS_ARCH_DMB();

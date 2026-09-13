@@ -389,6 +389,42 @@ typedef struct
 #define OS_ARCH_IRQ_ENABLE()              OS_ARCH_CSR_SET(mstatus, OS_ARCH_MSTATUS_MIE_MSK)
 
 #define OS_ARCH_IDLE()                    __asm volatile("wfi")
+
+/*
+ * Send-event / wait-for-event. The base ISA has neither, so both fall back unless a core folder
+ * claims Hazard3's xh3pwr extension (OS_ARCH_HAS_XH3POWER, see arch/riscv/hazard3/os_arch_port.h),
+ * whose h3.unblock/h3.block hints are the structural counterpart of the Arm ports' SEV/WFE.
+ *
+ * The semantics matter because the deep-sleep rendezvous in the SoC packages rests on them, and
+ * they match Arm exactly:
+ *
+ *   - h3.block enters the WFI sleep state and additionally wakes when another processor in the
+ *     same complex executes h3.unblock. An unblock received since the last h3.block is LATCHED,
+ *     so the instruction falls through instead of sleeping - the same close-the-race property
+ *     Arm's event register has.
+ *   - A pending-and-enabled interrupt wakes a block exactly as it wakes a WFI, mstatus.MIE or no,
+ *     so a parked core still notices scheduler requests and peripheral work while its kernel
+ *     mask is held.
+ *   - h3.unblock posts to the other processors (and, on the RP2350, back to the sender too), and
+ *     touches no interrupt state: it is the one cross-core wake that does NOT alias the
+ *     context-switch request.
+ *
+ * The two hint encodings are nop-compatible on any RV32 core, so the fallback below exists for a
+ * future core folder that has no such extension: block becomes the plain WFI it already is, and
+ * unblock becomes nothing - a rendezvous then polls its shared words instead of sleeping, correct
+ * but not power-optimal, and a package that needs the real thing states it in its core folder.
+ */
+#ifndef OS_ARCH_HAS_XH3POWER
+#define OS_ARCH_HAS_XH3POWER              0U
+#endif
+
+#if (OS_ARCH_HAS_XH3POWER == 1U)
+#define OS_ARCH_SEV()                     __asm volatile("slt x0, x0, x1" ::: "memory")
+#define OS_ARCH_WFE()                     __asm volatile("slt x0, x0, x0" ::: "memory")
+#else
+#define OS_ARCH_SEV()                     do { } while (0)
+#define OS_ARCH_WFE()                     OS_ARCH_IDLE()
+#endif
 /* The sleep is a callback rather than the raw WFI it defaults to: with the window already armed,
  * the core may go as deep as the SoC's own wake source survives, and only the package knows how
  * deep that is. The weak default in os_kernel.c is exactly the WFI this line used to hold. */

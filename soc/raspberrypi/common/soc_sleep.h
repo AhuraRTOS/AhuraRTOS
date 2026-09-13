@@ -53,9 +53,11 @@ extern "C"
 /**
  * @brief Whether a UART can lose clk_peri for the duration of a window.
  *
- * BUSY describes transmission, not an asynchronous receiver, so an armed receive wake source
- * keeps its configured baud rate by declining DEEP. Polling-only input cannot be inferred from
- * registers at all; soc_deep_sleep_allowed_cb is the board's way to cover that.
+ * BUSY describes transmission, and a transmitter mid-byte must drain first. An armed receive wake
+ * source keeps its configured baud rate by declining DEEP, and must have drained its FIFO too -
+ * it is the one receiver that can lose both a byte and a wake. Polling-only input cannot be
+ * inferred from registers at all, and a stale byte it has already received costs nothing to keep,
+ * so it does not veto a window; soc_deep_sleep_allowed_cb is the board's way to cover that.
  *
  * @param[in] uart  UART block to inspect, never NULL.
  * @return bool  True when nothing on this UART needs the normal clocks.
@@ -72,11 +74,19 @@ static inline bool soc_deep_uart_ready(const uart_hw_t *uart)
                                 UART_UARTIMSC_FEIM_BITS | UART_UARTIMSC_PEIM_BITS |
                                 UART_UARTIMSC_BEIM_BITS | UART_UARTIMSC_OEIM_BITS;
 
+        /* A receiver with its interrupt armed is a wake source whose baud would misread through
+         * the deep window, and one mid-reception would lose the byte it is clocking in - for one,
+         * the FIFO must be empty before the clocks stop. A polled receiver is neither: a byte
+         * already sitting in its FIFO has been received in full and costs nothing to keep, so it
+         * does not veto a window. Requiring RXFE unconditionally made one stale console byte
+         * refuse deep sleep forever, which is exactly how it measured on the RP2350 RISC-V board:
+         * fr 0x187 - transmit idle, receive interrupt unarmed, FIFO never drained. */
+        bool receiving = ((control & UART_UARTCR_RXE_BITS) != 0U) &&
+                         ((uart->imsc & receive_irqs) != 0U);
+
         ready = ((flags & UART_UARTFR_BUSY_BITS) == 0U) &&
                 ((flags & UART_UARTFR_TXFE_BITS) != 0U) &&
-                ((flags & UART_UARTFR_RXFE_BITS) != 0U) &&
-                (((control & UART_UARTCR_RXE_BITS) == 0U) ||
-                 ((uart->imsc & receive_irqs) == 0U));
+                (!receiving || ((flags & UART_UARTFR_RXFE_BITS) != 0U));
     }
 
     return ready;

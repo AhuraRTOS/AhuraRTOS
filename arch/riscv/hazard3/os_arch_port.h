@@ -23,6 +23,16 @@
  */
 #define OS_ARCH_HAS_XH3IRQ    1
 
+/*
+ * The same reasoning for Hazard3's power-management extension, which carries the block/unblock
+ * hint pair (the SDK spells them __wfe/__sev) that the SoC package uses for the tickless deep-sleep
+ * rendezvous. Stated here, in the core folder, so the shared RV32 header can emit the real
+ * instructions for this core and a neutral fallback for one that lacks them. On any RV32 core the
+ * two encodings are nop-compatible hints, so misstating this costs a rendezvous that polls rather
+ * than sleeps - the sort of silent failure a core folder must not be able to express.
+ */
+#define OS_ARCH_HAS_XH3POWER  1
+
 #include "../common/os_arch_port_common.h"
 
 #endif /* OS_ARCH_PORT_H */
