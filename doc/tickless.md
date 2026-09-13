@@ -215,7 +215,7 @@ one copy now.
 | `st/stm32` | LPTIM, clocked from LSI or LSE | Stop (`OS_CONFIG_TICKLESS_DEEP_ENABLE = 1U`) | Three quarters of the LPTIM's 16-bit span, the rest kept as wrap headroom - 1500 ticks on a 32.768 kHz clock at 1 kHz ticks, 1536 on a 32 kHz LSI |
 | `raspberrypi/rp2040` | An alarm on the always-on microsecond timer | Core sleep, clocks running | 60 s |
 | `raspberrypi/rp235x_arm` | A POWMAN alarm, which outlives the clocks | PLL_SYS powered down (`OS_CONFIG_TICKLESS_DEEP_ENABLE = 1U`), with core 1 parked by agreement | Effectively unbounded - `OS_TICKLESS_MAX_IDLE_TICKS` is the binding limit |
-| `raspberrypi/rp235x_riscv` | `mtimecmp` | Core sleep | As above |
+| `raspberrypi/rp235x_riscv` | `mtimecmp` while the clocks are up; a POWMAN alarm under DEEP, because mtime counts clk_sys and stops with it | PLL_SYS powered down (`OS_CONFIG_TICKLESS_DEEP_ENABLE = 1U`), with core 1 parked through Hazard3's `h3.block`/`h3.unblock` rather than an inter-core interrupt - on this core the scheduler's own request and the doorbell would otherwise be the same MSIP | As above |
 | *(none)* | - | - | 0: the kernel skips the sleep, the idle task does a plain `WFI` |
 
 On an ARMv8-M part with **no** package wake source, the v8m port still suppresses
