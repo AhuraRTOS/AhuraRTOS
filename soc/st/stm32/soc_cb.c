@@ -327,6 +327,19 @@ Configuration tab, point the LPTIM1 mux at LSI or LSE - the default is PCLK3."
  *  floor below - and deliberately not for measuring a window: see soc_lptim_accum for why one
  *  pre-divided constant cannot express this ratio and what is used instead. Refused below if it
  *  comes out as 0. */
+#ifndef SOC_CONFIG_TICKLESS_LPTIM_CALIBRATE
+#error "soc_config.h is incomplete: OS_CONFIG_TICKLESS_DEEP_ENABLE is 1, so SOC_CONFIG_TICKLESS_LPTIM_CALIBRATE is required too. Set it to 0U to trust the declared rate, or 1U to measure the real one at boot."
+#endif
+
+/** What the runtime conversions divide by: the declared rate, or the measured one when the board
+ *  asked to be calibrated. A macro either way, so an uncalibrated build still folds the division
+ *  into a shift or a reciprocal multiply and costs nothing for the option existing. */
+#if (SOC_CONFIG_TICKLESS_LPTIM_CALIBRATE == 1U)
+#define SOC_LPTIM_RATE              soc_lptim_rate
+#else
+#define SOC_LPTIM_RATE              ((uint32_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ)
+#endif
+
 #define SOC_LPTIM_COUNTS_PER_TICK   (SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ / OS_CONFIG_TICK_HZ)
 
 #if (SOC_LPTIM_COUNTS_PER_TICK == 0U)
@@ -392,14 +405,23 @@ slower tick."
 /* The reload is a handle field here, applied by HAL_LPTIM_Init. */
 #define SOC_LPTIM_PERIOD_APPLY()    do { SOC_LPTIM_HANDLE->Init.Period = SOC_LPTIM_PERIOD; } while (0)
 
-/* CMP1OK is not wanted as an interrupt: every window writes the compare register and the arming
- * path waits on that very flag, so a handler would clear it before the wait could see it and the
- * interrupt left pending would drop the following sleep straight back out. Disabling it is itself a
- * DIER write, which this generation acknowledges through DIEROK - hence the wait. */
-#define SOC_LPTIM_QUIET_CMPOK()                                                                   \
+/* Two of the interrupts the start turns on are not wanted, and one DIER write silences both -
+ * a write this generation acknowledges through DIEROK, hence the wait.
+ *
+ * CMP1OK, because every window writes the compare register and the arming path waits on that very
+ * flag: a handler would clear it before the wait could see it, and the interrupt left pending would
+ * drop the following sleep straight back out.
+ *
+ * ARRM, because the wrap is not an event this driver has any use for - the counter free-runs and
+ * every window is a difference taken modulo its span - while as an interrupt it ENDS the sleep it
+ * lands in. Measured on an H743: a window armed for 1905 counts from 64447 wrapped at 65536 and
+ * came back after 1092, so the kernel was told 34 ticks where it had planned 50. Nothing is lost,
+ * the number reported is the truth, but the window is cut short about once every two seconds at
+ * 32 kHz - and a deep sleep that keeps waking for nothing is the one thing deep sleep is not for. */
+#define SOC_LPTIM_QUIET_UNWANTED()                                                                   \
     do {                                                                                          \
         __HAL_LPTIM_CLEAR_FLAG(SOC_LPTIM_HANDLE, LPTIM_FLAG_DIEROK);                              \
-        __HAL_LPTIM_DISABLE_IT(SOC_LPTIM_HANDLE, LPTIM_IT_CMP1OK);                                \
+        __HAL_LPTIM_DISABLE_IT(SOC_LPTIM_HANDLE, LPTIM_IT_CMP1OK | LPTIM_IT_ARRM);                \
         soc_lptim_write_settle(LPTIM_FLAG_DIEROK);                                                \
     } while (0)
 
@@ -416,9 +438,9 @@ slower tick."
 
 /* Same reasoning as the channelled branch, minus the DIEROK acknowledgement this generation does
  * not have: the DIER write here takes effect directly. */
-#define SOC_LPTIM_QUIET_CMPOK()                                                                   \
+#define SOC_LPTIM_QUIET_UNWANTED()                                                                   \
     do {                                                                                          \
-        __HAL_LPTIM_DISABLE_IT(SOC_LPTIM_HANDLE, LPTIM_IT_CMPOK);                                 \
+        __HAL_LPTIM_DISABLE_IT(SOC_LPTIM_HANDLE, LPTIM_IT_CMPOK | LPTIM_IT_ARRM);                 \
     } while (0)
 
 #endif /* LPTIM_CHANNEL_1 */
@@ -453,6 +475,21 @@ static uint32_t soc_lptim_armed = 0U;
  * WINDOW - not per tick - costs nothing worth counting. */
 static uint64_t soc_lptim_accum = 0U;
 
+#if (SOC_CONFIG_TICKLESS_LPTIM_CALIBRATE == 1U)
+/** The source rate every conversion divides by, in Hz. Starts at the declared value so a build that
+ *  never reaches os_arch_soc_ready_cb() still converts sensibly, and is written exactly once. */
+static uint32_t soc_lptim_rate = (uint32_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ;
+
+/** Counts to measure over: about 64 ms at 32 kHz. Long enough that the core-cycle read is noise
+ *  against it, short enough to be invisible in a boot. */
+#define SOC_LPTIM_CAL_COUNTS        2048UL
+
+/** How far the measurement may land from the declared rate before it is refused, as a divisor of
+ *  that rate: a quarter either way. An LSI is specified far tighter than this even at the corners,
+ *  so anything outside it is a broken measurement rather than a loose oscillator. */
+#define SOC_LPTIM_CAL_TOLERANCE     4UL
+#endif
+
 /******************************************************************************************************/
 /**
  * @brief Counts to wait for a given number of whole kernel ticks. Rounded UP: a window must never
@@ -472,7 +509,7 @@ static uint64_t soc_lptim_accum = 0U;
  */
 static uint32_t soc_lptim_ticks_to_counts(uint32_t ticks)
 {
-    uint64_t wanted = (uint64_t)ticks * (uint64_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ;
+    uint64_t wanted = (uint64_t)ticks * (uint64_t)SOC_LPTIM_RATE;
 
     return (uint32_t)((wanted + (uint64_t)OS_CONFIG_TICK_HZ - 1U) / (uint64_t)OS_CONFIG_TICK_HZ);
 }
@@ -618,16 +655,14 @@ static void soc_lptim_init(void)
          * and which this driver got wrong by hand - enable, then the interrupt enables with their
          * DIEROK wait around them, then the compare channel, then start.
          *
-         * The wrap interrupt comes with it. That fires once per full span of the counter, which is
-         * the same 2 seconds as the longest window this source will ever be asked for, so it costs
-         * at most one extra wake per window and usually none. */
+         * The wrap and compare-ok interrupts come with it and neither is wanted; the next line
+         * switches both off, before any window is armed. */
         if (SOC_LPTIM_START_IT() == HAL_OK)
         {
-            /* The compare-ok interrupt is not wanted; see SOC_LPTIM_QUIET_CMPOK above for why, and
-             * for what each HAL generation needs in order to do it. ARROK, REPOK and UPDATE are
-             * left as they are: they answer writes to registers this driver never touches after
-             * start-up. */
-            SOC_LPTIM_QUIET_CMPOK();
+            /* See SOC_LPTIM_QUIET_UNWANTED above for which two and why, and for what each HAL
+             * generation needs in order to do it. ARROK, REPOK and UPDATE are left as they are:
+             * they answer writes to registers this driver never touches after start-up. */
+            SOC_LPTIM_QUIET_UNWANTED();
         }
     }
 }
@@ -672,6 +707,89 @@ void HAL_LPTIM_AutoReloadMatchCallback(LPTIM_HandleTypeDef *hlptim)
     (void)hlptim;
 }
 
+#if (SOC_CONFIG_TICKLESS_LPTIM_CALIBRATE == 1U)
+/******************************************************************************************************/
+/**
+ * @brief Measure what the LPTIM source really runs at, and convert by that from here on.
+ *
+ * The declared rate is a nominal number - LSI_VALUE is 32000 on every STM32 that has one - and an
+ * LSI is an RC oscillator, so the real part is whatever it is: 32310 Hz on the H743 this was
+ * written against, 0.97% fast. Nothing in the driver can notice, because arming and measuring use
+ * the same constant and stay self-consistent; what moves is the REAL length of a window. A board
+ * that spends its life asleep therefore keeps time to its LSI's accuracy, which is percent, not
+ * ppm. Measuring once against the core clock - HSE and a PLL, so ppm - removes that.
+ *
+ * Counted between two counter edges rather than over a fixed delay: gating on the edge is what
+ * removes the +/-1 count the LPTIM would otherwise contribute, leaving only the cycle read, which
+ * against 2048 counts is nothing.
+ *
+ * Not free and not the default. It costs about 64 ms of boot, it only pays on a board clocked from
+ * LSI - an LSE is a crystal and needs none of this - and a runtime divisor is what every conversion
+ * uses afterwards instead of a folded constant.
+ *
+ * Runs from os_arch_soc_ready_cb() because that is the first moment both halves exist: the counter
+ * has been running since os_arch_soc_init_cb(), and os_arch_init() has just started the cycle
+ * counter this measures it against. Before the tick, so the 64 ms makes nothing late.
+ *
+ * @return None.
+ */
+void os_arch_soc_ready_cb(void)
+{
+    uint32_t hz = os_arch_delay_counter_hz_get();
+    uint32_t mark;
+    uint32_t start;
+    uint32_t cycles;
+    uint32_t rate;
+
+    /* No counter to measure against on this port. The declared rate stands, which is what an
+     * uncalibrated build runs on anyway. */
+    if (hz == 0U)
+    {
+        return;
+    }
+
+    /* Line up on an edge first, then take the whole span between edges. The bound is a second of
+     * core cycles: reaching it means the counter is not counting, which the arming path would
+     * otherwise discover as a window that never ends. */
+    mark  = soc_lptim_count_get();
+    start = os_arch_delay_counter_get();
+
+    while (soc_lptim_count_get() == mark)
+    {
+        if ((os_arch_delay_counter_get() - start) > hz)
+        {
+            os_arch_config_fault_trap();
+        }
+    }
+
+    mark  = soc_lptim_count_get();
+    start = os_arch_delay_counter_get();
+
+    while (((soc_lptim_count_get() - mark) & (uint32_t)SOC_LPTIM_PERIOD) < SOC_LPTIM_CAL_COUNTS)
+    {
+        if ((os_arch_delay_counter_get() - start) > hz)
+        {
+            os_arch_config_fault_trap();
+        }
+    }
+
+    cycles = os_arch_delay_counter_get() - start;
+    rate   = (uint32_t)(((uint64_t)SOC_LPTIM_CAL_COUNTS * (uint64_t)hz) / (uint64_t)cycles);
+
+    /* Refused rather than used: a result this far out is the measurement failing, not an
+     * oscillator drifting, and sleeping by it would be worse than sleeping by the declared rate. */
+    if ((rate > (uint32_t)(SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ +
+                           (SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ / SOC_LPTIM_CAL_TOLERANCE))) ||
+        (rate < (uint32_t)(SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ -
+                           (SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ / SOC_LPTIM_CAL_TOLERANCE))))
+    {
+        os_arch_config_fault_trap();
+    }
+
+    soc_lptim_rate = rate;
+}
+#endif /* SOC_CONFIG_TICKLESS_LPTIM_CALIBRATE */
+
 /******************************************************************************************************/
 /**
  * @brief How many ticks one window may skip.
@@ -685,7 +803,7 @@ uint32_t os_arch_tick_suppress_max_cb(void)
      * really only hold 1999 (at 32768 Hz / 1 kHz): the kernel then planned a window the arming path
      * silently clamped, and reported the shortfall as time that never happened. */
     return (uint32_t)(((uint64_t)SOC_LPTIM_MAX_COUNTS * (uint64_t)OS_CONFIG_TICK_HZ) /
-                      (uint64_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ);
+                      (uint64_t)SOC_LPTIM_RATE);
 }
 
 /******************************************************************************************************/
@@ -788,9 +906,9 @@ uint32_t os_arch_tick_resume_cb(void)
          * stops the clock losing up to a tick every time it sleeps. See soc_lptim_accum. */
         soc_lptim_accum += (uint64_t)counts * (uint64_t)OS_CONFIG_TICK_HZ;
 
-        elapsed = (uint32_t)(soc_lptim_accum / (uint64_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ);
+        elapsed = (uint32_t)(soc_lptim_accum / (uint64_t)SOC_LPTIM_RATE);
 
-        soc_lptim_accum -= (uint64_t)elapsed * (uint64_t)SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ;
+        soc_lptim_accum -= (uint64_t)elapsed * (uint64_t)SOC_LPTIM_RATE;
         soc_lptim_armed  = 0U;
     }
 

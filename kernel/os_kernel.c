@@ -97,6 +97,14 @@ OS_WEAK void os_arch_soc_diagnose_cb(void)
 
 /******************************************************************************************************/
 /**
+ * @brief Weak default for the post-port SoC hook: a package with nothing to measure does nothing.
+ */
+OS_WEAK void os_arch_soc_ready_cb(void)
+{
+}
+
+/******************************************************************************************************/
+/**
  * @brief Weak default for the idle wait: a plain WFI, which is correct on parts whose timers
  *        keep running through it.
  *
@@ -145,6 +153,11 @@ void os_init(void)
     os_arch_soc_init_cb();
 
     os_arch_init();
+
+    /* The SoC's second chance, and the only one with a running cycle counter to measure against.
+     * Before the tick, so whatever it takes cannot make a deadline late. */
+    os_arch_soc_ready_cb();
+
     os_task_system_init();
     os_kernel_init_require(os_task_idle_create() == OS_ERR_NONE);
 

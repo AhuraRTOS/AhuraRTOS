@@ -595,7 +595,7 @@ little.
 | | |
 |---|---|
 | `soc_cb.c` | The whole package: a clock refresh at start-up and two tickless sleep hooks. Every entry point is `OS_WEAK`, so an application that wants its own simply defines it |
-| `template/soc_config.h` | Four options, copied beside your `os_config.h` |
+| `template/soc_config.h` | Nine options, copied beside your `os_config.h` |
 
 There is no public header, because the package has nothing for the application
 to call - every entry point is a `_cb` the kernel invokes itself.
@@ -616,6 +616,7 @@ so a value here could only be wrong.
 | **IPI** | Not needed - single-core parts |
 | **Spinlock** | Not needed - the kernel's own backend is correct on one core |
 | **Tickless hooks** | `os_tickless_pre_sleep_cb()` / `os_tickless_post_sleep_cb()` suspend and resume the HAL timebase, so a suppressed sleep is not cut short at that timer's period. `SOC_CONFIG_TICKLESS_HAL_TICK 0` turns that off |
+| **Tickless wake source** | Under `OS_CONFIG_TICKLESS_DEEP_ENABLE 1` an LPTIM clocked from LSI or LSE counts the window out, because Stop mode gates SysTick. At boot the package reads the RCC mux and refuses to run unless it really selects the rate `SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ` declares - a wrong rate is otherwise invisible, since arming and measuring use the same number. `SOC_CONFIG_TICKLESS_LPTIM_CALIBRATE 1` measures the real rate against the core clock at start-up instead of trusting the declared one |
 | **HAL include path** | The kernel library compiles `soc_cb.c`, which includes `main.h` - CubeMX generates one for every project and it pulls in that family's HAL header itself. The package links CubeMX's `stm32cubemx` INTERFACE target when it exists, so the kernel sees the same HAL tree the application does |
 
 Everything here degrades to nothing when the HAL is absent, which is what makes

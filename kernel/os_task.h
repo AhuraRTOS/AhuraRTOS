@@ -334,6 +334,17 @@ void os_arch_soc_diagnose_cb(void);
  */
 void os_arch_soc_idle_cb(void);
 
+/******************************************************************************************************/
+/**
+ * @brief SoC callback: the arch port is up and the tick is not yet. Optional, weak empty default.
+ *
+ * Called by os_init() between os_arch_init() and os_tick_init(). That is the only window where the
+ * clock tree is final, the counter behind os_arch_delay_counter_get() is running, and no deadline
+ * exists yet - so a package may busy-wait here without making anything late. os_arch_soc_init_cb()
+ * cannot: it runs before the port, so there is no counter to measure against.
+ */
+void os_arch_soc_ready_cb(void);
+
 #ifdef __cplusplus
 }
 #endif

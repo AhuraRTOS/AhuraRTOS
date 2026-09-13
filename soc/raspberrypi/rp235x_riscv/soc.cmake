@@ -53,14 +53,21 @@ set(AHURA_SOC_SOURCES
 	"${CMAKE_CURRENT_LIST_DIR}/soc_cb.c"
 )
 
-# No public header: every entry point this package has is a _cb the kernel calls itself.
-set(AHURA_SOC_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}")
+# No public header: every entry point this package has is a _cb the kernel calls itself. ../common is
+# on the list for the two headers DEEP shares with the Arm package - the POWMAN wake source and the
+# checks before the clocks stop. Neither is architecture-specific, both read chip registers, and
+# neither is compiled on its own: soc_cb.c includes them.
+set(AHURA_SOC_INCLUDE_DIRS
+	"${CMAKE_CURRENT_LIST_DIR}"
+	"${CMAKE_CURRENT_LIST_DIR}/../common"
+)
 
 # Only what the sources include. pico_stdlib is deliberately absent: it drags in stdio and its
 # transports, which are the application's choice rather than the kernel's.
 set(AHURA_SOC_LINK_LIBRARIES
 	hardware_clocks
 	hardware_irq
+	hardware_powman
 	hardware_riscv_platform_timer
 	hardware_sync
 	pico_multicore

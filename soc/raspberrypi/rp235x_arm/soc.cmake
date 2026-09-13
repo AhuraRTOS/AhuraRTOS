@@ -59,7 +59,8 @@ set(AHURA_SOC_SOURCES
 	"${CMAKE_CURRENT_LIST_DIR}/soc_cb.c"
 )
 
-# Only ../common, for soc_common.h. This package exposes no public header: every entry point
+# Only ../common, for soc_common.h and - under DEEP - soc_sleep.h, which the RISC-V package
+# includes from the same place. This package exposes no public header: every entry point
 # it has is a _cb the kernel calls itself, so there is nothing for an application to include.
 set(AHURA_SOC_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/../common")
 

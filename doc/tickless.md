@@ -255,6 +255,33 @@ port subtracts a lead term from the window it arms. A part with a
 slower-settling PLL, or an application whose `SOC_CONFIG_DEEP_SLEEP` does more
 than enter Stop, is where that stops being true: measure it before assuming.
 
+### An LSI is not 32000
+
+`LSI_VALUE` is 32000 on every STM32 that has one, and an LSI is an RC
+oscillator, so the real part is whatever it is. Measured at boot on the three
+NUCLEO boards, all declaring 32000:
+
+| Board | Real rate | Error |
+|---|---|---|
+| H743ZI | 32276 Hz | +0.86% |
+| H503RB | 32061 Hz | +0.19% |
+| G431RB | 31834 Hz | -0.52% |
+
+Nothing in the driver can notice: arming and measuring use the same constant, so
+the arithmetic stays self-consistent and the kernel is never told a wrong number
+of ticks. What moves is the REAL length of a window, so a board that spends its
+life asleep keeps time to its LSI's accuracy - percent, not ppm - while the same
+board keeps HSE accuracy whenever it is awake.
+
+An LSE is a crystal and needs none of this. On an LSI board that has to keep
+time through deep sleep, set `SOC_CONFIG_TICKLESS_LPTIM_CALIBRATE` to `1U`: the
+package measures the counter against the core clock once at start-up, between
+two counter edges, and converts by what it finds. It costs about 64 ms of boot,
+it makes every later conversion divide by a variable instead of a folded
+constant, and it corrects the part-to-part offset above - not the drift an RC
+oscillator still has with temperature, which showed up here as 0.25% between a
+cold boot and a warm board.
+
 Each package must also declare a link anchor in its `soc.cmake`
 (`AHURA_SOC_LINK_OPTIONS -u soc_<name>_anchor`). Without it the whole `soc_cb.c`
 object can be dropped from a static-archive link, taking the tick with it -

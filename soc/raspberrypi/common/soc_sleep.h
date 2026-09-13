@@ -1,18 +1,22 @@
 /**
  * @file soc_sleep.h
- * @brief RP235x Arm checks before the shared system clock is slowed for DEEP idle.
+ * @brief RP235x checks before the shared system clock is slowed for DEEP idle.
  *
- * Private to soc_cb.c. Run after both cores have masked interrupts and the secondary
- * core has acknowledged its idle park. These checks never wait, acknowledge an IRQ,
- * or change a peripheral's configuration. An ineligible window keeps clocks running.
+ * Shared by both RP235x packages, and nothing in it is architecture-specific: every check reads a
+ * peripheral register on a chip that is the same silicon either way. Included by a package's own
+ * soc_cb.c rather than compiled on its own, so a build that never sleeps deep carries none of it.
+ *
+ * Run after both cores have masked interrupts and the secondary core has acknowledged its idle
+ * park. These checks never wait, acknowledge an IRQ, or change a peripheral's configuration. An
+ * ineligible window keeps clocks running.
  *
  * @copyright (c) 2026 Ahura Project Contributors
  *            SPDX-License-Identifier: GPL-3.0-or-later
  *            See LICENSE in the project root for the full license text.
  */
 
-#ifndef SOC_RP235X_ARM_SLEEP_H
-#define SOC_RP235X_ARM_SLEEP_H
+#ifndef SOC_RPI_SLEEP_H
+#define SOC_RPI_SLEEP_H
 
 /*
  * ***********************************************************************************************************
@@ -231,4 +235,4 @@ static inline bool soc_deep_peripherals_ready(void)
 }
 #endif
 
-#endif /* SOC_RP235X_ARM_SLEEP_H */
+#endif /* SOC_RPI_SLEEP_H */

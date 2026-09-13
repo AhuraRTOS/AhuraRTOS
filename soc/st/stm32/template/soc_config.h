@@ -154,6 +154,19 @@
 #define SOC_CONFIG_TICKLESS_LPTIM_VECTOR    LPTIM1_IRQHandler
 #define SOC_CONFIG_TICKLESS_LPTIM_CLOCK_HZ  32768U
 
+/* Measure the rate above at boot instead of trusting it, and convert by what comes back.
+ *
+ * An LSE is a crystal: leave this at 0U. An LSI is an RC oscillator whose real rate is percent
+ * away from the 32000 its headers declare - 32310 Hz measured on a NUCLEO-H743ZI - and nothing in
+ * the driver can notice, because arming and measuring use the same number. What moves is the real
+ * length of a window, so a board that mostly sleeps keeps time to its LSI's accuracy. Measuring it
+ * once against the core clock, which comes from a crystal, replaces percent with ppm.
+ *
+ * Costs about 64 ms of boot, once, and makes every later conversion divide by a variable instead
+ * of a folded constant.
+ * Values: 0U trust the declared rate, 1U measure it. */
+#define SOC_CONFIG_TICKLESS_LPTIM_CALIBRATE 0U
+
 /*
  * ***********************************************************************************************************
  * Deep sleep entry (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U only)
