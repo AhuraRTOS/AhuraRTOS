@@ -186,6 +186,12 @@
  * Anything else meant to end a window early - an EXTI line, a UART - has to be configured as a
  * Stop-mode wake-up in CubeMX; only the LPTIM is arranged for you.
  *
+ * And anything that must not be interrupted has to say so. GPDMA, every UART, SPI and I2C and the
+ * timers driving them lose their clock here: a transfer in flight freezes mid-burst and cannot even
+ * raise its own completion interrupt, so it stays frozen for the whole window. Define
+ * os_arch_soc_sleep_prepare_cb() in os_cb.c and answer false while one is busy - see
+ * doc/tickless.md "A peripheral that is mid-transfer".
+ *
  * Pick the line for your series and confirm it against that family's stm32<fam>xx_hal_pwr.h and
  * _hal_pwr_ex.h - the header on the include path is the authority, not this list:
  *

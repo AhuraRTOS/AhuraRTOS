@@ -995,7 +995,7 @@ OS_WEAK void os_tickless_post_sleep_cb(void)
  * to edit a generated header. A project that has no such function fails to LINK, naming the
  * symbol, and only under DEEP: write your own SystemClock_Config() that reprograms the tree, or
  * turn the deep sleep off. */
-void SystemClock_Config(void);
+extern void SystemClock_Config(void);
 #endif
 
 void os_arch_soc_sleep_cb(void)

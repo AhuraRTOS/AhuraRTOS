@@ -345,6 +345,62 @@ that hook alone.
 
 ---
 
+## A peripheral that is mid-transfer
+
+Under **LIGHT** nothing here applies: the core stops, the buses and the
+peripheral do not, and the peripheral's own interrupt cuts the `WFI` short -
+a window shortened by a DMA completion is measured and announced like any
+other.
+
+**DEEP gates the clocks**, and that changes the answer completely. A DMA
+transfer in flight freezes mid-burst, and - having no clock - it cannot raise
+its own completion interrupt to end the window either. Only the armed wake
+source ends it, so the transfer stays frozen for the whole planned window: up
+to the port's ceiling, which is about 1.5 s on the STM32 package. A receiver
+loses the bytes that arrived meanwhile; a master leaves its clock line stopped
+for longer than the device at the other end will wait.
+
+**The kernel cannot know.** It plans from deadlines - the next timer, the
+earliest sleeping task - and a task blocked on a "DMA complete" semaphore is
+not a deadline. It is simply not ready, so the idle task runs and the window
+opens.
+
+Declare the sleep unsafe yourself. `os_arch_soc_sleep_prepare_cb()` is the one
+hook that can refuse a window; define it strongly in `os_cb.c` and answer
+`false` while a transfer is in flight:
+
+```c
+/* GPDMA has no clock in Stop: a transfer in flight freezes mid-burst and cannot
+ * even raise its own TC to end the window. Decline rather than corrupt it. */
+bool os_arch_soc_sleep_prepare_cb(void)
+{
+#if (OS_CONFIG_TICKLESS_DEEP_ENABLE == 1U)
+    if (HAL_DMA_GetState(&hdma_usart1_rx) != HAL_DMA_STATE_READY)
+    {
+        return false;
+    }
+#endif
+
+    return true;
+}
+```
+
+Three things about that answer:
+
+- `false` declines **this pass**, not sleeping. `os_task_idle_entry` calls
+  `os_arch_soc_idle_cb()` on the next line, outside the mask, and that is an
+  ordinary `WFI`. The idle loop comes straight back and asks again.
+- Keep the `#if`. Without it a busy DMA also refuses the LIGHT windows, which
+  were never in danger.
+- `os_arch_soc_sleep_finish_cb()` is **not** called when you answer `false`, so
+  release anything you took before returning.
+
+`os_tickless_pre_sleep_cb()` cannot do this - it returns `void`. It is where you
+*flush* a transfer, not where you decline the sleep.
+
+---
+
+
 ## Proving it on a board
 
 The self-test suite has four groups for this, and they are worth reading in
@@ -368,6 +424,7 @@ page except the SMP handshake, and that needs a dual-core part.
 
 | Symptom | Cause |
 |---|---|
+| A UART or SPI loses data, or a slave times out - only in a DEEP build | A transfer was in flight when the window opened. Deep stops its clock mid-burst and it cannot end the window itself. Refuse the window from `os_arch_soc_sleep_prepare_cb()` - see [A peripheral that is mid-transfer](#a-peripheral-that-is-mid-transfer) |
 | Board freezes a few characters into its banner | The SoC package was dropped from the link - it needs `-u soc_<name>_anchor` in `AHURA_SOC_LINK_OPTIONS`. `SysTick_Handler` is then the startup file's `Default_Handler`, an infinite loop |
 | Delays and timers all run **late**, by roughly the sleep time | A window was entered that nothing announced: `os_arch_tick_resume_cb()` returned 0 because nothing was armed. Check that `os_arch_tick_suppress_max_cb()` is non-zero for this configuration |
 | Timers fire **early**, delays end short | Something is announcing more than the window was promised. The port clamps, so this points at a package's `os_arch_tick_suppress_max_cb()` claiming a ceiling its arming path cannot honour |

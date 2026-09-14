@@ -457,6 +457,11 @@
  * Deep gates the clocks - STM32 Stop, RP2350 with PLL_SYS down - so only a wake source that
  * outlives them can end the window. The package supplies that source and refuses the build when it
  * has none; its soc_config.h holds whatever deep sleep needs there.
+ *
+ * A peripheral mid-transfer does not survive that, and the kernel cannot see one: a task blocked
+ * on a DMA-complete semaphore is not a deadline, so the window opens anyway and the transfer stays
+ * frozen for the whole of it. Refuse those windows from os_arch_soc_sleep_prepare_cb() - the only
+ * hook that can - as doc/tickless.md "A peripheral that is mid-transfer" shows.
  * Values: 1 = as deep as the package goes, 0 = light. */
 #define OS_CONFIG_TICKLESS_DEEP_ENABLE      0U
 
